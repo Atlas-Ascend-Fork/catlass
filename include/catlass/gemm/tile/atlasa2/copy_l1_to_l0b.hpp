@@ -21,6 +21,14 @@
 
 namespace Catlass::Gemm::Tile {
 
+// Keep constexpr objects used as reference non-type template arguments at namespace
+// scope. GCC 13 ICEs when such an argument is defined in class-template scope.
+#ifndef CATLASS_ATLASA2_LOAD3D_CONFIG_DEFINED
+#define CATLASS_ATLASA2_LOAD3D_CONFIG_DEFINED
+inline constexpr AscendC::IsResetLoad3dConfig CONV3D_LOAD3DV2_DEFAULT_CONFIG = {true, true};
+inline constexpr AscendC::IsResetLoad3dConfig LOAD3DV2_DEFAULT_CONFIG = {false, false};
+#endif
+
 template <class ArchTag, class L1Type, class L0Type = void>
 struct CopyL1ToL0B {
     static_assert(DEPENDENT_FALSE<ArchTag>, "Unsupported copy l1 to l0, can not find the specialization.");
@@ -374,14 +382,13 @@ struct CopyL1ToL0B<ArchTag, Gemm::GemmType<float, layout::zN, AscendC::TPosition
         uint16_t l0KAlign = RoundUp<C0_NUM_PER_FRACTAL>(l0K);
         uint16_t l0NAlign = RoundUp<C0_NUM_PER_FRACTAL>(l0N);
         AscendC::SetFmatrix(1, l1KAlign, PAD_LIST, AscendC::FmatrixMode::FMATRIX_RIGHT);
-        static constexpr AscendC::IsResetLoad3dConfig config = {false, false};
         AscendC::LoadData3DParamsV2<Element> loadDataParams;
         loadDataParams.kExtension = l0NAlign;
         loadDataParams.mExtension = l0KAlign;
         loadDataParams.channelSize = l1NAlign;
         loadDataParams.fMatrixCtrl = true;
 
-        AscendC::LoadData<Element, config>(dstTensor, srcTensor, loadDataParams);
+        AscendC::LoadData<Element, LOAD3DV2_DEFAULT_CONFIG>(dstTensor, srcTensor, loadDataParams);
     }
 };
 
@@ -710,7 +717,6 @@ struct TileCopyTla<
         uint16_t l0KAlign = RoundUp<C0_NUM_PER_FRACTAL>(l0K);
         uint16_t l0NAlign = RoundUp<C0_NUM_PER_FRACTAL>(l0N);
         AscendC::SetFmatrix(1, l1KAlign, PAD_LIST, AscendC::FmatrixMode::FMATRIX_RIGHT);
-        static constexpr AscendC::IsResetLoad3dConfig config = {false, false};
         AscendC::LoadData3DParamsV2<Element> loadDataParams;
         loadDataParams.kExtension = l0NAlign;
         loadDataParams.mExtension = l0KAlign;
@@ -720,7 +726,8 @@ struct TileCopyTla<
         auto dstOffset = dstTensor.layout()(dstTensor.coord());
         auto srcOffset = srcTensor.layout()(srcTensor.coord());
 
-        AscendC::LoadData<Element, config>(dstTensor.data()[dstOffset], srcTensor.data()[srcOffset], loadDataParams);
+        AscendC::LoadData<Element, LOAD3DV2_DEFAULT_CONFIG>(
+            dstTensor.data()[dstOffset], srcTensor.data()[srcOffset], loadDataParams);
     }
 };
 

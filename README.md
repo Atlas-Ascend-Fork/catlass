@@ -117,7 +117,6 @@ CATLASS所需的软硬件环境依赖如下：
   - `gcc` >= 7.5, < 13.0
   - `cmake` >= 3.16
   - `python` >= 3.8, < 3.12
-  （如需编译[单元测试](tests/unittest/catlass/gemm/tile/README.md#环境要求)，需 `gcc` <= 12.0）
 - CATLASS DSL 软件依赖请参考[CATLASS-DSL README](./python/tla_dsl/README.md)
 
 不同CATLASS发行版可支持的硬件平台及所需的最低[CANN](https://www.hiascend.com/zh/cann/download)版本如下表：

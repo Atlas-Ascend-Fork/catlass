@@ -1842,7 +1842,7 @@ with tla.vec.func(mode="simd"):
 
 功能说明：
 
-按 mask 在两路 vector 间逐元素选择；在 SIMT 区域内也可在两路 per-thread 标量间选择。
+按 mask 在两路 vector 或 predicate mask 间逐元素选择；在 SIMT 区域内也可在两路 per-thread 标量间选择。
 
 函数原型：
 
@@ -1853,13 +1853,14 @@ tla.where(mask: Any, x: Any, y: Any) -> Any
 参数说明：
 
 - `mask`（`MaskSSA | Bool`）：选择掩码；真取 `x`，假取 `y`。可为整 vector 的 `MaskSSA`，或 SIMT 区域内比较得到的 `Bool`。必填。
-- `x`（`VectorSSA | Numeric`）：掩码为真时的取值。必填。
-- `y`（`VectorSSA | Numeric`）：掩码为假时的取值。必填。
+- `x`（`VectorSSA | MaskSSA | Numeric`）：掩码为真时的取值。必填。
+- `y`（`VectorSSA | MaskSSA | Numeric`）：掩码为假时的取值。必填。
 
 约束说明：
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
-- 须在 `tla.vec.func()` 内调用；`mask`/`x`/`y` 的有效元素布局须匹配。
+- 须在 `tla.vec.func()` 内调用；SIMD 路径的操作数必须属于同一类别。
+- MaskSSA 路径中，操作数和选择掩码必须具有完全相同的类型。
 - per-thread 形式要求 `mode="simt"`，并生成 `tla.simt_where`。
 
 调用示例：

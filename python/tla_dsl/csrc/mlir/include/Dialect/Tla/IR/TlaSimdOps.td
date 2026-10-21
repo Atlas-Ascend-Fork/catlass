@@ -371,14 +371,20 @@ def Tla_BitCastOp : Tla_Op<"bitcast", [Pure]> {
 }
 
 def Tla_WhereOp : Tla_Op<"where", [Pure]> {
-  let summary = "Vector select on VectorSSA values";
+  let summary = "Select on VectorSSA or MaskSSA values";
   let description = [{
-    Element-wise select on VectorSSA values. For each lane the
-    result holds the corresponding lane of ``x`` where the mask is
-    active and ``y`` elsewhere. ``x`` and ``y`` must share the same VectorSSA type.
+    Select between ``x`` and ``y`` under ``mask``. For each logical lane,
+    an active bit in ``mask`` selects ``x`` and an inactive bit selects ``y``.
+    ``x``, ``y``, and ``result`` must all be VectorSSA values or all be
+    MaskSSA values. The MaskSSA form additionally requires all four values to
+    have the same ``!tla.mask<N>`` type.
   }];
-  let arguments = (ins Tla_MaskSSAType:$mask, Tla_VectorSSAType:$x, Tla_VectorSSAType:$y);
-  let results = (outs Tla_VectorSSAType:$result);
+  let arguments = (ins
+      Tla_MaskSSAType:$mask,
+      AnyTypeOf<[Tla_VectorSSAType, Tla_MaskSSAType]>:$x,
+      AnyTypeOf<[Tla_VectorSSAType, Tla_MaskSSAType]>:$y);
+  let results = (outs
+      AnyTypeOf<[Tla_VectorSSAType, Tla_MaskSSAType]>:$result);
   let assemblyFormat = [{
     $mask `,` $x `,` $y attr-dict `:`
     qualified(type($mask)) `,` qualified(type($x)) `,` qualified(type($y)) `->` qualified(type($result))

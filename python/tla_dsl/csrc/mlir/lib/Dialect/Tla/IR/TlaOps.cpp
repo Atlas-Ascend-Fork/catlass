@@ -853,11 +853,36 @@ mlir::LogicalResult UpdateMaskOp::verify()
     return verifyMaskProducerType(getOperation(), getMask().getType(), getDtype());
 }
 
+static mlir::LogicalResult verifyMaskSelectTypes(
+    mlir::Operation* op, mlir::Type mask, mlir::Type x, mlir::Type y, mlir::Type result)
+{
+    auto maskType = mlir::dyn_cast<MaskSSAType>(mask);
+    auto xType = mlir::dyn_cast<MaskSSAType>(x);
+    auto yType = mlir::dyn_cast<MaskSSAType>(y);
+    auto resultType = mlir::dyn_cast<MaskSSAType>(result);
+    if (!maskType || !xType || !yType || !resultType)
+        return op->emitOpError("requires mask, x, y, and result to all be MaskSSA");
+    if (maskType != xType || yType != xType || resultType != xType)
+        return op->emitOpError("requires mask, x, y, and result to have the same MaskSSA type");
+    return mlir::success();
+}
+
 mlir::LogicalResult WhereOp::verify()
 {
     if (!hasEnclosingRegion<VecFuncOp>(getOperation()))
         return emitOpError("must be nested inside a tla.vec.func region");
-    return verifyMaskMatchesVector(getOperation(), getMask(), getX().getType());
+
+    bool xIsVector = mlir::isa<VectorSSAType>(getX().getType());
+    bool yIsVector = mlir::isa<VectorSSAType>(getY().getType());
+    bool resultIsVector = mlir::isa<VectorSSAType>(getResult().getType());
+    if (xIsVector != yIsVector || xIsVector != resultIsVector)
+        return emitOpError("requires x, y, and result to all be VectorSSA or all be MaskSSA");
+
+    if (xIsVector)
+        return verifyMaskMatchesVector(getOperation(), getMask(), mlir::cast<VectorSSAType>(getX().getType()));
+
+    return verifyMaskSelectTypes(
+        getOperation(), getMask().getType(), getX().getType(), getY().getType(), getResult().getType());
 }
 
 mlir::LogicalResult GatherOp::verify()

@@ -425,6 +425,13 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             ]],
         )
     yield (
+        "vector-mask-select-op",
+        [[
+            "vector_ops/mask_select_op.py", "mask_select",
+            "--all-dtypes", "--shape", "512", *dev,
+        ]],
+    )
+    yield (
         "vector-load-dintlv-op",
         [["vector_ops/load_dintlv_op.py", "dintlv_b32", "--sweep", "--shapes", "512", *dev]],
     )

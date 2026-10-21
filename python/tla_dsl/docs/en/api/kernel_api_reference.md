@@ -473,7 +473,7 @@ dst = tla.make_tensor_like(ptr, like=src_tile, layoutTag=tla.arch.RowMajor)
 
 ### `make_ptr`
 
-**Source:** [`catlass.core_api.make_ptr`](../../../catlass/core_api.py#L9525)
+**Source:** [`catlass.core_api.make_ptr`](../../../catlass/core_api.py#L9562)
 
 Description:
 
@@ -508,7 +508,7 @@ ptr = tla.make_ptr(tla.Float16, addr, mem_space=tla.AddressSpace.gm)
 
 ### `recast_ptr`
 
-**Source:** [`catlass.core_api.recast_ptr`](../../../catlass/core_api.py#L9579)
+**Source:** [`catlass.core_api.recast_ptr`](../../../catlass/core_api.py#L9616)
 
 Description:
 
@@ -1188,7 +1188,7 @@ Mask creation and tail-mask updates.
 
 #### `create_mask`
 
-**Source:** [`catlass.core_api.create_mask`](../../../catlass/core_api.py#L9854)
+**Source:** [`catlass.core_api.create_mask`](../../../catlass/core_api.py#L9891)
 
 Description:
 
@@ -1244,7 +1244,7 @@ with tla.vec.func(mode="simd"):
 
 #### `update_mask`
 
-**Source:** [`catlass.core_api.update_mask`](../../../catlass/core_api.py#L9918)
+**Source:** [`catlass.core_api.update_mask`](../../../catlass/core_api.py#L9955)
 
 Description:
 
@@ -1800,7 +1800,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_and`
 
-**Source:** [`catlass.core_api.bitwise_and`](../../../catlass/core_api.py#L8899)
+**Source:** [`catlass.core_api.bitwise_and`](../../../catlass/core_api.py#L8936)
 
 Description:
 
@@ -1834,7 +1834,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_or`
 
-**Source:** [`catlass.core_api.bitwise_or`](../../../catlass/core_api.py#L8937)
+**Source:** [`catlass.core_api.bitwise_or`](../../../catlass/core_api.py#L8974)
 
 Description:
 
@@ -1868,7 +1868,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_xor`
 
-**Source:** [`catlass.core_api.bitwise_xor`](../../../catlass/core_api.py#L8975)
+**Source:** [`catlass.core_api.bitwise_xor`](../../../catlass/core_api.py#L9012)
 
 Description:
 
@@ -1906,12 +1906,12 @@ Vector compares that produce masks, and masked select.
 
 #### `where`
 
-**Source:** [`catlass.core_api.where`](../../../catlass/core_api.py#L8477)
+**Source:** [`catlass.core_api.where`](../../../catlass/core_api.py#L8513)
 
 Description:
 
-Select between two vectors under a mask, or between two per-thread scalars
-inside a SIMT region.
+Select between two vectors or predicate masks under a mask, or between
+two per-thread scalars inside a SIMT region.
 
 Prototype:
 
@@ -1922,13 +1922,14 @@ tla.where(mask: Any, x: Any, y: Any) -> Any
 Parameters:
 
 - `mask` (`MaskSSA | Bool`): Select mask; true selects `x`, false selects `y`. A MaskSSA whole-vector, or the Bool from a comparison inside a SIMT region. Required.
-- `x` (`VectorSSA | Numeric`): Value when the mask is true. Required.
-- `y` (`VectorSSA | Numeric`): Value when the mask is false. Required.
+- `x` (`VectorSSA | MaskSSA | Numeric`): Value when the mask is true. Required.
+- `y` (`VectorSSA | MaskSSA | Numeric`): Value when the mask is false. Required.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.vec.func()`; `mask`/`x`/`y` lane layouts must match.
+- Must be called inside `tla.vec.func()`; SIMD arms must belong to the same category.
+- MaskSSA arms and their selector must have exactly the same type.
 - The per-thread form requires `mode="simt"` and emits `tla.simt_where`.
 
 Example:
@@ -1942,7 +1943,7 @@ with tla.vec.func(mode="simd"):
 
 #### `cmp`
 
-**Source:** [`catlass.core_api.cmp`](../../../catlass/core_api.py#L8822)
+**Source:** [`catlass.core_api.cmp`](../../../catlass/core_api.py#L8859)
 
 Description:
 
@@ -2105,7 +2106,7 @@ with tla.vec.func(mode="simd"):
 
 #### `gather`
 
-**Source:** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9088)
+**Source:** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9125)
 
 Description:
 
@@ -2229,7 +2230,7 @@ Compress valid lanes under a mask.
 
 #### `squeeze`
 
-**Source:** [`catlass.core_api.squeeze`](../../../catlass/core_api.py#L8506)
+**Source:** [`catlass.core_api.squeeze`](../../../catlass/core_api.py#L8543)
 
 Description:
 
@@ -2391,7 +2392,7 @@ with tla.vec.func(mode="simd"):
 
 #### `histograms`
 
-**Source:** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8584)
+**Source:** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8621)
 
 Description:
 
@@ -2858,7 +2859,7 @@ Architecture attributes on `tla.arch` (layout tags, pipe identifiers, block help
 
 ### `arch`
 
-**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L9708)
+**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L9745)
 
 Description:
 
@@ -2935,7 +2936,7 @@ On-chip scratch allocation via `allocate`.
 
 ### `allocate`
 
-**Source:** [`catlass.core_api.allocate`](../../../catlass/core_api.py#L9399)
+**Source:** [`catlass.core_api.allocate`](../../../catlass/core_api.py#L9436)
 
 Description:
 

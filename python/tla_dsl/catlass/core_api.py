@@ -8387,39 +8387,75 @@ def _emit_vector_reduce(
 
 def _vector_where(
     mask: MaskSSA,
-    x: VectorSSA,
-    y: VectorSSA,
+    x: VectorSSA | MaskSSA,
+    y: VectorSSA | MaskSSA,
     *,
     loc: mlir_ir.Location | None = None,
-) -> VectorSSA:
+) -> VectorSSA | MaskSSA:
     """Directory: Vector Compute / Compare and Select
 
     Description:
-        Select between two vectors under a mask.
+        Select between two vectors or two predicate masks under a mask.
 
         Parameters:
         - `mask` (`MaskSSA`): Select mask; true selects `x`, false selects `y`. Required.
-        - `x` (`VectorSSA`): Value when the mask is true. Required.
-        - `y` (`VectorSSA`): Value when the mask is false. Required.
+        - `x` (`VectorSSA | MaskSSA`): Value when the mask is true. Required.
+        - `y` (`VectorSSA | MaskSSA`): Value when the mask is false. Required.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
-        - Must be called inside `tla.vec.func()`; `mask`/`x`/`y` lane layouts must match.
+        - Must be called inside `tla.vec.func()`; `x` and `y` must belong to the same category.
+        - For MaskSSA arms, `mask`, `x`, and `y` must have exactly the same type.
+        - For VectorSSA arms, `mask` must match the vectors' lane layout.
 
         Example:
         ```python
         with tla.vec.func(mode="simd"):
             z = tla.where(m, x_reg, y_reg)
+            selected_mask = tla.where(m, x_mask, y_mask)
         ```
     """
-    _require_category("where", "mask", mask, "mask_ssa", 0)
-    _require_category("where", "x", x, "vector_ssa", 1)
-    _require_category("where", "y", y, "vector_ssa", 2)
-    _require_frontend_state("where")
-    _runtime._require_enclosing_region("where", "vec.func")
+    op_name = "where"
+    _require_category(op_name, "mask", mask, "mask_ssa", 0)
+    supported_arms = ("vector_ssa", "mask_ssa")
+    x_category = _category(x)
+    y_category = _category(y)
+    if x_category not in supported_arms:
+        _require_categories(op_name, "x", x, supported_arms, 1)
+    if y_category not in supported_arms:
+        _require_categories(op_name, "y", y, supported_arms, 2)
+    if x_category != y_category:
+        _op_error(
+            op_name,
+            "x and y must both be VectorSSA values or both be MaskSSA values",
+        )
+
+    _require_frontend_state(op_name)
+    _runtime._require_enclosing_region(op_name, "vec.func")
     x_value = _as_value(x)
     y_value = _as_value(y)
     mask_value = _as_value(mask)
+
+    if x_category == "mask_ssa":
+        if y_value.type != x_value.type:
+            _op_error(
+                op_name,
+                f"y has type {y_value.type}, expected {x_value.type}",
+            )
+        if mask_value.type != x_value.type:
+            _op_error(
+                op_name,
+                f"mask has type {mask_value.type}, expected {x_value.type}",
+            )
+        result = _tla_ops_gen.where(
+            x_value.type,
+            mask_value,
+            x_value,
+            y_value,
+            loc=loc,
+        )
+        return MaskSSA(result)
+
     x_desc = _vector_ssa_type_for_mlir_value(x_value)
     y_desc = _vector_ssa_type_for_mlir_value(y_value)
     if x_desc.element_type != y_desc.element_type:
@@ -8478,17 +8514,18 @@ def where(mask: Any, x: Any, y: Any, *, loc: mlir_ir.Location | None = None) -> 
     """Directory: Vector Compute / Compare and Select
 
     Description:
-        Select between two vectors under a mask, or between two per-thread scalars
-        inside a SIMT region.
+        Select between two vectors or predicate masks under a mask, or between
+        two per-thread scalars inside a SIMT region.
 
         Parameters:
         - `mask` (`MaskSSA | Bool`): Select mask; true selects `x`, false selects `y`. A MaskSSA whole-vector, or the Bool from a comparison inside a SIMT region. Required.
-        - `x` (`VectorSSA | Numeric`): Value when the mask is true. Required.
-        - `y` (`VectorSSA | Numeric`): Value when the mask is false. Required.
+        - `x` (`VectorSSA | MaskSSA | Numeric`): Value when the mask is true. Required.
+        - `y` (`VectorSSA | MaskSSA | Numeric`): Value when the mask is false. Required.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
-        - Must be called inside `tla.vec.func()`; `mask`/`x`/`y` lane layouts must match.
+        - Must be called inside `tla.vec.func()`; SIMD arms must belong to the same category.
+        - MaskSSA arms and their selector must have exactly the same type.
         - The per-thread form requires `mode="simt"` and emits `tla.simt_where`.
 
         Example:

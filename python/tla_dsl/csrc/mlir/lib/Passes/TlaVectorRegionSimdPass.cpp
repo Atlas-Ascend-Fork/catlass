@@ -592,6 +592,19 @@ static func::FuncOp getOrCreateHistogramsLibraryCall(
     return callee;
 }
 
+static func::FuncOp getOrCreateMaskSelectLibraryCall(ModuleOp module, Location loc, VectorType pregType)
+{
+    constexpr llvm::StringLiteral calleeName = "tla_mask_select";
+    if (auto existing = module.lookupSymbol<func::FuncOp>(calleeName))
+        return existing;
+    OpBuilder moduleBuilder(module.getBodyRegion());
+    auto fnType = FunctionType::get(module.getContext(), {pregType, pregType, pregType}, {pregType});
+    auto callee = moduleBuilder.create<func::FuncOp>(loc, calleeName, fnType);
+    callee.setPrivate();
+    callee->setAttr("llvm.emit_c_interface", UnitAttr::get(module.getContext()));
+    return callee;
+}
+
 static std::string getStoreWithStrideLibraryCallName(Type elementType)
 {
     if (elementType.isF32()) {
@@ -2821,13 +2834,28 @@ static LogicalResult lowerNestedVectorOp(
         return lowerVectorScalarBinary(op, &*info, b, module, valueMap, fullMasks);
 
     // tla.where: per-lane select. The mask controls which lanes take `x`; the
-    // remaining lanes take `y`. Lowers to ave.hir.vsel(mask, x, y).
+    // remaining lanes take `y`. VectorSSA lowers to ave.hir.vsel(mask, x, y),
+    // while MaskSSA calls the linked psel bitcode helper.
     if (auto whereOp = dyn_cast<::tla::WhereOp>(op)) {
         Value mask = valueMap.lookup(whereOp.getMask());
         Value x = valueMap.lookup(whereOp.getX());
         Value y = valueMap.lookup(whereOp.getY());
         if (!mask || !x || !y)
             return failure();
+
+        // After type conversion all MaskSSA values use vector<256xi1>, so the
+        // original TLA operand type determines whether this is predicate select.
+        if (isa<::tla::MaskSSAType>(whereOp.getX().getType())) {
+            VectorType pregType = fullPregVecType(b.getContext());
+            Value pregMask = castMaskToPregType(b, loc, mask, pregType);
+            Value pregX = castMaskToPregType(b, loc, x, pregType);
+            Value pregY = castMaskToPregType(b, loc, y, pregType);
+            auto callee = getOrCreateMaskSelectLibraryCall(module, loc, pregType);
+            valueMap[whereOp.getResult()] =
+                b.create<func::CallOp>(loc, callee, ValueRange{pregX, pregY, pregMask}).getResult(0);
+            return success();
+        }
+
         // Result width follows the selected vectors' element type.
         auto xTy = dyn_cast<VectorType>(x.getType());
         if (!xTy)
@@ -3493,7 +3521,7 @@ public:
                         "SCF carrier, or prior mask compute op");
                 if (!producedValues.contains(whereOp.getX()) || !producedValues.contains(whereOp.getY()))
                     return rewriter.notifyMatchFailure(
-                        vecFuncOp, "expected tla.where operand from tla.load or prior compute op");
+                        vecFuncOp, "expected tla.where operands from legal vector or mask producers");
             } else if (auto squeezeOp = dyn_cast<::tla::SqueezeOp>(computeOp)) {
                 if (!producedValues.contains(squeezeOp.getSrc()))
                     return rewriter.notifyMatchFailure(

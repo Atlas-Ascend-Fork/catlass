@@ -87,6 +87,7 @@ def vector_op(mem_in: tla.Tensor, mem_out: tla.Tensor) -> None:
 ├── load_mask_dist.py
 ├── load_store_mask.py
 ├── load_us_b8_op.py
+├── mask_select_op.py
 ├── masked_binary.py
 ├── multi_binary.py
 ├── reduction_ops.py
@@ -117,6 +118,7 @@ def vector_op(mem_in: tla.Tensor, mem_out: tla.Tensor) -> None:
 | [**`load_us_b8_op.py`**](load_us_b8_op.py) | 上采样加载示例，将 i8 元素上采样至 VL 寄存器（仅 i8）。 |
 | [**`load_mask_dist.py`**](load_mask_dist.py) | `MaskLoadParams`：`ds`/`us` × `--mask-dtype i8\|i16\|i32` → `tla.where`. |
 | [**`load_store_mask.py`**](load_store_mask.py) | 掩码搬运往返示例，掩码 UB 与伴随向量同 dtype；另含 u8 GM↔UB（含 128..255）。 |
+| [**`mask_select_op.py`**](mask_select_op.py) | MaskSSA 选择示例，使用 `H` 在 `Q` 和 `M4` 两个 predicate 之间逐 bit 选择。 |
 | [**`store_pack.py`**](store_pack.py) | 压缩存储示例，取得低半有效数位做紧凑存储。 |
 | [**`reduction_ops.py`**](reduction_ops.py) | `tla.reduce` 归约示例，支持 `add`/`max`/`min` 三种模式，覆盖对齐与非对齐场景。 |
 | [**`histograms_op.py`**](histograms_op.py) | `tla.histograms` 独立上板样例：FREQUENCY/ACCUMULATE × BIN0/BIN1（`full(0)` 清零 / 跨调用累加 / 全零 CDF）。 |
@@ -376,6 +378,7 @@ first mismatch=None
 
 - 文件位置：
   - `compare_mask.py`：比较掩码与 `tla.where` 选择。
+  - `mask_select_op.py`：MaskSSA 之间的 `tla.where` 选择。
   - `load_store_mask.py`：MaskSSA 的 UB 往返搬运。
   - `load_mask_dist.py`（独立脚本）：`MaskLoadParams` 的 `ds` / `us` 两种模式。
 
@@ -397,16 +400,20 @@ first mismatch=None
     - `--mask-dtype i8|i16|i32`：mask UB 寻址类型（b8/b16/b32；IR 亦接受 b64）；首 64 mask 字节布局跨 dtype 相同
       （`make_tensor_like`/GM↔UB 暂无 i64，故 e2e 未覆盖 b64）
 
+  - **`mask_select_op.py`**（f32, f16, i8）：op `mask_select`，使用 `H` 作 selector，在 `Q` 和 `M4` 两个 MaskSSA 之间选择；结果掩码再驱动数据版 `tla.where` 写回 GM，便于观察 predicate bit 结果。
+
 - 约束说明：
   - 支持的数据类型：
 
     | 文件 | 支持的数据类型 |
     |------|---------------|
     | `compare_mask.py` | f32；u8/u16/u32（仅 `vector_vector_*`） |
+    | `mask_select_op.py` | f32, f16, i8 |
     | `load_store_mask.py` | f32, f16, i8, u8 |
     | `load_mask_dist.py ds/us` | f32 伴随 + mask `i8/i16/i32`（IR 另支持 b64） |
 
   - `compare_mask.py`：f32 全 op；u8/u16/u32 仅 `vector_vector_*`（越过有符号边界）；输入 2、输出 1；支持 batch。
+  - `mask_select_op.py`：shape 必须是完整向量寄存器 lane 数的整数倍；分别覆盖 `mask<64/128/256>`。
   - `load_store_mask.py`：shape 随 dtype 变化（f32→64、f16→128、i8/u8→256），输出仅前 `ELE/2` lane 有效；掩码与伴随向量 dtype 一致。
   - `load_mask_dist.py`：必须显式传 `op` 与 `--run`；默认 `--mask-dtype i8`。
   - **字节偏移对齐**（作用于 UB 字节地址 `base + offset×sizeof(T)`；DSL **不**做静态校验，
@@ -436,6 +443,9 @@ first mismatch=None
   # MaskSSA 的 UB 存储 / 加载往返（含 unsigned u8）
   python examples/end_to_end/vector_ops/load_store_mask.py load_store_mask --dtype f32 --device 0
   python examples/end_to_end/vector_ops/load_store_mask.py load_store_mask --dtype u8 --device 0
+
+  # MaskSSA Select：H ? Q : M4
+  python examples/end_to_end/vector_ops/mask_select_op.py mask_select --dtype f32 --shape 512 --device 0
 
   # MaskLoadDist：统一脚本 load_mask_dist.py <ds|us> --run
   python examples/end_to_end/vector_ops/load_mask_dist.py ds --run --device 0

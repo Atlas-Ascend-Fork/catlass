@@ -16,7 +16,7 @@ require_labels:
   - label: ci-pipeline-passed
     operator: "cann-robot"
   - label: RDV-SUCC
-    operator: "cann-robot,zhouhao176,huangxin361,tianxinghui,zjw666888,triwooder,weixin_42818618,yuantao_,longjihui,sunhao_hw,mdrumond"
+    operator: "cann-robot,zhouhao176,huangxin361,tianxinghui,zjw666888,triwooder,weixin_42818618,yuantao_,longjihui,sunhao_hw,mdrumond,init__zhb__,CheaterAbec"
 
 # block label list
 block_labels:

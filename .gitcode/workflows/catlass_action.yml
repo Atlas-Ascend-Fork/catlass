@@ -85,36 +85,13 @@ stages:
           ut_type: 'dsl'
           task_name: 'UT_DSL'
           image_version: ${{ jobs.JOB_image.outputs.UT_dsl }}
-      JOB_staticcheck_markdown:
-        name: staticcheck_markdown
+      JOB_staticcheck_md_check:
+        name: staticcheck_md_check
         uses: .gitcode/workflows/staticcheck_action.yml
         with:
-          check_type: 'markdown'
+          check_type: 'md_check'
           image_version: ${{ jobs.JOB_image.outputs.staticcheck }}
-      JOB_staticcheck_codespell_check:
-        name: staticcheck_codespell_check
-        uses: .gitcode/workflows/staticcheck_action.yml
-        with:
-          check_type: 'codespell_check'
-          image_version: ${{ jobs.JOB_image.outputs.staticcheck }}
-      JOB_staticcheck_tag_closed_check:
-        name: staticcheck_tag_closed_check
-        uses: .gitcode/workflows/staticcheck_action.yml
-        with:
-          check_type: 'tag_closed_check'
-          image_version: ${{ jobs.JOB_image.outputs.staticcheck }}
-      JOB_staticcheck_resource_existence_check:
-        name: staticcheck_resource_existence_check
-        uses: .gitcode/workflows/staticcheck_action.yml
-        with:
-          check_type: 'resource_existence_check'
-          image_version: ${{ jobs.JOB_image.outputs.staticcheck }}
-      JOB_staticcheck_link_validity_check:
-        name: staticcheck_link_validity_check
-        uses: .gitcode/workflows/staticcheck_action.yml
-        with:
-          check_type: 'link_validity_check'
-          image_version: ${{ jobs.JOB_image.outputs.staticcheck }}
+
     pre:
     - type: auto
     fail-fast: true

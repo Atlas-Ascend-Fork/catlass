@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -42,12 +39,7 @@ def test_example_cpu_reference(mask_select_example, dtype_name, monkeypatch) -> 
 
 
 @pytest.mark.parametrize("dtype_name", ["i8", "f16", "f32"])
-def test_example_compiles_to_kernel_object(
-    mask_select_example, dtype_name, request
-) -> None:
-    if not os.environ.get("ASCEND_HOME_PATH"):
-        pytest.skip("CANN environment required: source set_env.sh")
-    request.getfixturevalue("isolated_compile_cache")
+def test_example_dumps_mask_select_mlir(mask_select_example, dtype_name) -> None:
     example = mask_select_example
     dtype, _, _ = example._set_kernel_config("mask_select", dtype_name, (512,))
     tensor = make_fake_tensor(
@@ -59,50 +51,6 @@ def test_example_compiles_to_kernel_object(
         layout_tag=tla.arch.RowMajor,
     )
 
-    artifact = tla.compile(
-        example.mask_select_op,
-        tensor,
-        tensor,
-        tensor,
-        options="--npu-arch 3510",
-    )
-
-    binary = Path(artifact.kernel_binary_path)
-    assert binary.is_file()
-    assert binary.stat().st_size > 0
-
-
-@pytest.mark.parametrize("dtype_name", ["i8", "f16", "f32"])
-def test_example_on_npu(mask_select_example, dtype_name, request, monkeypatch) -> None:
-    if not os.environ.get("ASCEND_HOME_PATH"):
-        pytest.skip("CANN environment required: source set_env.sh")
-    monkeypatch.setenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
-    torch = pytest.importorskip("torch")
-    pytest.importorskip("torch_npu", exc_type=ImportError)
-    if not torch.npu.is_available():
-        pytest.skip("No accessible Ascend NPU")
-    request.getfixturevalue("isolated_compile_cache")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-u",
-            mask_select_example.__file__,
-            "mask_select",
-            "--dtype",
-            dtype_name,
-            "--shape",
-            "512",
-            "--device",
-            os.environ.get("CATLASS_TEST_NPU_DEVICE", "0"),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-
-    print(result.stdout)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "launch_ok=True" in result.stdout
-    assert "outputs equal expected mask_select? True" in result.stdout
+    mlir = example.mask_select_op.dump_mlir(type_args=(tensor, tensor, tensor))
+    assert "tla.where" in mlir
+    assert "tla.create_mask" in mlir

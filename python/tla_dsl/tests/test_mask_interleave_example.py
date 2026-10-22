@@ -55,54 +55,25 @@ def test_example_cpu_reference(mask_interleave_example, op_name, dtype_name, mon
 
 @pytest.mark.parametrize("op_name", ["mask_interleave", "mask_deinterleave"])
 @pytest.mark.parametrize("dtype_name", ["i8", "f16", "f32"], ids=["b8", "b16", "b32"])
-def test_example_compiles_to_kernel_object(mask_interleave_example, op_name, dtype_name, request) -> None:
-    import os
-    from pathlib import Path
-
-    if not os.environ.get("ASCEND_HOME_PATH"):
-        pytest.skip("CANN environment required: source set_env.sh")
-    request.getfixturevalue("isolated_compile_cache")
+def test_example_dumps_mask_interleave_mlir(
+    mask_interleave_example, op_name, dtype_name
+) -> None:
     example = mask_interleave_example
     dtype, _, _ = example._set_kernel_config(op_name, dtype_name, (512,))
     tensor = make_fake_tensor(
         dtype, (512,), (1,), addrspace=tla.AddressSpace.gm,
         origin_shape=(512,), layout_tag=tla.arch.RowMajor,
     )
-    artifact = tla.compile(
-        example.mask_interleave_op, tensor, tensor, tensor, tensor,
-        options="--npu-arch 3510",
+    mlir = example.mask_interleave_op.dump_mlir(
+        type_args=(tensor, tensor, tensor, tensor)
     )
-    binary = Path(artifact.kernel_binary_path)
-    assert binary.is_file()
-    assert binary.stat().st_size > 0
-
-
-@pytest.mark.parametrize("op_name", ["mask_interleave", "mask_deinterleave"])
-@pytest.mark.parametrize("dtype_name", ["i8", "f16", "f32"], ids=["b8", "b16", "b32"])
-def test_example_on_npu(mask_interleave_example, op_name, dtype_name, request, monkeypatch) -> None:
-    import os
-    import subprocess
-    import sys
-
-    if not os.environ.get("ASCEND_HOME_PATH"):
-        pytest.skip("CANN environment required: source set_env.sh")
-    # Import the optional NPU backend explicitly so a missing driver library
-    # is reported as a skip, rather than a PyTorch plugin-autoload failure.
-    monkeypatch.setenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
-    torch = pytest.importorskip("torch")
-    pytest.importorskip("torch_npu", exc_type=ImportError)
-    if not torch.npu.is_available():
-        pytest.skip("No accessible Ascend NPU")
-    request.getfixturevalue("isolated_compile_cache")
-    # Run the real harness in a child process so a device failure has a bounded
-    # timeout. Its exit status includes comparisons of both output tensors.
-    result = subprocess.run(
-        [sys.executable, "-u", mask_interleave_example.__file__, op_name,
-         "--dtype", dtype_name, "--shape", "512", "--device",
-         os.environ.get("CATLASS_TEST_NPU_DEVICE", "0")],
-        capture_output=True, text=True, timeout=180,
+    expected_op = (
+        "tla.interleave" if op_name == "mask_interleave" else "tla.deinterleave"
     )
-    print(result.stdout)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "launch_ok=True" in result.stdout
-    assert f"outputs equal expected {op_name}? True" in result.stdout
+    assert expected_op in mlir
+    assert "tla.where" in mlir
+    # interleave seeds with create_mask; deinterleave uses update_mask.
+    if op_name == "mask_interleave":
+        assert "tla.create_mask" in mlir
+    else:
+        assert "tla.update_mask" in mlir

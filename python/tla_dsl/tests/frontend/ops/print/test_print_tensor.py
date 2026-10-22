@@ -16,7 +16,6 @@ def _host_tensor(
     dtype: type[tla.Numeric] = tla.Float32,
     layout: object = tla.arch.RowMajor,
     stride: tuple[int, ...] | None = None,
-    alignment: int | None = None,
 ) -> tla.Tensor:
     if stride is None:
         if layout == tla.arch.ColumnMajor:
@@ -31,16 +30,13 @@ def _host_tensor(
                 compact.append(leading)
                 leading *= int(dim)
             stride = tuple(reversed(compact))
-    tensor = make_fake_tensor(
+    return make_fake_tensor(
         dtype,
         shape,
         stride,
         origin_shape=shape,
         layout_tag=layout,
     )
-    if alignment is not None:
-        tensor._assumed_align = alignment
-    return tensor
 
 
 def _host_packed_tensor(layout: object) -> tla.Tensor:
@@ -145,12 +141,6 @@ def _l1_print_kernel(
                 tla.print(local, length)
 
     return kernel
-
-
-@tla.kernel
-def _aiv_print_ub_tensor(value: tla.Tensor) -> None:
-    with tla.vector():
-        tla.print(value, 4)
 
 
 @tla.kernel
@@ -311,30 +301,6 @@ def test_print_tensor_requires_explicit_length_for_dynamic_shape() -> None:
         _aiv_print_tensor.dump_mlir(type_args=(tensor,))
 
 
-def test_print_tensor_accepts_aligned_aiv_ub_tensor() -> None:
-    pytest.skip(
-        "UB Host type samples removed with make_fake_tensor; Host is from_dlpack/GM only"
-    )
-
-
-def test_print_tensor_accepts_aligned_aiv_ub_offset() -> None:
-    pytest.skip(
-        "UB Host type samples removed with make_fake_tensor; Host is from_dlpack/GM only"
-    )
-
-
-def test_print_tensor_defers_ub_base_alignment_to_runtime() -> None:
-    pytest.skip(
-        "UB Host type samples removed with make_fake_tensor; Host is from_dlpack/GM only"
-    )
-
-
-def test_print_tensor_defers_ub_offset_alignment_to_runtime() -> None:
-    pytest.skip(
-        "UB Host type samples removed with make_fake_tensor; Host is from_dlpack/GM only"
-    )
-
-
 @pytest.mark.parametrize(
     "layout",
     (
@@ -402,12 +368,6 @@ def test_print_tensor_rejects_deferred_dtype_exact(
 def test_print_tensor_rejects_host_call() -> None:
     with pytest.raises(tla.TlaCoreAPIError, match="lowered Tla IR"):
         tla.print(_host_tensor())
-
-
-def test_print_tensor_accepts_dynamic_aiv_ub_shape_at_aligned_base() -> None:
-    pytest.skip(
-        "UB Host type samples removed with make_fake_tensor; Host is from_dlpack/GM only"
-    )
 
 
 def test_print_tensor_accepts_dynamic_internal_ub_shape() -> None:

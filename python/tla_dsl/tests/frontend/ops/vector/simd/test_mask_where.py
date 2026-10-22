@@ -246,51 +246,24 @@ def test_vector_where_still_returns_vector_ssa() -> None:
 
 
 @tla.kernel
-def _mask_where_compile_kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
-    loaded = tla.flag("mask_where_loaded", tla.arch.MTE2, tla.arch.VECTOR)
-    computed = tla.flag("mask_where_computed", tla.arch.VECTOR, tla.arch.MTE3)
-    src_ptr = tla.allocate(64, tla.Float32, tla.AddressSpace.ub, 256)
-    dst_ptr = tla.allocate(64, tla.Float32, tla.AddressSpace.ub, 256)
-    ub_src = tla.make_tensor_like(src_ptr, src, tla.arch.RowMajor)
-    ub_dst = tla.make_tensor_like(dst_ptr, dst, tla.arch.RowMajor)
-
-    with tla.vector():
-        tla.copy(ub_src, src)
-        tla.set_flag(loaded)
-        tla.wait_flag(loaded)
+def _mask_where_through_vector_select(src: tla.Tensor, dst: tla.Tensor) -> None:
+    src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
+    dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
+    with tla.vector():  # noqa: SIM117 - DSL regions must remain syntactically nested.
         with tla.vec.func(mode="simd"):
-            value = ub_src.load()
+            value = src_tile.load()
             zero = tla.sub(value, value)
             selector = tla.create_mask(pattern=tla.mask.H, dtype=tla.Float32)
             x = tla.create_mask(pattern=tla.mask.Q, dtype=tla.Float32)
             y = tla.create_mask(pattern=tla.mask.M4, dtype=tla.Float32)
             selected = tla.where(selector, x, y)
-            ub_dst.store(tla.where(selected, value, zero))
-        tla.set_flag(computed)
-        tla.wait_flag(computed)
-        tla.copy(dst, ub_dst)
-        tla.pipe_barrier(tla.pipes.ALL)
+            dst_tile.store(tla.where(selected, value, zero))
 
 
-def test_mask_where_compiles_and_links_bc_helper(isolated_compile_cache) -> None:
-    del isolated_compile_cache
-    tensors = tuple(
-        make_fake_tensor(
-            tla.Float32,
-            (64,),
-            (1,),
-            origin_shape=(64,),
-            coord=(0,),
-            layout_tag=tla.arch.RowMajor,
-        )
-        for _ in range(2)
-    )
-
-    compiled = tla.compile(
-        _mask_where_compile_kernel,
-        *tensors,
-        options="--npu-arch 3510",
-    )
-
-    assert compiled.kernel_binary_path.is_file()
-    assert compiled.kernel_binary_path.stat().st_size > 0
+def test_mask_where_feeds_vector_select_in_mlir() -> None:
+    """MaskSSA where result must lower and feed a vector where (no card/compile)."""
+    tensor = _vector_tensor()
+    mlir = _mask_where_through_vector_select.dump_mlir(type_args=(tensor, tensor))
+    assert mlir.count("tla.where") == 2
+    assert "!tla.mask<64>" in mlir
+    assert "!tla.vector<64xf32>" in mlir

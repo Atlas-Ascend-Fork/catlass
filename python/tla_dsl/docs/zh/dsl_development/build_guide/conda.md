@@ -51,4 +51,4 @@ export CATLASS_DSL_PREBUILT_ASCENDNPU_IR="/path/to/catlass/python/tla_dsl/3rdpar
 
 ## 安装 torch/torch_npu
 
-运行 NPU 示例时，按照 [PyTorch Ascend 安装部署](https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download)安装与 CANN 和驱动匹配的 `torch`、`torch-npu`。
+由于 PyTorch 官方已不再通过 conda 官方渠道发布软件包，建议改用 pip 手动安装。可参考 [PyTorch Ascend 安装部署](https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download)，选择并安装所需的、与当前 CANN 版本兼容的 TorchNPU 版本。

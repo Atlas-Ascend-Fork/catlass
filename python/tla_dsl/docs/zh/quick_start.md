@@ -2,13 +2,13 @@
 nav_order: 10
 ---
 
-# 快速开始
+# CATLASS Python 快速开始
 
 ## 兼容性要求
 
 - 支持产品：Ascend 950PR&950DT系列产品
 - 操作系统：CANN 支持的 Linux（`aarch64` / `x86_64`）
-- CANN 版本：`>= 9.1.0`
+- CANN 版本：`>= 9.2.0`
 - Python：`>=3.10, <3.14`
 
 ## 安装
@@ -31,7 +31,7 @@ python -c "import catlass"
 python -m catlass.bc_compile
 ```
 
-更换 DSL 包或 CANN 环境后需重新编译，可按需清理缓存或忽略缓存重新编译：
+更换 wheel 包版本或 CANN 环境后需重新编译，可按需清理缓存或忽略缓存重新编译：
 
 ```bash
 python -m catlass.bc_compile --clean
@@ -39,12 +39,14 @@ python -m catlass.bc_compile --clean
 python -m catlass.bc_compile --force
 ```
 
+多数情况下，CATLASS Python 算子会结合 PyTorch 和 TorchNPU 使用，因此建议同时安装。可参考[PyTorch Ascend 安装部署](https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download)，选择并安装所需的、与当前 CANN 版本兼容的 TorchNPU 版本。
+
 ## 编写一个最简单的 matmul 算子
 
 下列代码实现了一个最简单的 matmul 算子，仅使用一个 cube 核、一次 tile 循环，用于快速体验 CATLASS Python。
 
 ```python
-# catlass_dsl_matmul.py
+# catlass_python_matmul.py
 from catlass import tla
 from catlass.tla.runtime import from_dlpack
 import torch
@@ -126,7 +128,7 @@ main()
 执行：
 
 ```bash
-python catlass_dsl_matmul.py
+python catlass_python_matmul.py
 Passed.
 ```
 

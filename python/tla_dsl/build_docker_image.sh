@@ -9,7 +9,7 @@ usage() {
 Usage: build_docker_image.sh <base_image> [options]
 
 Arguments:
-  <base_image>       Base Docker image, e.g. cann:9.1.0-950-ubuntu22.04-py3.12
+  <base_image>       Base Docker image, e.g. cann:9.2.0-950-ubuntu22.04-py3.12
                      The output image will be named ascend-catlass-dsl:<tag>
                      (where <tag> is the part after ':' in the base image)
 
@@ -54,12 +54,12 @@ shift
 # Extract tag from base image (part after ':')
 IMAGE_TAG_SUFFIX="${BASE_IMAGE#*:}"
 if [[ "$IMAGE_TAG_SUFFIX" == "$BASE_IMAGE" ]]; then
-  echo "Error: base image must include a tag (e.g. cann:9.1.0-950-ubuntu22.04-py3.12)" >&2
+  echo "Error: base image must include a tag (e.g. cann:9.2.0-950-ubuntu22.04-py3.12)" >&2
   exit 1
 fi
 OUTPUT_IMAGE="ascend-catlass-dsl:${IMAGE_TAG_SUFFIX}"
 
-# Extract Python version from tag suffix, e.g. "9.1.0-950-ubuntu22.04-py3.12" -> "py3.12" -> "cp312"
+# Extract Python version from tag suffix, e.g. "9.2.0-950-ubuntu22.04-py3.12" -> "py3.12" -> "cp312"
 PYTHON_TAG="${IMAGE_TAG_SUFFIX##*-}"
 PYTHON_TAG_CP="cp${PYTHON_TAG#py}"
 PYTHON_TAG_CP="${PYTHON_TAG_CP/./}"

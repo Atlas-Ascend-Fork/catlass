@@ -4,7 +4,22 @@
 
 ## 安装CANN
 
-请参考《[CANN快速安装](https://www.hiascend.com/cann/download)》，选择`稳定版本`（仅支持CANN 8.5.0及后续版本），并根据产品系列、CPU架构、操作系统等下载对应包，最后参考页面提供的命令完成安装。
+请参考[CANN快速安装](https://www.hiascend.com/cann/download)，选择`稳定版本`（仅支持CANN 8.5.0及后续版本），并根据产品系列、CPU架构、操作系统等下载对应包，最后参考页面提供的命令完成安装。
+
+## 安装Python相关依赖
+
+部分复杂样例需要使用Python生成、处理输入输出数据，因此需要安装Python及其相关依赖。请根据当前系统环境安装可用的Python版本，并确保已安装pip等包管理器，下文以pip为例。
+
+### 安装PyTorch和TorchNPU
+
+部分复杂样例的执行依赖于PyTorch和TorchNPU，可参考[PyTorch Ascend安装部署](https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download)，选择并安装所需的、与当前CANN版本兼容的TorchNPU版本。
+
+以下给出安装`torch==2.9.0+cpu`和`torch-npu==2.9.0.post8`的示例命令：
+
+```bash
+pip install torch==2.9.0+cpu --index-url https://download.pytorch.org/whl/cpu
+pip install torch-npu==2.9.0.post8 --extra-index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/
+```
 
 ## 安装其他基础依赖
 
@@ -32,6 +47,21 @@
     ```
 
     其中`${arch}`可通过`uname -m`查询当前架构，如aarch64、x86_64。
+
+- **检查PyTorch和TorchNPU**
+
+    ```bash
+    python3 -c "import torch;import torch_npu; a = torch.randn(3, 4).npu(); print(a + a);"
+    ```
+
+    输出如下类似信息说明安装成功。
+
+    ```text
+    tensor([[-0.6066,  6.3385,  0.0379,  3.3356],
+            [ 2.9243,  3.3134, -1.5465,  0.1916],
+            [-2.1807,  0.2008, -1.1431,  2.1523]], device='npu:0')
+    ```
+
 - **检查其他基础依赖**
 
     ```bash
@@ -59,6 +89,12 @@ source /usr/local/Ascend/cann/set_env.sh
 git clone https://gitcode.com/cann/catlass.git
 ```
 
+进入仓库根目录，安装常用Python软件包：
+
+```bash
+pip install -r requirements.txt
+```
+
 ## 编译执行
 
 > 模板库提供了一套可复用的模板、基础组件，用于矩阵乘法算子开发，算子样例可见[样例目录](../../../examples)。
@@ -78,8 +114,8 @@ bash scripts/build.sh [options] <target>
   - `--clean`：清理此前编译及输出目录（默认路径分别为`/build`，`/output`）。
   - `--debug`：以Debug模式进行编译。
   - `--msdebug`：启用[msDebug](https://www.hiascend.com/document/redirect/CannCommunityToolMsdebug)工具，详见[在CATLASS样例工程使用msDebug](./evaluation/msdebug.md)。
-  - `--simulator`：启用仿真器模式，该选项启用后将不在实际NPU上执行，详见[CATLASS样例仿真](./evaluation/performance_tools.md#msprof-op-simulator使用示例--msprof-op-simulator-example-)。
-  - `--enable_profiling`：启用Profiling工具，详见[CATLASS样例性能调优](./evaluation/performance_tools.md#profiling简介--profiling-introduction-)。
+  - `--simulator`：启用仿真器模式，该选项启用后将不在实际NPU上执行，详见[CATLASS样例仿真](./evaluation/performance_tools.md#msprof-op-simulator-example)。
+  - `--enable_profiling`：启用Profiling工具，详见[CATLASS样例性能调优](./evaluation/performance_tools.md#profiling-introduction)。
   - `--enable_print`：启用编译器的打印功能，详见[基于`cce::printf`进行设备侧打印](./evaluation/print.md)。
   - `--enable_ascendc_dump`：启用`AscendC`相关算子调测API，详见[CATLASS样例使用AscendC算子调测API](./evaluation/ascendc_dump.md)。
   - `-DCATLASS_ARCH`：指明NPU架构，当前支持`2201`（Atlas A2/A3系列产品）和`3510`（Ascend 950PR&950DT系列产品），不指明则默认为`2201`。

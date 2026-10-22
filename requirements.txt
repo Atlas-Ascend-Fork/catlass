@@ -15,5 +15,3 @@ pyyaml
 requests
 scipy
 sympy
-torch
-torch_npu

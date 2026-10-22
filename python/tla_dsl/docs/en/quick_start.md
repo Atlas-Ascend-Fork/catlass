@@ -2,52 +2,51 @@
 nav_order: 10
 ---
 
-# Quick Start
-
-> **This version does not currently provide a prebuilt binary product package.**
->
-> Please first read the [Developer Guide](dsl_development/index.md) to complete environment setup and source code building, use Release mode to build the `ascend-catlass-dsl` wheel, and then return to this document for installation and testing.
+# CATLASS Python Quick Start
 
 ## Compatibility Requirements
 
 - Supported products: Ascend 950PR&950DT series products
 - Operating system: Linux supported by CANN (`aarch64` / `x86_64`)
-- CANN version: `>= 9.1.0`
+- CANN version: `>= 9.2.0`
 - Python: `>=3.10, <3.14`
 
 ## Installation
 
+Official wheel packages are published to PyPI and can be installed directly with pip:
+
 ```bash
-pip install dist/ascend-catlass-dsl-*.whl
+pip install ascend-catlass-dsl
 # Check whether the installation succeeded
 python -c "import catlass"
 ```
 
-> If you are currently in the `/path/to/catlass/python/tla_dsl` directory, the import may fail, because Python imports from the current directory first by default, that is, it imports the `catlass` module in the source tree first rather than the previously installed wheel. The `catlass` in the source tree is only the source code of the Python part and lacks the corresponding DSL binary extension, so it is recommended to create a new folder in any working directory and run the examples there.
+> When you run `import catlass` in the `/path/to/catlass/python/tla_dsl` directory, Python imports from the current directory first by default, so it imports the `catlass` module in the source tree rather than the wheel installed in the previous step. The `catlass` in the source tree contains only the Python source code and lacks the corresponding DSL binary extension, so switch to another working directory to run the examples.
 
-After installation, precompile the data-movement and other BC templates (about 20 seconds the first time; the result is cached automatically):
+To try the latest features, you can also follow the [Developer Guide](dsl_development/index.md) to set up the environment and build the source code to compile the wheel yourself.
+
+After installation, precompile the data-movement and other BC templates (about 20 seconds the first time; the result is cached automatically). Use the `CATLASS_DSL_CACHE_DIR` environment variable to set the cache directory; the default is `$HOME/.cache/catlass/bc/`.
 
 ```bash
 python -m catlass.bc_compile
 ```
 
-Subsequent runs reuse the cache automatically. Use the `CATLASS_DSL_CACHE_DIR` environment variable to set the cache directory; the default is `$HOME/.cache/catlass/bc/`. Recompile after changing the DSL package or the CANN environment; clear the cache with:
+Recompile after changing the wheel package version or the CANN environment; clear the cache or ignore the cache to recompile as needed:
 
 ```bash
 python -m catlass.bc_compile --clean
-```
-
-```bash
 # Force: ignore the cache and recompile
 python -m catlass.bc_compile --force
 ```
+
+In most cases, CATLASS Python operators are used together with PyTorch and TorchNPU, so installing them as well is recommended. See [PyTorch Ascend Installation and Deployment](https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download), and select and install the TorchNPU version that matches your CANN version.
 
 ## Writing the Simplest matmul Operator
 
 The following code implements the simplest matmul operator, using only one cube core and one tile loop, for a quick hands-on experience with CATLASS Python.
 
 ```python
-# catlass_dsl_matmul.py
+# catlass_python_matmul.py
 from catlass import tla
 from catlass.tla.runtime import from_dlpack
 import torch
@@ -129,7 +128,7 @@ main()
 Run:
 
 ```bash
-python catlass_dsl_matmul.py
+python catlass_python_matmul.py
 Passed.
 ```
 

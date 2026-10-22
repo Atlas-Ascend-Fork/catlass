@@ -23,7 +23,7 @@ CATLASS Python supports only Ascend 950PR&950DT series products.
 
 | Component | Version or requirement |
 | --- | --- |
-| CANN | `>=9.1.0` |
+| CANN | `>=9.2.0` |
 | Python | `>=3.10,<3.14` |
 | CMake | `>=3.28,<4.0` |
 | Ninja | `>=1.12` |

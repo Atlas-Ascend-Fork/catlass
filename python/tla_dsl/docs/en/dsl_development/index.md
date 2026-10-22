@@ -6,8 +6,6 @@ nav_order: 30
 
 This directory is for developers who need to configure a build environment from source, build CATLASS Python themselves, and work on it in depth.
 
-> This version does not currently provide a complete product package (install-and-run). The installation and build steps below are the from-source developer workflow.
-
 ## Environment Setup
 
 | Document | Scope |

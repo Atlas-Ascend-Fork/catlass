@@ -107,7 +107,7 @@ CATLASS depends on the following software and hardware environments:
 - Software dependencies:
   - `gcc` >= 7.5, < 13.0
   - `cmake` >= 3.16
-  - `python` >= 3.8, < 3.12
+  - `python` >= 3.10, < 3.14
   (The [unittest](tests/unittest/catlass/gemm/tile/README.md) requires `gcc` <= 12.0 to compile.)
 
 The hardware platforms supported by different CATLASS releases and the required minimum [CANN](https://www.hiascend.com/en/cann/download) versions are shown in the following table:

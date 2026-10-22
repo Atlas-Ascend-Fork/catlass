@@ -6,6 +6,21 @@ Before learning about template library development, complete the basic environme
 
 See [CANN Quick Installation](https://www.hiascend.com/cann/download), select the stable version (only CANN 8.5.0 and later are supported), download the corresponding package based on your product series, CPU architecture, and OS, and complete the installation by following the commands provided on the page.
 
+## Installing Python Dependencies
+
+Some complex samples use Python to generate and process input and output data, so Python and its dependencies must be installed. Install a Python version available for your operating system, and ensure that pip or another package manager is installed. The following uses pip as an example.
+
+### Installing PyTorch and TorchNPU
+
+Some complex samples use PyTorch and TorchNPU. See [PyTorch Ascend Installation and Deployment](https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download), and select and install the TorchNPU version that matches your CANN version.
+
+The following example installs `torch==2.9.0+cpu` and `torch-npu==2.9.0.post8`:
+
+```bash
+pip install torch==2.9.0+cpu --index-url https://download.pytorch.org/whl/cpu
+pip install torch-npu==2.9.0.post8 --extra-index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/
+```
+
 ## Installing Other Basic Dependencies
 
 Install the basic dependencies one by one by referring to [Required Software and Hardware](../../../README_en.md#-software-and-hardware-requirements) according to your actual OS environment.
@@ -32,6 +47,21 @@ After installing the CANN package, verify that the environment and driver work p
     ```
 
     `${arch}` can be queried using `uname -m`, for example, aarch64 or x86_64.
+
+- **Check PyTorch and TorchNPU**
+
+    ```bash
+    python3 -c "import torch;import torch_npu; a = torch.randn(3, 4).npu(); print(a + a);"
+    ```
+
+    Output similar to the following indicates a successful installation.
+
+    ```text
+    tensor([[-0.6066,  6.3385,  0.0379,  3.3356],
+            [ 2.9243,  3.3134, -1.5465,  0.1916],
+            [-2.1807,  0.2008, -1.1431,  2.1523]], device='npu:0')
+    ```
+
 - **Check other basic dependencies**
 
     ```bash
@@ -57,6 +87,12 @@ Download the CATLASS code repository to the local PC.
 ```bash
 # Download the project source code, using the master branch as an example.
 git clone https://gitcode.com/cann/catlass.git
+```
+
+Go to the repository root and install the common Python packages:
+
+```bash
+pip install -r requirements.txt
 ```
 
 ## Build and Execution

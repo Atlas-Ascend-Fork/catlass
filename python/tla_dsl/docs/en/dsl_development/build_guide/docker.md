@@ -12,8 +12,8 @@ The development environment built with Docker includes all dependencies required
 # Replace /path/to/catlass with the actual path of the CATLASS repository you cloned
 cd /path/to/catlass/python/tla_dsl
 # In mainland China, append --default-mirror to speed things up with a mirror (drop it if the mirror is unreachable):
-#   bash build_docker_image.sh swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:9.1.0-950-ubuntu22.04-py3.12 --default-mirror
-bash build_docker_image.sh swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:9.1.0-950-ubuntu22.04-py3.12
+#   bash build_docker_image.sh swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:9.2.0-950-ubuntu22.04-py3.12 --default-mirror
+bash build_docker_image.sh swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:9.2.0-950-ubuntu22.04-py3.12
 ```
 
 The base image name is only an example. Choose a CANN image matching your device, driver, and Python version from [AscendHub](https://www.hiascend.com/developer/ascendhub/detail/17da20d1c2b6493cb38765adeba85884), and pass the full name as the first argument. The output image is `ascend-catlass-dsl:<base image tag>`.
@@ -21,7 +21,7 @@ The base image name is only an example. Choose a CANN image matching your device
 If you are in mainland China, appending `--default-mirror` to use a mirror is recommended. Read the script contents to learn more about the image configuration.
 
 ```bash
-bash build_docker_image.sh swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:9.1.0-950-ubuntu22.04-py3.12 --default-mirror
+bash build_docker_image.sh swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:9.2.0-950-ubuntu22.04-py3.12 --default-mirror
 ```
 
 Building AscendNPU-IR is time-consuming and resource-intensive. When memory or disk I/O is limited, reduce the concurrency with `--build-jobs`.
@@ -42,10 +42,10 @@ docker run                          \
     -v /etc/ascend_install.info:/etc/ascend_install.info                            \
     -v /path/to/catlass:/workspace/catlass                                          \
     -w /workspace/catlass/python/tla_dsl                                            \
-    -it ascend-catlass-dsl:9.1.0-950-ubuntu22.04-py3.12 bash
+    -it ascend-catlass-dsl:9.2.0-950-ubuntu22.04-py3.12 bash
 ```
 
-If you are using a supernode device based on the Ascend950 series chips, such as [Atlas 950 SuperPoD liquid-cooled supernode](https://www.hiascend.com/hardware/cluster?tag=950) or [Atlas 850E air-cooled supernode](https://www.hiascend.com/hardware/cluster?tag=850e), you may need to mount additional devices related to the Lingqu bus:
+If you are using a supernode device based on the Ascend 950DT chips, such as [Atlas 950 SuperPoD liquid-cooled supernode](https://www.hiascend.com/hardware/cluster?tag=950) or [Atlas 850E air-cooled supernode](https://www.hiascend.com/hardware/cluster?tag=850e), you may need to mount additional devices related to the Lingqu bus:
 
 ```diff
 docker run                          \
@@ -64,7 +64,7 @@ docker run                          \
     -v /etc/ascend_install.info:/etc/ascend_install.info                            \
     -v /path/to/catlass:/workspace/catlass                                          \
     -w /workspace/catlass/python/tla_dsl                                            \
-    -it ascend-catlass-dsl:9.1.0-950-ubuntu22.04-py3.12 bash
+    -it ascend-catlass-dsl:9.2.0-950-ubuntu22.04-py3.12 bash
 ```
 
 Driver paths are based on the actual installation paths on the host; inside the container you can check the devices with `npu-smi info`.

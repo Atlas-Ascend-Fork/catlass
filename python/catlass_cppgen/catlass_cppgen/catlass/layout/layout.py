@@ -22,7 +22,9 @@ class Layout(ABC):
 
     def __init__(self, shape: Iterable[int], stride: Iterable[int] = None):
         self.shape = tuple(shape)
-        self.stride = tuple(stride) if stride else tuple(1 for _ in range(len(shape)))
+        self.stride = (
+            tuple(stride) if stride else tuple(1 for _ in range(len(self.shape)))
+        )
 
     @property
     def capacity(self) -> int:

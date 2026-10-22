@@ -91,6 +91,7 @@ def vector_op(mem_in: tla.Tensor, mem_out: tla.Tensor) -> None:
 ├── mask_select_op.py
 ├── masked_binary.py
 ├── multi_binary.py
+├── pack_op.py
 ├── reduction_ops.py
 ├── register_control_flow.py
 ├── histograms_op.py
@@ -119,6 +120,7 @@ def vector_op(mem_in: tla.Tensor, mem_out: tla.Tensor) -> None:
 | [**`load_us_b8_op.py`**](load_us_b8_op.py) | 上采样加载示例，将 i8 元素上采样至 VL 寄存器（仅 i8）。 |
 | [**`load_mask_dist.py`**](load_mask_dist.py) | `MaskLoadParams`：`ds`/`us` × `--mask-dtype i8\|i16\|i32` → `tla.where`. |
 | [**`load_store_mask.py`**](load_store_mask.py) | 掩码搬运往返示例，掩码 UB 与伴随向量同 dtype；另含 u8 GM↔UB（含 128..255）。 |
+| [**`pack_op.py`**](pack_op.py) | `tla.pack` 示例，覆盖 MaskSSA 宽度扩展，并验证低半/高半结果。 |
 | [**`mask_select_op.py`**](mask_select_op.py) | MaskSSA 选择示例，使用 `H` 在 `Q` 和 `M4` 两个 predicate 之间逐 bit 选择。 |
 | [**`load_store_update.py`**](load_store_update.py) | 对齐 `PostMode.UPDATE`：`tile.load` / `tile.store`（`add`，可选 `--dynamic-extent`）。 |
 | [**`store_pack.py`**](store_pack.py) | 压缩存储示例，取得低半有效数位做紧凑存储。 |
@@ -537,6 +539,7 @@ first mismatch=None
 
 - 文件位置：
   - `interleave_op.py`：交织/解交织。
+  - `pack_op.py`：谓词压缩放置到目标寄存器低/高半区。
 
 - 功能说明：**`interleave_op.py`**（i8, i16, i32, f16, f32, bf16）：
 
@@ -545,12 +548,22 @@ first mismatch=None
   | `interleave` | 两路输入交错为两路输出：`dst0` 的偶、奇位分别取自 `src0`、`src1` 的前半段，`dst1` 的偶、奇位分别取自两者的后半段 |
   | `deinterleave` | 两路输入解交错为两路输出：`dst0` 收集两路输入的偶数位（前半段取自 `src0`、后半段取自 `src1`），`dst1` 收集奇数位 |
 
+- 功能说明：**`pack_op.py`**：
+
+  | part | 语义 |
+  |------|------|
+  | `low` | MaskSSA predicate 写入目标寄存器低半 |
+  | `high` | MaskSSA predicate 写入目标寄存器高半 |
+
+  支持 mask<64>→mask<128>、mask<128>→mask<256>。未选中的半区由 `ppack.z` 指令置零；`LOW/HIGH` 表示目标寄存器半区。
+
 - 约束说明：
   - 支持的数据类型：
 
     | 文件 | 支持的数据类型 |
     |------|---------------|
     | `interleave_op.py` | i8, i16, i32, f16, f32, bf16 |
+    | `pack_op.py` | mask: mask<64>, mask<128> |
 
 - 执行示例：
 
@@ -563,6 +576,9 @@ first mismatch=None
 
   # deinterleave 模式 （interleave 的逆操作）
   python examples/end_to_end/vector_ops/interleave_op.py deinterleave --dtype f32 --device 0
+
+  # mask pack 到目标寄存器高半（mask<128> -> mask<256>）
+  python examples/end_to_end/vector_ops/pack_op.py --mask-width 128 --part high --device 0
   ```
 
 ### 数据搬运

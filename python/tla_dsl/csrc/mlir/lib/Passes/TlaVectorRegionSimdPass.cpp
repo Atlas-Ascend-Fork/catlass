@@ -545,8 +545,8 @@ static bool isVectorComputeOp(Operation* op)
            isa_and_nonnull<::tla::WhereOp>(op) || isa_and_nonnull<::tla::SqueezeOp>(op) ||
            isa_and_nonnull<::tla::HistogramsOp>(op) || isa_and_nonnull<::tla::ReduceOp>(op) ||
            isa_and_nonnull<::tla::GatherOp>(op) || isa_and_nonnull<::tla::CastOp>(op) ||
-           isa_and_nonnull<::tla::BitCastOp>(op) || isa_and_nonnull<::tla::InterleaveOp>(op) ||
-           isa_and_nonnull<::tla::DeInterleaveOp>(op);
+           isa_and_nonnull<::tla::BitCastOp>(op) || isa_and_nonnull<::tla::PackOp>(op) ||
+           isa_and_nonnull<::tla::InterleaveOp>(op) || isa_and_nonnull<::tla::DeInterleaveOp>(op);
 }
 
 static void annotateAivLibraryCall(func::FuncOp callee)
@@ -2483,6 +2483,23 @@ static LogicalResult lowerReduce(
     return success();
 }
 
+static LogicalResult lowerPack(::tla::PackOp packOp, OpBuilder& b, DenseMap<Value, Value>& valueMap)
+{
+    Location loc = packOp.getLoc();
+    Value src = valueMap.lookup(packOp.getSrc());
+    if (!src)
+        return failure();
+
+    int64_t partValue = packOp.getPart() == ::RegPart::high ? 1 : 0;
+    Value part = b.create<arith::ConstantIntOp>(loc, partValue, 32);
+
+    VectorType pregType = fullPregVecType(b.getContext());
+    Value pregSrc = castMaskToPregType(b, loc, src, pregType);
+    auto packed = b.create<hivm_regbaseintrins::PpackInstrOp>(loc, pregType, pregSrc, part);
+    valueMap[packOp.getResult()] = packed->getResult(0);
+    return success();
+}
+
 static LogicalResult lowerInterleave(
     ::tla::InterleaveOp interleaveOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
     AutoFullPredicateCache& fullMasks)
@@ -3254,6 +3271,9 @@ static LogicalResult lowerNestedVectorOp(
     if (auto reduceOp = dyn_cast<::tla::ReduceOp>(op))
         return lowerReduce(reduceOp, b, module, valueMap, fullMasks);
 
+    if (auto packOp = dyn_cast<::tla::PackOp>(op))
+        return lowerPack(packOp, b, valueMap);
+
     if (auto interleaveOp = dyn_cast<::tla::InterleaveOp>(op))
         return lowerInterleave(interleaveOp, b, module, valueMap, fullMasks);
 
@@ -4019,6 +4039,10 @@ public:
                 if (!producedValues.contains(operand))
                     return rewriter.notifyMatchFailure(
                         vecFuncOp, "expected tla.reduce operand from tla.load or prior compute op");
+            } else if (auto packOp = dyn_cast<::tla::PackOp>(computeOp)) {
+                if (!producedValues.contains(packOp.getSrc()))
+                    return rewriter.notifyMatchFailure(
+                        vecFuncOp, "expected tla.pack src from a legal register producer");
             } else if (auto interleaveOp = dyn_cast<::tla::InterleaveOp>(computeOp)) {
                 if (!producedValues.contains(interleaveOp.getSrc0()) ||
                     !producedValues.contains(interleaveOp.getSrc1()))

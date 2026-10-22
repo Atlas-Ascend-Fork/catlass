@@ -1,0 +1,38 @@
+// RUN: sed -n '/^\/\/ BEGIN_OUTSIDE$/,/^\/\/ END_OUTSIDE$/p' %s | sed '1d;$d;s|^// ||' > %t.outside.mlir && not %tla_compile %t.outside.mlir -o %t 2>&1 | %filecheck %s --check-prefix=OUTSIDE
+// RUN: sed -n '/^\/\/ BEGIN_MASK32$/,/^\/\/ END_MASK32$/p' %s | sed '1d;$d;s|^// ||' > %t.mask32.mlir && not %tla_compile %t.mask32.mlir -o %t 2>&1 | %filecheck %s --check-prefix=MASK32
+// RUN: sed -n '/^\/\/ BEGIN_MASK_RESULT$/,/^\/\/ END_MASK_RESULT$/p' %s | sed '1d;$d;s|^// ||' > %t.mask-result.mlir && not %tla_compile %t.mask-result.mlir -o %t 2>&1 | %filecheck %s --check-prefix=MASK-RESULT
+
+// OUTSIDE: 'tla.pack' op must be nested inside a tla.vec.func region
+// MASK32: 'tla.pack' op unsupported mask source width 32; expected 64 or 128 lanes
+// MASK-RESULT: 'tla.pack' op mask result must have twice the source lane count
+
+// BEGIN_OUTSIDE
+// module {
+//   tla.func @invalid(%src: !tla.mask<64>) {
+//     %result = tla.pack %src, <low> : !tla.mask<64> -> !tla.mask<128>
+//     tla.return
+//   }
+// }
+// END_OUTSIDE
+
+// BEGIN_MASK32
+// module {
+//   func.func @invalid(%src: !tla.mask<32>) {
+//     "tla.vec.func"() ({
+//       %result = tla.pack %src, <low> : !tla.mask<32> -> !tla.mask<64>
+//     }) {mode = "simd"} : () -> ()
+//     return
+//   }
+// }
+// END_MASK32
+
+// BEGIN_MASK_RESULT
+// module {
+//   func.func @invalid(%src: !tla.mask<64>) {
+//     "tla.vec.func"() ({
+//       %result = tla.pack %src, <high> : !tla.mask<64> -> !tla.mask<256>
+//     }) {mode = "simd"} : () -> ()
+//     return
+//   }
+// }
+// END_MASK_RESULT

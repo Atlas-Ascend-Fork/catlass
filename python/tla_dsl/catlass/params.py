@@ -53,6 +53,16 @@ class AtomicMode(enum.Enum):
         return self.value
 
 
+class RegPart(enum.Enum):
+    """Register half selection."""
+
+    LOW = "low"
+    HIGH = "high"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass
 class CopyParams:
     """Marker annotation for base copy params."""

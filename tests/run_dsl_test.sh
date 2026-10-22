@@ -19,7 +19,7 @@
 # basic_mixed_store_zNUnAlign.py, basic_mixed_fixpipe_nz2dn.py).
 # python/tla_dsl/examples/end_to_end/vector_ops (binary_op.py, masked_binary.py,
 # bitwise_ops.py, reduction_ops.py, compare_mask.py, unary_ops.py, arange_op.py,
-# interleave_op.py, mask_interleave_op.py, mask_select_op.py, load_dintlv_op.py, load_store_mask.py,
+# interleave_op.py, mask_interleave_op.py, pack_op.py, mask_select_op.py, load_dintlv_op.py, load_store_mask.py,
 # load_mask_dist.py, load_store_update.py, squeeze_op.py,
 # register_control_flow.py, load_and_store_scalar_after_reduction.py, load_us_b8_op.py,
 # cast_multi.py, gather_op.py, shift_op.py).

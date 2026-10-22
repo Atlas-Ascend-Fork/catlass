@@ -146,6 +146,7 @@ from .types import (
 )
 from .params import (
     AtomicMode,
+    RegPart,
     RegSlot,
     HF32Mode,
     ComputeOrder,
@@ -7886,6 +7887,65 @@ _INTERLEAVE_ELEMENT_TYPES = frozenset(
 
 
 @dsl_user_op
+def pack(
+    src: MaskSSA,
+    *,
+    part: RegPart,
+    loc: mlir_ir.Location | None = None,
+) -> MaskSSA:
+    """Directory: Vector Compute / Data Rearrange
+
+    Description:
+        Pack a predicate value into the low or high half of its destination
+        predicate register.
+
+        Parameters:
+        - `src` (`MaskSSA`): Predicate register value to pack. Required.
+        - `part` (`tla.RegPart`): Destination register half: `LOW` (low) or `HIGH` (high). Required.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+        - Must be called inside `tla.vec.func(mode="simd")`.
+        - Mask inputs support `mask<64> -> mask<128>` and `mask<128> -> mask<256>`.
+
+        Example:
+        ```python
+        with tla.vec.func(mode="simd"):
+            packed = tla.pack(src, part=tla.RegPart.LOW)
+        ```
+    """
+    _require_categories("pack", "src", src, ("mask_ssa",), 0)
+    if not isinstance(part, RegPart):
+        _op_error(
+            "pack",
+            "invalid argument 'part': expected tla.RegPart.LOW or "
+            "tla.RegPart.HIGH, "
+            f"got {_type_name(part)}",
+        )
+    _require_frontend_state("pack")
+    _runtime._require_enclosing_region("pack", "vec.func")
+    if _runtime._in_simt_vec_func():
+        _op_error("pack", "is only supported in tla.vec.func(mode='simd')")
+
+    src_value = _as_value(src)
+    context = src_value.type.context
+    src_desc = _mask_ssa_type_for_mlir_value(src_value)
+    if src_desc.physical_lanes not in (64, 128):
+        _op_error(
+            "pack",
+            f"unsupported mask width {src_desc.physical_lanes}; "
+            "supported source widths are 64 and 128",
+        )
+    result_desc = TlaMaskSSATypeDescriptor(src_desc.physical_lanes * 2)
+
+    part_attr = mlir_ir.Attribute.parse(f"#tla.reg_part<{part.value}>", context=context)
+    result = _tla_ops_gen.pack(
+        result_desc.to_mlir_type(context), src_value, part_attr, loc=loc
+    )
+    return MaskSSA(result)
+
+
+@dsl_user_op
 def interleave(
     src0: VectorSSA | MaskSSA,
     src1: VectorSSA | MaskSSA,
@@ -9889,6 +9949,7 @@ _require_generated("reduce")
 _require_generated("bitcast")
 _require_generated("interleave")
 _require_generated("deinterleave")
+_require_generated("pack")
 for _unary_op_name in ("exp", "log", "sqrt", "abs", "neg"):
     _require_generated(_unary_op_name)
 _require_generated("cmp")
@@ -10367,6 +10428,8 @@ __all__ = [
     "neg",
     "interleave",
     "deinterleave",
+    "pack",
+    "RegPart",
     "gather",
     "ReductionOp",
     "cmp",

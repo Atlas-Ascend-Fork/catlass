@@ -425,6 +425,19 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             ]],
         )
     yield (
+        "mask-pack-op",
+        [
+            [
+                "vector_ops/pack_op.py",
+                "--mask-width", mask_width,
+                "--part", part,
+                *dev,
+            ]
+            for mask_width in ("64", "128")
+            for part in ("low", "high")
+        ],
+    )
+    yield (
         "vector-mask-select-op",
         [[
             "vector_ops/mask_select_op.py", "mask_select",

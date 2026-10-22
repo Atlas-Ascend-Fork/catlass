@@ -358,3 +358,16 @@ def Tla_RoundModeEnum : Tla_I32Enum<"RoundMode", "Cast rounding mode on precisio
 //   [0] reg_slot (RegSlot)   [1] sat_mode (SatMode)   [2] round_mode (RoundMode)
 // A builtin array attr round-trips textually through every pass; the enum
 // definitions above give the C++ enum types the lowering casts the codes to.
+
+def Tla_RegPart_Low : I32EnumAttrCase<"low", 0>;
+def Tla_RegPart_High : I32EnumAttrCase<"high", 1>;
+def Tla_RegPartEnum : Tla_I32Enum<
+    "RegPart", "Register half selection.", [
+      Tla_RegPart_Low,
+      Tla_RegPart_High
+    ]>;
+def Tla_RegPartAttr : Tla_I32EnumAttr<"reg_part", Tla_RegPartEnum> {
+  let description = [{
+    Selects the low or high half of a register.
+  }];
+}

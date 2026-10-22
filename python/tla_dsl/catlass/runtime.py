@@ -436,6 +436,8 @@ _CORE_API_EXPORTS = (
     "neg",
     "interleave",
     "deinterleave",
+    "pack",
+    "RegPart",
     "gather",
     "cmp",
     "make_ptr",

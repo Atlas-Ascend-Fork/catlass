@@ -622,6 +622,24 @@ def Tla_StoreOp : Tla_Op<"store", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 }
 
+def Tla_PackOp : Tla_Op<"pack", [Pure]> {
+  let summary = "Pack into one half of a predicate register";
+  let description = [{
+    Compacts a predicate source and places it in either the low or high half
+    of a wider predicate domain.
+  }];
+  let arguments = (ins
+      Tla_MaskSSAType:$src,
+      Tla_RegPartAttr:$part);
+  let results = (outs
+      Tla_MaskSSAType:$result);
+  let assemblyFormat = [{
+    $src `,` $part attr-dict `:`
+    qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 def Tla_LoadUpdateOp : Tla_Op<"load_update", []> {
   let summary = "Aligned PostMode UPDATE load";
   let description = [{

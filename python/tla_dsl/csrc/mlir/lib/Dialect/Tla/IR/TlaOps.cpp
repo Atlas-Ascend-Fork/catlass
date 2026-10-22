@@ -549,6 +549,26 @@ static mlir::LogicalResult verifyInterleaveLikeMaskTypes(
     return mlir::success();
 }
 
+mlir::LogicalResult PackOp::verify()
+{
+    if (!hasEnclosingRegion<VecFuncOp>(getOperation()))
+        return emitOpError("must be nested inside a tla.vec.func region");
+
+    auto srcMask = mlir::dyn_cast<MaskSSAType>(getSrc().getType());
+    auto resultMask = mlir::dyn_cast<MaskSSAType>(getResult().getType());
+    if (!srcMask || !resultMask)
+        return emitOpError("requires source and result to both be !tla.mask values");
+
+    int64_t srcLanes = srcMask.getPhysicalLanes();
+    int64_t resultLanes = resultMask.getPhysicalLanes();
+    if (srcLanes != 64 && srcLanes != 128)
+        return emitOpError() << "unsupported mask source width " << srcLanes << "; expected 64 or 128 lanes";
+    if (resultLanes != 2 * srcLanes)
+        return emitOpError() << "mask result must have twice the source lane count, got source " << srcLanes
+                             << " and result " << resultLanes;
+    return mlir::success();
+}
+
 mlir::LogicalResult InterleaveOp::verify()
 {
     if (!hasEnclosingRegion<VecFuncOp>(getOperation()))

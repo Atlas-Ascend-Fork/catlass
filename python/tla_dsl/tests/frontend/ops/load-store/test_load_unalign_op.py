@@ -9,8 +9,12 @@ import pytest
 
 import catlass.tla as tla
 import catlass.runtime as runtime_mod
-from catlass.execution_lowering import UnsupportedExecutionLowering
-from catlass.params import LoadDist, NormalLoadParams, PostMode, UnalignLoadParams
+from catlass.execution_lowering import TlaLoweringError, UnsupportedExecutionLowering
+from catlass.params import (
+    LoadDist,
+    NormalLoadParams,
+    UnalignLoadParams,
+)
 
 
 def _ub_tensor(
@@ -256,49 +260,12 @@ def test_load_dintlv_b32_rejects_i32(compiler_tlair: Any) -> None:
 
 
 @tla.kernel
-def load_post_mode_update_kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
-    src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
-    dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
-    with tla.vector():
-        with tla.vec.func(mode="simd"):
-            dst_tile.store(
-                src_tile.load(
-                    NormalLoadParams(post_mode=PostMode.POST_MODE_UPDATE)
-                )
-            )
-
-
-@tla.kernel
-def load_post_update_stride_kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
-    src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
-    dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
-    with tla.vector():
-        with tla.vec.func(mode="simd"):
-            dst_tile.store(
-                src_tile.load(NormalLoadParams(post_update_stride=4))
-            )
-
-
-@tla.kernel
 def load_unalign_is_pre_kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
     src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
     dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
     with tla.vector():
         with tla.vec.func(mode="simd"):
             dst_tile.store(src_tile.load(UnalignLoadParams(is_pre=True)))
-
-
-@tla.kernel
-def load_unalign_post_mode_update_kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
-    src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
-    dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
-    with tla.vector():
-        with tla.vec.func(mode="simd"):
-            dst_tile.store(
-                src_tile.load(
-                    UnalignLoadParams(post_mode=PostMode.POST_MODE_UPDATE)
-                )
-            )
 
 
 @tla.kernel
@@ -328,17 +295,17 @@ def test_load_rejects_gm_tensor(compiler_tlair: Any) -> None:
 @pytest.mark.parametrize(
     ("kernel", "match"),
     [
-        (load_post_mode_update_kernel, "post_mode"),
-        (load_post_update_stride_kernel, "post_update_stride"),
         (load_unalign_is_pre_kernel, "is_pre"),
-        (load_unalign_post_mode_update_kernel, "post_mode"),
         (load_unalign_post_update_stride_kernel, "post_update_stride"),
     ],
 )
 def test_load_rejects_unsupported_params(
     compiler_tlair: Any, kernel: Any, match: str
 ) -> None:
-    with pytest.raises(UnsupportedExecutionLowering, match=match):
+    with pytest.raises(
+        (TlaLoweringError, UnsupportedExecutionLowering, NotImplementedError),
+        match=match,
+    ):
         compiler_tlair(
             kernel,
             type_args=(_ub_tensor(), _ub_tensor()),

@@ -433,11 +433,46 @@ static bool isOnChipAddressSpace(::AddressSpace addressSpace)
     return false;
 }
 
+/// Chase UPDATE next_ptr producers back to the ``inttoptr`` seed used for
+/// helper-ABI typing. Next-window tiles keep a raw ``!tla.ptr`` base.
+/// Unbounded IR chase; ``visited`` stops SSA cycles (not a loop-trip budget).
+static Value chasePtrToIntToPtrBoundary(Value ptr)
+{
+    DenseSet<Value> visited;
+    while (ptr && visited.insert(ptr).second) {
+        if (ptr.getDefiningOp<::tla::IntToPtrOp>())
+            return ptr;
+        if (auto loadUpdate = ptr.getDefiningOp<::tla::LoadUpdateOp>()) {
+            if (auto desc = loadUpdate.getSource().getDefiningOp<::tla::TensorDescOp>()) {
+                if (llvm::isa<::tla::PtrType>(desc.getBase().getType())) {
+                    ptr = desc.getBase();
+                    continue;
+                }
+            }
+            return {};
+        }
+        if (auto storeUpdate = ptr.getDefiningOp<::tla::StoreUpdateOp>()) {
+            if (auto desc = storeUpdate.getDest().getDefiningOp<::tla::TensorDescOp>()) {
+                if (llvm::isa<::tla::PtrType>(desc.getBase().getType())) {
+                    ptr = desc.getBase();
+                    continue;
+                }
+            }
+            return {};
+        }
+        return {};
+    }
+    return {};
+}
+
 FailureOr<MemRefType> getVectorHelperArgMemrefType(Value operand)
 {
     Value ptr = ptrOfTensorDesc(operand);
-    if (ptr && !ptr.getDefiningOp<::tla::IntToPtrOp>())
-        return failure();
+    if (ptr && !ptr.getDefiningOp<::tla::IntToPtrOp>()) {
+        ptr = chasePtrToIntToPtrBoundary(ptr);
+        if (!ptr || !ptr.getDefiningOp<::tla::IntToPtrOp>())
+            return failure();
+    }
 
     auto bridged = getBridgedTensorMemrefType(operand);
     if (failed(bridged))

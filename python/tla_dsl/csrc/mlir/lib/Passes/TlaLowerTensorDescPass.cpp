@@ -14,8 +14,9 @@
 // tla.tensor_ptr is already resolved by tla-lower-ptr (which runs before this
 // pass): a ptr-backed tensor_ptr folds to the underlying !tla.ptr and a
 // memref-backed one to a tla.inttoptr byte address, so no tensor_ptr reaches
-// here. Each tensor_desc.base is therefore the inttoptr boundary left at the
-// make_tensor{,_like} consumer, which the base-memref materializers consume.
+// here. A memref base contributes its aligned address. An inttoptr base
+// contributes that integer. A raw !tla.ptr (UPDATE next window) contributes
+// one ``tla.ptrtoint``; the in-loop tensor is rebuilt as inttoptr of that i64.
 
 namespace tla {
 namespace {
@@ -129,12 +130,12 @@ private:
             address = *addressOr;
             desc.bridgedBaseMemrefType = getDynamicStridedMemrefType(baseType);
         } else if (isa<::tla::PtrType>(desc.base.getType())) {
-            auto intToPtr = desc.base.getDefiningOp<::tla::IntToPtrOp>();
-            if (!intToPtr) {
-                diagnosticOp->emitError("tensor-valued SCF carrier requires a tla.inttoptr descriptor base");
-                return failure();
-            }
-            FailureOr<Value> addressOr = toI64Address(intToPtr.getAddr());
+            Value addressSrc;
+            if (auto intToPtr = desc.base.getDefiningOp<::tla::IntToPtrOp>())
+                addressSrc = intToPtr.getAddr();
+            else
+                addressSrc = builder.create<::tla::PtrToIntOp>(loc, builder.getI64Type(), desc.base).getResult();
+            FailureOr<Value> addressOr = toI64Address(addressSrc);
             if (failed(addressOr))
                 return failure();
             address = *addressOr;

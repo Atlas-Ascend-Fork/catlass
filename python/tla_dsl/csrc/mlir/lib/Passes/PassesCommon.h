@@ -345,4 +345,18 @@ struct LowerTlaFuncToFuncPattern : public OpRewritePattern<::tla::FuncOp> {
     }
 };
 
+/// Cast integer/index values to i32 (HIVM `.post` stride / byte-offset operands).
+inline Value castToI32(OpBuilder& b, Location loc, Value v)
+{
+    if (v.getType().isInteger(32))
+        return v;
+    if (isa<IndexType>(v.getType()))
+        return b.create<arith::IndexCastOp>(loc, b.getI32Type(), v);
+    if (auto it = dyn_cast<IntegerType>(v.getType()); it && it.getWidth() < 32)
+        return b.create<arith::ExtSIOp>(loc, b.getI32Type(), v);
+    if (auto it = dyn_cast<IntegerType>(v.getType()); it && it.getWidth() > 32)
+        return b.create<arith::TruncIOp>(loc, b.getI32Type(), v);
+    return v;
+}
+
 } // namespace tla

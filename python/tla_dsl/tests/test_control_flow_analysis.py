@@ -2867,3 +2867,4 @@ def test_control_flow_analyzer_rejects_unsupported_nested_syntax(
             active_symbols={"predicate", "value"},
             active_callables=set(),
         )
+

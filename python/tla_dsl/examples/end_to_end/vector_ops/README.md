@@ -86,6 +86,7 @@ def vector_op(mem_in: tla.Tensor, mem_out: tla.Tensor) -> None:
 ├── load_dintlv_op.py
 ├── load_mask_dist.py
 ├── load_store_mask.py
+├── load_store_update.py
 ├── load_us_b8_op.py
 ├── mask_select_op.py
 ├── masked_binary.py
@@ -119,6 +120,7 @@ def vector_op(mem_in: tla.Tensor, mem_out: tla.Tensor) -> None:
 | [**`load_mask_dist.py`**](load_mask_dist.py) | `MaskLoadParams`：`ds`/`us` × `--mask-dtype i8\|i16\|i32` → `tla.where`. |
 | [**`load_store_mask.py`**](load_store_mask.py) | 掩码搬运往返示例，掩码 UB 与伴随向量同 dtype；另含 u8 GM↔UB（含 128..255）。 |
 | [**`mask_select_op.py`**](mask_select_op.py) | MaskSSA 选择示例，使用 `H` 在 `Q` 和 `M4` 两个 predicate 之间逐 bit 选择。 |
+| [**`load_store_update.py`**](load_store_update.py) | 对齐 `PostMode.UPDATE`：`tile.load` / `tile.store`（`add`，可选 `--dynamic-extent`）。 |
 | [**`store_pack.py`**](store_pack.py) | 压缩存储示例，取得低半有效数位做紧凑存储。 |
 | [**`reduction_ops.py`**](reduction_ops.py) | `tla.reduce` 归约示例，支持 `add`/`max`/`min` 三种模式，覆盖对齐与非对齐场景。 |
 | [**`histograms_op.py`**](histograms_op.py) | `tla.histograms` 独立上板样例：FREQUENCY/ACCUMULATE × BIN0/BIN1（`full(0)` 清零 / 跨调用累加 / 全零 CDF）。 |
@@ -568,11 +570,13 @@ first mismatch=None
 - 文件位置：
   - `load_dintlv_op.py`：双目标交织加载。
   - `load_us_b8_op.py`：b8 上采样加载。
+  - `load_store_update.py`：对齐 `PostMode.UPDATE`（`tile.load` / `tile.store`，`add`）。
   - `store_pack.py`：紧凑 PACK 存储。
 
 - 功能说明：
   - **`load_dintlv_op.py`**（f32）：op `dintlv_b32`，按 `2*i*VL` 偏移读 `2*VL`，拆出偶数/奇数两路寄存器。
   - **`load_us_b8_op.py`**（i8）：op `us_b8`，每 loop 读 `VL/2` 个 b8 并上采样为 VL 寄存器。
+  - **`load_store_update.py`**（f32）：`add`，`tile.load` / `tile.store` 的 `post_mode=update` 滑动窗口；`--dynamic-extent` 测动态 tile extent。循环 `yield` 的是按指针造好的 tile。
   - **`store_pack.py`**（输入 i32/i16）：op `store_pack`，i32→i16（`DIST_PACK_B32`）、i16→i8（`DIST_PACK_B16`），抽取低半有效数位做紧凑存储。
 
 - 约束说明：
@@ -582,10 +586,12 @@ first mismatch=None
     |------|---------------|
     | `load_dintlv_op.py` | f32 |
     | `load_us_b8_op.py` | i8 |
+    | `load_store_update.py` | f16, bf16, f32 |
     | `store_pack.py` | i32, i16 |
 
   - `load_dintlv_op.py`：仅 f32（i32/u32 不支持）；`VECTOR_ELE` 须为 `2*VL` 的倍数；仅写 `LOOPS*VL` lane，其余保留 sentinel。
   - `load_us_b8_op.py`：仅 i8；仅写 `LOOPS*VL` lane，其余保留 sentinel。
+  - `load_store_update.py`：`post_mode=update` 要求元素类型为 `f16`/`bf16`/`f32`、rank-1 tile、`DIST_NORM`、`post_update_stride > 0`；`unalign` 的 `--unalign-offset` 须 `N*sizeof(T)%32==0`。
   - `store_pack.py`：输入 i32/i16，输出对应 i16/i8；固定 256 元素。
 
 - 执行示例：
@@ -599,6 +605,9 @@ first mismatch=None
 
   # b8 元素上采样加载（仅 i8）
   python examples/end_to_end/vector_ops/load_us_b8_op.py us_b8 --dtype i8 --device 0
+
+  # aligned PostMode.UPDATE
+  python examples/end_to_end/vector_ops/load_store_update.py add --shape 400 --device 0
 
   # 紧凑 PACK 存储（i32->i16，取低半有效数位）
   python examples/end_to_end/vector_ops/store_pack.py store_pack --dtype i32 --device 0

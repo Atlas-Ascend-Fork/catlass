@@ -17,11 +17,109 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <functional>
 #include <limits>
+#include <optional>
+#include <tuple>
+#include <utility>
 
 namespace tla {
 using namespace ::tla::vecregion;
 namespace {
+
+/// Align PostMode UPDATE: emit HIVM ``.post`` load/store (UnAlign is not this path).
+static Type getUbPtrType(MLIRContext* ctx)
+{
+    return LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/6);
+}
+
+static Value intToUbPtr(OpBuilder& b, Location loc, Value addrI64)
+{
+    Value asI64 = castValueToI64(b, loc, addrI64);
+    return b.create<LLVM::IntToPtrOp>(loc, getUbPtrType(b.getContext()), asI64);
+}
+
+/// AscendC ``vlds/vsts`` POST stride is elements; HIVM ``.post`` offset is bytes.
+static Value strideElemsToByteOffI32(OpBuilder& b, Location loc, Value strideElems, Type elemType)
+{
+    int64_t elemBytes = getByteSizeOfFixedWidthScalarType(elemType);
+    Value s = ::tla::castToI32(b, loc, strideElems);
+    if (elemBytes == 1)
+        return s;
+    Value scale = b.create<arith::ConstantIntOp>(loc, elemBytes, /*width=*/32);
+    return b.create<arith::MulIOp>(loc, s, scale);
+}
+
+/// HIVM store Dist for elem type: f32→2 (NORM_B32), f16/bf16→1 (NORM_B16).
+static int32_t hivmStoreDistForElem(Type elemType)
+{
+    if (elemType.isF32())
+        return 2;
+    if (elemType.isF16() || elemType.isBF16())
+        return 1;
+    return 0;
+}
+
+/// Cast ``newPtr`` to the live UB pointer type without UnrealizedConversionCast
+/// (those survive into the VF and tank VLOOP / post-update recognition).
+static Value castToLiveUbPtr(OpBuilder& b, Location loc, Value newPtr, Type ubPtrTy)
+{
+    if (newPtr.getType() == ubPtrTy)
+        return newPtr;
+    auto fromTy = dyn_cast<LLVM::LLVMPointerType>(newPtr.getType());
+    auto toTy = dyn_cast<LLVM::LLVMPointerType>(ubPtrTy);
+    if (fromTy && toTy && fromTy.getAddressSpace() != toTy.getAddressSpace())
+        return b.create<LLVM::AddrSpaceCastOp>(loc, ubPtrTy, newPtr);
+    return b.create<LLVM::BitcastOp>(loc, ubPtrTy, newPtr);
+}
+
+/// Emit ``llvm.hivm.vldsx1.post.*`` and return ``{vec, newPtr}``.
+static FailureOr<std::pair<Value, Value>> emitVldsx1Post(
+    OpBuilder& b, Location loc, Value ptr, Value strideElems, Type elemType, Type vecTy)
+{
+    Value byteOff = strideElemsToByteOffI32(b, loc, strideElems, elemType);
+    Value dist = b.create<arith::ConstantIntOp>(loc, /*value=*/0, /*width=*/32);
+    Value postEn = b.create<arith::ConstantIntOp>(loc, /*value=*/1, /*width=*/32);
+    Type ubPtrTy = getUbPtrType(b.getContext());
+    Type structTy = LLVM::LLVMStructType::getLiteral(b.getContext(), {vecTy, ubPtrTy});
+    Operation* op = nullptr;
+    if (elemType.isF32())
+        op = b.create<hivm_regbaseintrins::Vldsx1PostV64F32InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+    else if (elemType.isF16())
+        op = b.create<hivm_regbaseintrins::Vldsx1PostV128F16InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+    else if (elemType.isBF16())
+        op = b.create<hivm_regbaseintrins::Vldsx1PostV128BF16InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+    else
+        return failure();
+    Value vec = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
+    Value newPtr = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 1);
+    newPtr = castToLiveUbPtr(b, loc, newPtr, ubPtrTy);
+    return std::make_pair(vec, newPtr);
+}
+
+/// Emit Align ``vstsx1.post`` and return HW ``newPtr``.
+static FailureOr<Value> emitVstsx1Post(
+    OpBuilder& b, Location loc, Value src, Value ptr, Value strideElems, Value preg, Type elemType)
+{
+    Value byteOff = strideElemsToByteOffI32(b, loc, strideElems, elemType);
+    Value dist = b.create<arith::ConstantIntOp>(loc, hivmStoreDistForElem(elemType), /*width=*/32);
+    Value postEn = b.create<arith::ConstantIntOp>(loc, /*value=*/1, /*width=*/32);
+    Type ubPtrTy = getUbPtrType(b.getContext());
+    Operation* op = nullptr;
+    if (elemType.isF32())
+        op =
+            b.create<hivm_regbaseintrins::Vstsx1PostV64F32InstrOp>(loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+    else if (elemType.isF16())
+        op = b.create<hivm_regbaseintrins::Vstsx1PostV128F16InstrOp>(
+            loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+    else if (elemType.isBF16())
+        op = b.create<hivm_regbaseintrins::Vstsx1PostV128BF16InstrOp>(
+            loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+    else
+        return failure();
+    return castToLiveUbPtr(b, loc, op->getResult(0), ubPtrTy);
+}
 
 static hivmave::VFPgeOp createAvePgeMask(OpBuilder& b, Location loc, VectorType maskType, hivmave::PgePattern pattern)
 {
@@ -1427,6 +1525,19 @@ static Value lookupOrCloneScalarValue(OpBuilder& b, Value value, DenseMap<Value,
 {
     if (Value mapped = valueMap.lookup(value))
         return mapped;
+    if (auto ptrToInt = value.getDefiningOp<::tla::PtrToIntOp>()) {
+        if (Value mapped = lookupOrCloneScalarValue(b, ptrToInt.getPtr(), valueMap)) {
+            if (mapped.getType().isInteger(64)) {
+                valueMap[value] = mapped;
+                return mapped;
+            }
+            if (isa<LLVM::LLVMPointerType>(mapped.getType())) {
+                Value asI64 = b.create<LLVM::PtrToIntOp>(ptrToInt.getLoc(), b.getI64Type(), mapped);
+                valueMap[value] = asI64;
+                return asI64;
+            }
+        }
+    }
     Operation* def = value.getDefiningOp();
     if (!def || def->getNumResults() != 1)
         return nullptr;
@@ -1436,6 +1547,16 @@ static Value lookupOrCloneScalarValue(OpBuilder& b, Value value, DenseMap<Value,
         return cloned->getResult(0);
     }
     return nullptr;
+}
+
+/// Map ``newPtr`` (as i64) onto the TLA next_ptr SSA and its ``tla.ptrtoint``.
+static void mapUpdateNextPtrI64(Value tlaNextPtr, Value asI64, DenseMap<Value, Value>& valueMap)
+{
+    valueMap[tlaNextPtr] = asI64;
+    for (Operation* user : tlaNextPtr.getUsers()) {
+        if (auto ptrToInt = dyn_cast<::tla::PtrToIntOp>(user))
+            valueMap[ptrToInt.getResult()] = asI64;
+    }
 }
 
 // Materialize the descriptor-defined valid-lane count for an omitted store.
@@ -1766,6 +1887,36 @@ static LogicalResult materializeTensorDescSubview(
     auto lanesOr = getVectorLaneCount(sourceType.getElementType());
     if (failed(lanesOr))
         return descOp.emitError("unsupported element type for vector tensor_desc"), failure();
+
+    // Ptr-backed windows share one effective-address model with UPDATE:
+    // prefer the live address (``inttoptr`` or mapped UPDATE next_ptr i64),
+    // then apply descriptor coords. ``valueMap`` may hold the storage-identity
+    // seed helper arg (for ABI dedup / memref type only) — that seed must not
+    // replace a mapped live address. If the live addr is not reachable in the
+    // helper, keep the seed memref (ordinary lit / non-UPDATE paths).
+    auto rebuildFromAddrI64 = [&](Value addr) {
+        Value addrI64 = ::tla::castValueToI64(b, loc, addr);
+        SmallVector<Value, 1> dynamicSizes;
+        if (!sourceType.hasStaticShape()) {
+            for (int64_t dim : sourceType.getShape()) {
+                if (dim == ShapedType::kDynamic)
+                    dynamicSizes.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
+            }
+        }
+        baseMemref = b.create<hivm::PointerCastOp>(loc, sourceType, addrI64, dynamicSizes).getResult();
+    };
+    Value descBase = descOp.getBase();
+    if (Value mappedBase = valueMap.lookup(descBase)) {
+        if (mappedBase.getType().isInteger(64) || isa<IndexType>(mappedBase.getType()))
+            rebuildFromAddrI64(mappedBase);
+        else if (isa<LLVM::LLVMPointerType>(mappedBase.getType())) {
+            rebuildFromAddrI64(b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), mappedBase));
+        }
+    } else if (auto intToPtr = descBase.getDefiningOp<::tla::IntToPtrOp>()) {
+        if (Value addr = lookupOrCloneScalarValue(b, intToPtr.getAddr(), valueMap))
+            rebuildFromAddrI64(addr);
+    }
+
     Value rowOff = lookupOrCloneScalarValue(b, descOp.getCoord0(), valueMap);
     Value colOff = lookupOrCloneScalarValue(b, descOp.getCoord1(), valueMap);
     Value stride0 = lookupOrCloneScalarValue(b, descOp.getStride0(), valueMap);
@@ -1842,6 +1993,51 @@ static LogicalResult materializeTensorDescSubview(
     return success();
 }
 
+/// Effective UB pointer for a tile: same address ordinary load/store and
+/// UPDATE `.post` use. Prefer the live ``tensor_desc(inttoptr(i64))`` address
+/// so UPDATE next windows that share a storage-identity seed memref still
+/// advance. Fall back to the mapped memref view when no live ptr is reachable.
+static FailureOr<Value> resolveEffectiveUbPtr(
+    Value tensor, OpBuilder& b, Location loc, DenseMap<Value, Value>& valueMap)
+{
+    if (auto desc = tensor.getDefiningOp<::tla::TensorDescOp>()) {
+        Value base = desc.getBase();
+        if (Value mappedBase = valueMap.lookup(base)) {
+            if (isa<LLVM::LLVMPointerType>(mappedBase.getType()))
+                return mappedBase;
+            if (mappedBase.getType().isInteger(64))
+                return intToUbPtr(b, loc, mappedBase);
+        }
+        if (auto intToPtr = base.getDefiningOp<::tla::IntToPtrOp>()) {
+            Value addr = lookupOrCloneScalarValue(b, intToPtr.getAddr(), valueMap);
+            if (addr) {
+                Value ptr = intToUbPtr(b, loc, addr);
+                valueMap[intToPtr.getResult()] = ptr;
+                return ptr;
+            }
+        }
+    }
+    if (Value mapped = valueMap.lookup(tensor)) {
+        if (isa<MemRefType>(mapped.getType())) {
+            auto meta = b.create<mlir::memref::ExtractStridedMetadataOp>(loc, mapped);
+            Value basePtr = b.create<mlir::memref::ExtractAlignedPointerAsIndexOp>(loc, meta.getBaseBuffer());
+            Value elemOffset = meta.getOffset();
+            auto mt = cast<MemRefType>(mapped.getType());
+            int64_t elemBytes = getByteSizeOfFixedWidthScalarType(mt.getElementType());
+            Value byteOffset = elemOffset;
+            if (elemBytes > 1) {
+                Value scale = b.create<arith::ConstantIndexOp>(loc, elemBytes);
+                byteOffset = b.create<arith::MulIOp>(loc, elemOffset, scale);
+            }
+            Value byteAddr = b.create<arith::AddIOp>(loc, basePtr, byteOffset);
+            return intToUbPtr(b, loc, ::tla::castValueToI64(b, loc, byteAddr));
+        }
+        if (isa<LLVM::LLVMPointerType>(mapped.getType()))
+            return mapped;
+    }
+    return failure();
+}
+
 // Re-create one vec.func body op inside the helper: tla ops become AVE vector
 // ops; scf control flow and index arithmetic are carried verbatim. Each op
 // derives its own vector/mask width from its operands or result element type,
@@ -1906,11 +2102,15 @@ static LogicalResult lowerLoad(
     hivmave::LoadDist pattern = hivmave::LoadDist::NORM;
     if (auto loadDistAttr = loadOp.getLoadDist())
         pattern = mapTlaLoadDistToAve(loadDistAttr->getLoadDist());
+    // Dual-dest load_dist needs a second vector result.
+    Value r2 = loadOp.getResult2();
+    bool hasSecondVec = static_cast<bool>(r2);
     bool dual = isDualDestLoadDist(pattern);
-    if (dual != static_cast<bool>(loadOp.getResult2()))
+    if (dual != hasSecondVec)
         return loadOp.emitError(
-                   "dintlv load_dist requires exactly two results; other "
-                   "load_dist values require one"),
+                   "dintlv load_dist requires exactly two vector results; other "
+                   "load_dist values require one vector result "
+                   "(optional live !tla.ptr is separate)"),
                failure();
     // Strided block load (vsldb): lower through a library call like the
     // store-with-stride path. The tile memref supplies the base address;
@@ -1940,6 +2140,7 @@ static LogicalResult lowerLoad(
         valueMap[loadOp.getResult()] = loaded;
         return success();
     }
+
     // DINTLV_* still takes a VL-wide tile view (same as AVE ProcessVsstb /
     // HIVM2VLLoadOpLowering): the distribution pattern reads 2*VL from that
     // base address. Do not widen the memref to 2*VL — that breaks hivmc ABI.
@@ -1947,7 +2148,40 @@ static LogicalResult lowerLoad(
         createVFLoad(b, loc, opCtx->vecType, source, zero, pattern, loadOp.getUnalignedUbAccess().value_or(false));
     valueMap[loadOp.getResult()] = vfLoad.getRes();
     if (dual)
-        valueMap[loadOp.getResult2()] = vfLoad.getRes1();
+        valueMap[r2] = vfLoad.getRes1();
+    return success();
+}
+
+static LogicalResult lowerLoadUpdate(::tla::LoadUpdateOp loadOp, OpBuilder& b, DenseMap<Value, Value>& valueMap)
+{
+    Location loc = loadOp.getLoc();
+    Value source = valueMap.lookup(loadOp.getSource());
+    if (!source)
+        return loadOp.emitError("load_update source is not mapped in vector helper"), failure();
+    auto sourceType = dyn_cast<MemRefType>(source.getType());
+    if (!sourceType)
+        return loadOp.emitError("load_update source map is not a memref in vector helper"), failure();
+    auto opCtx = deriveVecCtxForElement(sourceType.getElementType());
+    if (failed(opCtx))
+        return loadOp.emitError("unsupported element type for load_update vector helper"), failure();
+    Value stride = valueMap.lookup(loadOp.getPostUpdateStride());
+    if (!stride)
+        stride = lookupOrCloneScalarValue(b, loadOp.getPostUpdateStride(), valueMap);
+    if (!stride)
+        return loadOp.emitError("failed to materialize post_update_stride in vector helper"), failure();
+    auto ptrOr = resolveEffectiveUbPtr(loadOp.getSource(), b, loc, valueMap);
+    if (failed(ptrOr))
+        return loadOp.emitError(
+                   "load_update requires an effective UB address "
+                   "(tensor_desc over live inttoptr / materialized memref)"),
+               failure();
+    Type elemTy = sourceType.getElementType();
+    FailureOr<std::pair<Value, Value>> emitted = emitVldsx1Post(b, loc, *ptrOr, stride, elemTy, opCtx->vecType);
+    if (failed(emitted))
+        return loadOp.emitError("unsupported element type for tla.load_update: ") << elemTy, failure();
+    valueMap[loadOp.getResult()] = emitted->first;
+    mapUpdateNextPtrI64(
+        loadOp.getNextPtr(), b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), emitted->second), valueMap);
     return success();
 }
 
@@ -2609,8 +2843,8 @@ static LogicalResult lowerStore(
             return storeOp.emitError("failed to determine omitted tla.store active lanes"), failure();
         mask = *implicitMask;
     }
-    // store_unalign (this PR): mark AVE masked-store as unaligned UB access.
     if (storeOp.getUnalignedUbAccess().value_or(false)) {
+        // store_unalign (NORMAL): mark AVE masked-store as unaligned UB access.
         auto store = b.create<hivmave::VFMaskedStoreOp>(loc, dest, ValueRange{zero}, mask, source);
         store->setAttr(hivmave::UnalignedAttr::name, hivmave::UnalignedAttr::get(b.getContext()));
     } else if (storeOp.getBlockStride()) {
@@ -2652,6 +2886,60 @@ static LogicalResult lowerStore(
     return success();
 }
 
+static LogicalResult lowerStoreUpdate(
+    ::tla::StoreUpdateOp storeOp, OpBuilder& b, DenseMap<Value, Value>& valueMap, AutoFullPredicateCache& fullMasks)
+{
+    Location loc = storeOp.getLoc();
+    Value dest = valueMap.lookup(storeOp.getDest());
+    Value source = valueMap.lookup(storeOp.getSource());
+    if (!dest || !source)
+        return failure();
+    auto sourceTy = dyn_cast<VectorType>(source.getType());
+    if (!sourceTy)
+        return failure();
+    Value stride = valueMap.lookup(storeOp.getPostUpdateStride());
+    if (!stride)
+        stride = lookupOrCloneScalarValue(b, storeOp.getPostUpdateStride(), valueMap);
+    if (!stride)
+        return storeOp.emitError("failed to materialize post_update_stride in vector helper"), failure();
+    Value mask;
+    auto opCtx = deriveVecCtxForElement(sourceTy.getElementType());
+    if (failed(opCtx))
+        return failure();
+    if (storeOp.getMask()) {
+        mask = valueMap.lookup(storeOp.getMask());
+        if (!mask)
+            return failure();
+    } else if (auto destStaticLanes = getStaticTlaTensorValidLaneCount(storeOp.getDest())) {
+        int64_t activeLanes = *destStaticLanes >= opCtx->lanes ? opCtx->lanes : *destStaticLanes;
+        if (activeLanes == opCtx->lanes)
+            mask = fullMasks.get(loc, opCtx->lanes);
+        else {
+            Value active = b.create<arith::ConstantIndexOp>(loc, activeLanes);
+            mask = createPredicatePlt(b, loc, opCtx->maskVecType, opCtx->lanes, active).getRes();
+        }
+    } else {
+        auto destLanes = getTlaTensorValidLaneCount(b, loc, storeOp.getDest(), valueMap);
+        if (failed(destLanes))
+            return failure();
+        mask = createPredicatePlt(b, loc, opCtx->maskVecType, opCtx->lanes, *destLanes).getRes();
+    }
+    VectorType pregVecType = fullPregVecType(b.getContext());
+    Value pregMask = castMaskToPregType(b, loc, mask, pregVecType);
+    auto ptrOr = resolveEffectiveUbPtr(storeOp.getDest(), b, loc, valueMap);
+    if (failed(ptrOr))
+        return storeOp.emitError(
+                   "store_update requires an effective UB address "
+                   "(tensor_desc over live inttoptr / materialized memref)"),
+               failure();
+    FailureOr<Value> newPtrOr = emitVstsx1Post(b, loc, source, *ptrOr, stride, pregMask, sourceTy.getElementType());
+    if (failed(newPtrOr))
+        return storeOp.emitError("unsupported element type for tla.store_update: ") << sourceTy.getElementType(),
+               failure();
+    mapUpdateNextPtrI64(storeOp.getNextPtr(), b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), *newPtrOr), valueMap);
+    return success();
+}
+
 /// scf.for: rebuild the loop, including loop-carried iter_args, and lower its
 /// body. Init args and the scf.yield operands may be register, index, or
 /// scalar SSA values threaded through the helper (e.g. the tail counter produced by tla.update_mask).
@@ -2686,6 +2974,7 @@ static LogicalResult lowerScfFor(
         }
         initArgs.push_back(mapped);
     }
+
     LogicalResult bodyStatus = success();
     auto newFor = b.create<scf::ForOp>(
         loc, lb, ub, step, initArgs, [&](OpBuilder& nb, Location nloc, Value iv, ValueRange iterArgs) {
@@ -2757,6 +3046,8 @@ static LogicalResult lowerScfIf(
         if (!newBlock->empty() && newBlock->back().hasTrait<OpTrait::IsTerminator>())
             newBlock->back().erase();
         OpBuilder branchBuilder = OpBuilder::atBlockEnd(newBlock);
+        // Do not thread loop ureg through scf.if (both branches would mutate one
+        // carrier during lowering). UnAlign UPDATE inside if uses oneshot framing.
         if (failed(lowerNestedVectorBlock(oldBlock, branchBuilder, module, branchMap, fullMasks)))
             return failure();
 
@@ -2792,11 +3083,36 @@ static LogicalResult lowerNestedVectorOp(
     // make_shape / make_coord are dead after tla-lower-tensor-desc (their leaves
     // were folded into tensor_desc operands); skip them. (tla-finalize-memref
     // erases them.)
-    if (isa<::tla::MakeShapeOp, ::tla::MakeCoordOp>(op))
+    if (isa<::tla::MakeShapeOp, ::tla::MakeCoordOp, ::tla::MakeStrideOp, ::tla::MakeLayoutOp>(op))
         return success();
 
     if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
         valueMap[constant.getResult()] = b.clone(op)->getResult(0);
+        return success();
+    }
+
+    if (auto ptrToInt = dyn_cast<::tla::PtrToIntOp>(op)) {
+        Value mapped = lookupOrCloneScalarValue(b, ptrToInt.getPtr(), valueMap);
+        if (!mapped)
+            return ptrToInt.emitError("failed to map tla.ptrtoint operand in vector helper"), failure();
+        if (mapped.getType().isInteger(64))
+            valueMap[ptrToInt.getResult()] = mapped;
+        else if (isa<LLVM::LLVMPointerType>(mapped.getType()))
+            valueMap[ptrToInt.getResult()] = b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), mapped);
+        else
+            return ptrToInt.emitError("expected i64 or !llvm.ptr for tla.ptrtoint"), failure();
+        return success();
+    }
+
+    // Ptr-backed tiles: storage-identity outlines data memrefs onto the seed
+    // UB helper arg for ABI dedup; the inttoptr still materializes the live
+    // ``!llvm.ptr<6>`` so effective-address materialization / UPDATE `.post`
+    // / SCF yield share end-to-end SSA.
+    if (auto intToPtr = dyn_cast<::tla::IntToPtrOp>(op)) {
+        Value addr = lookupOrCloneScalarValue(b, intToPtr.getAddr(), valueMap);
+        if (!addr)
+            return intToPtr.emitError("failed to map tla.inttoptr address in vector helper"), failure();
+        valueMap[intToPtr.getResult()] = intToUbPtr(b, loc, addr);
         return success();
     }
 
@@ -2807,6 +3123,9 @@ static LogicalResult lowerNestedVectorOp(
 
     if (auto loadOp = dyn_cast<::tla::LoadOp>(op))
         return lowerLoad(loadOp, b, module, valueMap, fullMasks);
+
+    if (auto loadUpdateOp = dyn_cast<::tla::LoadUpdateOp>(op))
+        return lowerLoadUpdate(loadUpdateOp, b, valueMap);
 
     // Preserve local-memory ordering while outlining a vec.func into its AVE
     // helper. Every operation in the source region must be recreated explicitly;
@@ -2970,6 +3289,9 @@ static LogicalResult lowerNestedVectorOp(
     if (auto storeOp = dyn_cast<::tla::StoreOp>(op))
         return lowerStore(storeOp, b, module, valueMap, fullMasks);
 
+    if (auto storeUpdateOp = dyn_cast<::tla::StoreUpdateOp>(op))
+        return lowerStoreUpdate(storeUpdateOp, b, valueMap, fullMasks);
+
     if (auto forOp = dyn_cast<scf::ForOp>(op))
         return lowerScfFor(forOp, b, module, valueMap, fullMasks);
 
@@ -3059,8 +3381,10 @@ static LogicalResult lowerNestedVectorBlock(
         // buildHelperFunc's func.return.
         if (op.hasTrait<OpTrait::IsTerminator>())
             continue;
-        if (failed(lowerNestedVectorOp(op, b, module, valueMap, fullMasks)))
+        if (failed(lowerNestedVectorOp(op, b, module, valueMap, fullMasks))) {
+            op.emitOpError() << "unsupported op while outlining tla.vec.func into vector helper: " << op.getName();
             return failure();
+        }
     }
     return success();
 }
@@ -3075,19 +3399,123 @@ static Value stripHelperAddressCasts(Value address)
     return address;
 }
 
-// Return the allocation identity used to deduplicate tensor descriptors and
-// scalar-access memrefs that point at the same storage.
+/// Chase ``scf.for`` / ``scf.while`` iter_args *and* results back to their init
+/// so ``tensor_desc(inttoptr(scf_i64))`` shares one helper memref *identity*
+/// with the seed tile (parent UB). This is allocation dedup / call-site ABI
+/// only — not the effective address used by ordinary load/store or UPDATE.
+/// Post-loop epilogue tiles carry for/while *results*; without chasing those,
+/// helper-call materialization would take an address defined inside
+/// ``tla.vec.func`` and leave an external use that blocks eraseOp.
+static Value chaseScfCarrierInit(Value address)
+{
+    address = stripHelperAddressCasts(address);
+    // No fixed step budget: stop at a fixed point or SSA cycle (visited).
+    DenseSet<Value> visited;
+    while (visited.insert(address).second) {
+        if (auto ba = dyn_cast<BlockArgument>(address)) {
+            Operation* parent = ba.getOwner()->getParentOp();
+            if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+                // Region args: induction var then iter_args.
+                unsigned argNum = ba.getArgNumber();
+                if (argNum == 0)
+                    break;
+                unsigned iterIdx = argNum - 1;
+                if (iterIdx >= forOp.getNumRegionIterArgs())
+                    break;
+                address = stripHelperAddressCasts(forOp.getInitArgs()[iterIdx]);
+                continue;
+            }
+            if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
+                unsigned argNum = ba.getArgNumber();
+                if (argNum >= whileOp.getInits().size())
+                    break;
+                address = stripHelperAddressCasts(whileOp.getInits()[argNum]);
+                continue;
+            }
+            break;
+        }
+        // Epilogue after the loop: carrier is an scf.for / scf.while result.
+        if (auto forOp = address.getDefiningOp<scf::ForOp>()) {
+            unsigned idx = cast<OpResult>(address).getResultNumber();
+            if (idx >= forOp.getNumRegionIterArgs())
+                break;
+            address = stripHelperAddressCasts(forOp.getInitArgs()[idx]);
+            continue;
+        }
+        if (auto whileOp = address.getDefiningOp<scf::WhileOp>()) {
+            unsigned idx = cast<OpResult>(address).getResultNumber();
+            if (idx >= whileOp.getInits().size())
+                break;
+            address = stripHelperAddressCasts(whileOp.getInits()[idx]);
+            continue;
+        }
+        break;
+    }
+    return address;
+}
+
+// Allocation identity for helper-operand dedup. Must not be used as the
+// effective load/store address (live inttoptr / descriptor coord own that).
+// Chase UPDATE next_ptr producers, tile_view, and ptrtoint/inttoptr / SCF
+// carrier wrappers back to the same seed so chained UPDATE windows share one
+// helper memref. Do not chase ``tla.ptr_add`` or peel lowered i64 addi/muli.
 static Value getVectorHelperStorageIdentity(Value source)
 {
-    if (auto descOp = source.getDefiningOp<::tla::TensorDescOp>()) {
-        source = descOp.getBase();
-        if (auto intToPtr = source.getDefiningOp<::tla::IntToPtrOp>())
-            return stripHelperAddressCasts(intToPtr.getAddr());
+    // IR-wrapper chase only (not loop trip count). Unbounded except SSA cycles.
+    DenseSet<Value> visited;
+    while (visited.insert(source).second) {
+        source = stripHelperAddressCasts(source);
+        if (auto descOp = source.getDefiningOp<::tla::TensorDescOp>()) {
+            source = descOp.getBase();
+            continue;
+        }
+        if (auto makeOp = source.getDefiningOp<::tla::MakeTensorOp>()) {
+            source = makeOp.getPtr();
+            continue;
+        }
+        if (auto makeLikeOp = source.getDefiningOp<::tla::MakeTensorLikeOp>()) {
+            source = makeLikeOp.getPtr();
+            continue;
+        }
+        if (auto tileOp = source.getDefiningOp<::tla::TileViewOp>()) {
+            source = tileOp.getSource();
+            continue;
+        }
+        if (auto tensorPtr = source.getDefiningOp<::tla::TensorPtrOp>()) {
+            source = tensorPtr.getSrc();
+            continue;
+        }
+        if (auto loadUpdate = source.getDefiningOp<::tla::LoadUpdateOp>()) {
+            source = loadUpdate.getSource();
+            continue;
+        }
+        if (auto storeUpdate = source.getDefiningOp<::tla::StoreUpdateOp>()) {
+            source = storeUpdate.getDest();
+            continue;
+        }
+        if (auto ptrToInt = source.getDefiningOp<::tla::PtrToIntOp>()) {
+            source = ptrToInt.getPtr();
+            continue;
+        }
+        if (auto intToPtr = source.getDefiningOp<::tla::IntToPtrOp>()) {
+            // Address SSA is i64; chase SCF carriers then unwrap ptrtoint seeds.
+            Value addr = chaseScfCarrierInit(intToPtr.getAddr());
+            if (auto fromPtr = addr.getDefiningOp<::tla::PtrToIntOp>()) {
+                source = fromPtr.getPtr();
+                continue;
+            }
+            return addr;
+        }
+        if (auto castOp = source.getDefiningOp<mlir::memref::CastOp>()) {
+            source = castOp.getSource();
+            continue;
+        }
+        if (auto pointerCast = source.getDefiningOp<hivm::PointerCastOp>())
+            return stripHelperAddressCasts(pointerCast.getSingleAddr());
+        if (source.getDefiningOp<::tla::AllocPtrOp>())
+            return source;
+        break;
     }
-    while (auto castOp = source.getDefiningOp<mlir::memref::CastOp>())
-        source = castOp.getSource();
-    if (auto pointerCast = source.getDefiningOp<hivm::PointerCastOp>())
-        return stripHelperAddressCasts(pointerCast.getSingleAddr());
     return source;
 }
 
@@ -3106,9 +3534,13 @@ static void addVectorHelperOperand(Value source, SmallVectorImpl<Value>& operand
     Value identity = getVectorHelperStorageIdentity(source);
     FailureOr<MemRefType> sourceType = getVectorHelperOperandType(source);
     for (Value operand : operands) {
+        if (identity != getVectorHelperStorageIdentity(operand))
+            continue;
         FailureOr<MemRefType> operandType = getVectorHelperOperandType(operand);
-        if (succeeded(sourceType) && succeeded(operandType) && *sourceType == *operandType &&
-            identity == getVectorHelperStorageIdentity(operand)) {
+        // Same allocation seed: reuse the representative even when ``source`` is
+        // an UPDATE next-window tile whose raw next_ptr cannot type a helper
+        // memref by itself (typed via the seed inttoptr instead).
+        if (succeeded(operandType) && (failed(sourceType) || *sourceType == *operandType)) {
             aliases[source] = operand;
             return;
         }
@@ -3152,8 +3584,16 @@ static LogicalResult collectVectorHelperOperands(
             addVectorHelperOperand(loadOp.getSource(), operands, aliases);
             continue;
         }
+        if (auto loadUpdateOp = dyn_cast<::tla::LoadUpdateOp>(op)) {
+            addVectorHelperOperand(loadUpdateOp.getSource(), operands, aliases);
+            continue;
+        }
         if (auto storeOp = dyn_cast<::tla::StoreOp>(op)) {
             addVectorHelperOperand(storeOp.getDest(), operands, aliases);
+            continue;
+        }
+        if (auto storeUpdateOp = dyn_cast<::tla::StoreUpdateOp>(op)) {
+            addVectorHelperOperand(storeUpdateOp.getDest(), operands, aliases);
             continue;
         }
         if (auto gatherOp = dyn_cast<::tla::GatherOp>(op)) {
@@ -3254,7 +3694,7 @@ static FailureOr<func::FuncOp> buildHelperFunc(
 
     Block* body = vecFuncOp.getBody().empty() ? nullptr : &vecFuncOp.getBody().front();
     if (!body || helperOperands.empty())
-        return failure();
+        return vecFuncOp.emitOpError("vector helper needs a body and at least one memref operand"), failure();
 
     SmallVector<Type> functionInputs;
     functionInputs.reserve(helperOperands.size());
@@ -3266,7 +3706,7 @@ static FailureOr<func::FuncOp> buildHelperFunc(
         }
         auto operandType = getVectorHelperArgMemrefType(operand);
         if (failed(operandType))
-            return failure();
+            return vecFuncOp.emitOpError("failed to type helper memref operand"), failure();
         functionInputs.push_back(*operandType);
     }
     // Trailing scalar args: scalars captured from outside the region.
@@ -3295,6 +3735,10 @@ static FailureOr<func::FuncOp> buildHelperFunc(
     helper->setAttr(hivm::TFuncCoreTypeAttr::name, hivm::TFuncCoreTypeAttr::get(ctx, hivm::TFuncCoreType::AIV));
     helper->setAttr("hivm.vector_function", UnitAttr::get(ctx));
     helper->setAttr("no_inline", UnitAttr::get(ctx));
+    // Do not stamp llvm.noalias on helper memref args: bump-plan disjointness
+    // is a performance assumption without independent alias proof, and must
+    // not be a correctness dependency. Same-base in-place load/store already
+    // share one argument via helperOperandAliases.
 
     Block* entry = helper.addEntryBlock();
     OpBuilder b = OpBuilder::atBlockBegin(entry);
@@ -3313,11 +3757,23 @@ static FailureOr<func::FuncOp> buildHelperFunc(
     // that base must resolve to the same helper memref arg so the TensorDescOp arm
     // in lowerNestedVectorOp can map it.
     DenseMap<Value, Value> baseToArg;
-    for (Value operand : helperOperands)
-        if (auto d = operand.getDefiningOp<::tla::TensorDescOp>())
-            baseToArg[d.getBase()] = valueMap[operand];
+    DenseMap<Value, Value> identityToArg;
+    for (Value operand : helperOperands) {
+        if (Value arg = valueMap.lookup(operand)) {
+            identityToArg[getVectorHelperStorageIdentity(operand)] = arg;
+            if (auto d = operand.getDefiningOp<::tla::TensorDescOp>())
+                baseToArg[d.getBase()] = arg;
+        }
+    }
     vecFuncOp.walk([&](::tla::TensorDescOp desc) {
-        if (auto it = baseToArg.find(desc.getBase()); it != baseToArg.end())
+        if (valueMap.count(desc.getResult()))
+            return;
+        if (auto it = baseToArg.find(desc.getBase()); it != baseToArg.end()) {
+            valueMap[desc.getResult()] = it->second;
+            return;
+        }
+        // Distinct ``inttoptr(scf_i64)`` ops share chased seed identity.
+        if (auto it = identityToArg.find(getVectorHelperStorageIdentity(desc.getResult())); it != identityToArg.end())
             valueMap[desc.getResult()] = it->second;
     });
     // A descriptor produced *outside* the region and used inside it needs the
@@ -3340,6 +3796,7 @@ static FailureOr<func::FuncOp> buildHelperFunc(
         // helper argument), so this reports the unsupported descriptor instead of
         // falling back to offset 0.
         if (failed(materializeTensorDescSubview(desc, b, valueMap))) {
+            vecFuncOp.emitOpError("failed to materialize external tensor_desc into vector helper");
             helper.erase();
             return failure();
         }
@@ -3349,6 +3806,7 @@ static FailureOr<func::FuncOp> buildHelperFunc(
     if (failed(lowerNestedVectorBlock(body, b, module, valueMap, fullMasks))) {
         // Discard the partially-built helper so an unsupported construct fails
         // cleanly (the vec.func is left intact) instead of leaking malformed IR.
+        vecFuncOp.emitOpError("failed to lower nested vector body into helper");
         helper.erase();
         return failure();
     }
@@ -3388,15 +3846,19 @@ public:
         // graph validation); the helper builder walks the region itself to carry
         // the control flow structure.
         SmallVector<::tla::LoadOp, 4> loads;
+        SmallVector<::tla::LoadUpdateOp, 4> loadUpdates;
         SmallVector<::tla::FullOp, 4> fulls;
         SmallVector<::tla::CreateMaskOp, 4> createMasks;
         SmallVector<::tla::UpdateMaskOp, 4> updateMasks;
         SmallVector<::tla::ArangeOp, 4> aranges;
         SmallVector<Operation*, 4> computeOps;
         SmallVector<::tla::StoreOp, 2> stores;
+        SmallVector<::tla::StoreUpdateOp, 2> storeUpdates;
         vecFuncOp->walk([&](Operation* op) {
             if (auto load = dyn_cast<::tla::LoadOp>(op)) {
                 loads.push_back(load);
+            } else if (auto loadUpdate = dyn_cast<::tla::LoadUpdateOp>(op)) {
+                loadUpdates.push_back(loadUpdate);
             } else if (auto full = dyn_cast<::tla::FullOp>(op)) {
                 fulls.push_back(full);
             } else if (auto createMask = dyn_cast<::tla::CreateMaskOp>(op)) {
@@ -3407,19 +3869,23 @@ public:
                 aranges.push_back(arange);
             } else if (auto store = dyn_cast<::tla::StoreOp>(op)) {
                 stores.push_back(store);
+            } else if (auto storeUpdate = dyn_cast<::tla::StoreUpdateOp>(op)) {
+                storeUpdates.push_back(storeUpdate);
             } else if (isVectorComputeOp(op)) {
                 computeOps.push_back(op);
             }
             return WalkResult::advance();
         });
-        if (stores.empty()) {
+        if (stores.empty() && storeUpdates.empty()) {
             // Scalar-only (or empty) VF cannot be outlined as a BiSheng helper — that
-            // path requires tla.store. If there is also no tile load/compute, inline
-            // the body into the parent (same as tla.vector flattening) so
-            // scalar_load/store + scf stay legal for later convert-scf-to-cf.
-            if (!loads.empty() || !fulls.empty() || !createMasks.empty() || !updateMasks.empty() || !aranges.empty() ||
-                !computeOps.empty())
-                return rewriter.notifyMatchFailure(vecFuncOp, "expected tla.vec.func body with a tla.store");
+            // path requires tla.store or tla.store_update. If there is also no tile
+            // load/compute, inline the body into the parent (same as tla.vector
+            // flattening) so scalar_load/store + scf stay legal for later
+            // convert-scf-to-cf.
+            if (!loads.empty() || !loadUpdates.empty() || !fulls.empty() || !createMasks.empty() ||
+                !updateMasks.empty() || !aranges.empty() || !computeOps.empty())
+                return rewriter.notifyMatchFailure(
+                    vecFuncOp, "expected tla.vec.func body with a tla.store or tla.store_update");
             rewriter.inlineBlockBefore(body, vecFuncOp->getBlock(), vecFuncOp->getIterator());
             rewriter.eraseOp(vecFuncOp);
             return success();
@@ -3433,6 +3899,8 @@ public:
             if (Value result2 = load.getResult2())
                 producedValues.insert(result2);
         }
+        for (::tla::LoadUpdateOp loadUpdate : loadUpdates)
+            producedValues.insert(loadUpdate.getResult());
         for (::tla::FullOp full : fulls)
             producedValues.insert(full.getResult());
         for (::tla::CreateMaskOp createMask : createMasks)
@@ -3595,6 +4063,14 @@ public:
             if (!producedValues.contains(store.getSource()))
                 return rewriter.notifyMatchFailure(vecFuncOp, "expected tla.store source from tla.load or compute op");
         }
+        for (::tla::StoreUpdateOp storeUpdate : storeUpdates) {
+            if (storeUpdate.getMask() && !producedValues.contains(storeUpdate.getMask()))
+                return rewriter.notifyMatchFailure(
+                    vecFuncOp, "expected tla.store_update mask from a legal mask producer");
+            if (!producedValues.contains(storeUpdate.getSource()))
+                return rewriter.notifyMatchFailure(
+                    vecFuncOp, "expected tla.store_update source from tla.load_update or compute op");
+        }
 
         auto funcOp = vecFuncOp->getParentOfType<func::FuncOp>();
         if (!funcOp)
@@ -3627,11 +4103,36 @@ public:
         SmallVector<Value> scalarOperands;
         collectVectorHelperScalarOperands(vecFuncOp, scalarOperands);
 
+        // Call-site ``hivm.pointer_cast`` consumes the inttoptr *address* SSA. If
+        // that address is defined inside ``tla.vec.func`` (e.g. lowered
+        // ``tla.ptr_add`` as ``addi``), materializing the helper operand would
+        // create an external use and ``eraseOp(vecFuncOp)`` would assert. Reject
+        // the outline with a match failure so later legalization reports a
+        // normal diagnostic (same shape as pre-PR), instead of Abort.
+        for (Value tensor : helperOperands) {
+            if (isa<MemRefType>(tensor.getType()))
+                continue;
+            auto descOp = tensor.getDefiningOp<::tla::TensorDescOp>();
+            if (!descOp || !llvm::isa<::tla::PtrType>(descOp.getBase().getType()))
+                continue;
+            Value ptr = descOp.getBase();
+            auto itp = ptr.getDefiningOp<::tla::IntToPtrOp>();
+            if (!itp)
+                return rewriter.notifyMatchFailure(vecFuncOp, "expected pointer lowered to tla.inttoptr boundary");
+            // ``inttoptr`` addr is i64; SCF chase stays on that address SSA.
+            Value callAddr = stripHelperAddressCasts(chaseScfCarrierInit(itp.getAddr()));
+            if (!dominanceInfo.dominates(callAddr, vecFuncOp.getOperation()))
+                return rewriter.notifyMatchFailure(
+                    vecFuncOp,
+                    "cannot outline address-backed tile whose base address is defined "
+                    "inside tla.vec.func");
+        }
+
         auto helperOr = buildHelperFunc(
             module, funcOp, vecFuncOp, helperOperands, helperOperandAliases, scalarOperands, nextVectorRegionId,
             loweredMemrefByValue);
         if (failed(helperOr))
-            return rewriter.notifyMatchFailure(vecFuncOp, "failed to build vector helper function");
+            return vecFuncOp.emitOpError("failed to build vector helper function"), failure();
         auto helper = *helperOr;
 
         // The for/if control flow lives inside the helper, so this is a single
@@ -3660,6 +4161,21 @@ public:
             }
             FailureOr<Value> base = failure();
             if (ptr) {
+                // Helper call ABI: in-loop ``tensor_desc(inttoptr(scf_i64))``
+                // materializes from the seed init (dominates the call). Live
+                // iter_arg addresses are rebound inside the helper via
+                // materializeTensorDescParameteri / resolveEffectiveUbPtr.
+                if (auto itp = ptr.getDefiningOp<::tla::IntToPtrOp>()) {
+                    Value seedAddr = stripHelperAddressCasts(chaseScfCarrierInit(itp.getAddr()));
+                    if (seedAddr != stripHelperAddressCasts(itp.getAddr())) {
+                        // Seed is the dominating i64 carrier init; rebuild inttoptr
+                        // at the call site (addr SSA is never itself an inttoptr).
+                        OpBuilder::InsertionGuard guard(rewriter);
+                        rewriter.setInsertionPoint(vecFuncOp);
+                        ptr =
+                            rewriter.create<::tla::IntToPtrOp>(vecFuncOp.getLoc(), itp.getResult().getType(), seedAddr);
+                    }
+                }
                 if (!ptr.getDefiningOp<::tla::IntToPtrOp>())
                     return rewriter.notifyMatchFailure(vecFuncOp, "expected pointer lowered to tla.inttoptr boundary");
                 SmallVector<Value, 1> dynamicSizes;
@@ -3786,6 +4302,10 @@ public:
         ModuleOp module = getOperation();
         nextVectorRegionId = 0;
 
+        // Snapshot the functions up front: lowering a vec.func appends a new
+        // vector_region helper to the module, and that helper must not be fed back
+        // through the lowering/folding driver (it already holds lowered AVE ops and
+        // the carried scf control flow).
         SmallVector<func::FuncOp, 4> funcOps(module.getOps<func::FuncOp>());
         for (func::FuncOp funcOp : funcOps) {
             if (funcOp.isDeclaration())

@@ -753,10 +753,10 @@ UB → L1 的目的 layout 只能是 `zN`；没有以 UB 为源、`nZ` 为目的
 block store 把每行分块写入打了 `zN` tag 的 UB view（见
 `examples/end_to_end/basic_mixed/basic_mixed_store_zN.py` 与
 `basic_mixed_store_zNUnAlign.py`，两者都用 `--dtype` 跑遍该通路支持的全部元素
-类型）。分块长度按元素类型算：一个 vector register 是 256 字节，`vsstb` 一次
-搬满它的 8 个 DataBlock，所以一块是 `256 / sizeof(T)` 个元素。8 位类型（`i8` /
-fp8）的 block store 与 GM↔UB、UB→L1 拷贝一样，在 bc 层按 `int8_t` 实例化：搬运
-只用到宽度与 stride，不解释元素类型，而 AIV 后端对 fp8 没有标量语义。
+类型）。分块长度按元素类型算：一个 vector register 是 256 字节，block store
+一次搬满它的 8 个 `DataBlock`，所以一块是 `256 / sizeof(T)` 个元素。8 位类型
+（`i8` / fp8）的 block store 与 GM↔UB、UB→L1 拷贝一样按字节宽度与 stride
+搬运，不依赖元素类型的标量语义。
 
 拷贝 / 切块大小按各 tile 的逻辑 `origin_shape`（不是嵌套物理 `shape`）。
 物理 `shape` / `stride` 描述这些逻辑元素如何存放（凑齐对齐长度、zN 打包等）。
@@ -909,7 +909,7 @@ Vector 拷贝通路
 
 ### `Tensor.load`
 
-**源码：** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L215)
+**源码：** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L437)
 
 功能说明：
 
@@ -918,7 +918,7 @@ Vector 拷贝通路
 函数原型：
 
 ```python
-tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[VectorSSA, VectorSSA]
+tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[VectorSSA, VectorSSA] | tuple[VectorSSA, _Tensor]
 ```
 
 参数说明：
@@ -931,14 +931,12 @@ tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[Vecto
   双返回值）、`us_b8` / `us_b16`（2 倍上采样）、`brc_b16`（单个 b16 元素
   广播）、`unpack_b16`（b16 零扩展到双倍宽度）、`e2b_b16` / `e2b_b32`
   （元素到 DataBlock 广播）、`blk`（一个 32 字节 DataBlock 广播到全部 8 个）。
-  `BlockLoadParams` 为跨步 DataBlock 收集：一条指令收集 8 个 DataBlock，
-  块头间隔 `block_stride` 个 DataBlock（32B 单位）；`block_stride == 0`
-  时将首个 DataBlock 复制到全部 8 槽；`post_update_stride` 为编译期地址
-  预偏移，单位 32B DataBlock。可选，默认 `None`。
-`UnalignLoadParams` → `VectorSSA`（`DIST_DINTLV_B32` 时可为二元组）；
-  `MaskLoadParams` → `MaskSSA`。可选，默认 `None`。
+  `BlockLoadParams` 为跨步 `DataBlock` 收集：一次 `load` 收集 8 个 `DataBlock`，
+  块头间隔 `block_stride` 个 `DataBlock`（32B 单位）；`block_stride == 0`
+  时将首个 `DataBlock` 复制到全部 8 槽；`post_update_stride` 为编译期地址
+  预偏移，单位 32B `DataBlock`。
   `MaskLoadParams.load_dist` 可为 `DIST_NORM`（默认，bit-packed 掩码载入）、
-  `DIST_US`（bit 上采样）或 `DIST_DS`（bit 下采样）。
+  `DIST_US`（bit 上采样）或 `DIST_DS`（bit 下采样）。可选，默认 `None`。
 
 约束说明：
 
@@ -958,6 +956,13 @@ tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[Vecto
 - 掩码载入字节偏移对齐（UB 字节地址 `base + offset×sizeof(T)`）：
   `DIST_NORM` → `VL/8`；`DIST_US` → `VL/16`；`DIST_DS` → `min(32, VL/4)`。
   VL=256 时为 32B / 16B / 32B。
+- `post_mode=update` 要求 `post_update_stride > 0`（编译期 `int` 或运行期
+  `Numeric` / index）、rank-1 tile、`DIST_NORM`，且元素类型为
+  `f16` / `bf16` / `f32`。UPDATE `load` 前后勿用其它名字别名同一窗口。调用返回
+  `(vector, next_tile)`；在 `tla.vec.func` 内须用 `tla.range` 赋回
+  `next_tile`（`while` 尚不支持嵌在 `vec.func` 内），循环才把它收成 SCF
+  游标。UPDATE 要求窗口已是原点窗（`coord=0`）；用 `tile_view`（或等价方式）
+  切出所需 tile，环内外均不自动折非零坐标。
 
 调用示例：
 
@@ -972,13 +977,20 @@ with tla.vec.func(mode="simd"):
         tla.params.MaskLoadParams(load_dist=tla.params.MaskLoadDist.DIST_DS)
     )
     y = tla.where(preg, x_reg, min_reg)
+    for _ in tla.range(n):
+        x_reg, x_ub = x_ub.load(
+            tla.params.NormalLoadParams(
+                post_mode=tla.params.PostMode.POST_MODE_UPDATE,
+                post_update_stride=64,
+            )
+        )
 ```
 
 ---
 
 ### `Tensor.store`
 
-**源码：** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L529)
+**源码：** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L850)
 
 功能说明：
 
@@ -987,7 +999,7 @@ with tla.vec.func(mode="simd"):
 函数原型：
 
 ```python
-tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mask: MaskSSA | None = None) -> None
+tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mask: MaskSSA | None = None) -> _Tensor | None
 ```
 
 参数说明：
@@ -997,7 +1009,8 @@ tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mas
   `UnalignStoreParams` / `BlockStoreParams` → vector 写回；`MaskStoreParams` → mask 写回。
   `NormalStoreParams.store_dist` 另可选 first-element 模式：`first_element_b8` /
   `first_element_b16` / `first_element_b32`——仅将源寄存器 lane 0 写入 tile
-  基址，后缀限定写出的元素字节宽度。可选，默认 `None`。
+  基址，后缀限定写出的元素字节宽度。若 `post_mode=update`，则返回下一扇窗口，
+  由调用方赋回（`tile = tile.store(...)`）。可选，默认 `None`。
 - `mask`（`MaskSSA | None`）：vector 写回的可选谓词；与 `MaskStoreParams` 及
   first-element 模式均不可同时使用。默认 `None`。
 
@@ -1007,6 +1020,12 @@ tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mas
 - 须在 `tla.vec.func()` 内调用；目标 tile 须位于 UB。
 - first-element 模式要求被写值与目标 tile 的元素宽度匹配后缀
   （b8 → 1 字节，b16 → 2 字节，b32 → 4 字节）；传入谓词 `mask` 会报错。
+- `post_mode=update` 要求 `post_update_stride > 0`（编译期 `int` 或运行期
+  `Numeric` / index）、rank-1 tile、`DIST_NORM`，且元素类型为
+  `f16` / `bf16` / `f32`。UPDATE `store` 前后勿用其它名字别名同一窗口。在
+  `tla.vec.func` 内须用 `tla.range` 赋回返回的 tile（`while` 尚不支持嵌在
+  `vec.func` 内），循环才把它收成和其它携带的 tile 一样的 tensor。与
+  UPDATE `load` 相同：调用前须为原点窗（`coord=0`）。
 
 调用示例：
 
@@ -1016,6 +1035,14 @@ with tla.vec.func(mode="simd"):
     y_ub.store(y_reg, tla.params.UnalignStoreParams())
     y_ub.store(y_reg, tla.params.NormalStoreParams(
         store_dist=tla.params.StoreDist.DIST_FIRST_ELEMENT_B16))
+    for _ in tla.range(n):
+        y_ub = y_ub.store(
+            y_reg,
+            tla.params.NormalStoreParams(
+                post_mode=tla.params.PostMode.POST_MODE_UPDATE,
+                post_update_stride=64,
+            ),
+        )
 ```
 
 ---
@@ -3033,7 +3060,7 @@ with tla.vector():
 
 ### `Tensor.fill`
 
-**源码：** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L720)
+**源码：** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1075)
 
 功能说明：
 

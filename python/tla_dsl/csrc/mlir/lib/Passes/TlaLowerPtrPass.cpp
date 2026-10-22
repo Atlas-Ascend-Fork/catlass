@@ -50,7 +50,8 @@ static LogicalResult resolveTensorPtrOps(ModuleOp module)
 
         if (isa<::tla::PtrType>((*base).getType())) {
             op.getResult().replaceAllUsesWith(*base);
-            op.erase();
+            // Leave dead tensor_ptr for the end-of-pass sweep — erasing inside
+            // tla.vec.func can assert when residual uses linger.
             continue;
         }
 
@@ -59,7 +60,6 @@ static LogicalResult resolveTensorPtrOps(ModuleOp module)
         Value addressI64 = builder.create<arith::IndexCastOp>(op.getLoc(), builder.getI64Type(), addressIndex);
         Value pointer = builder.create<::tla::IntToPtrOp>(op.getLoc(), op.getResult().getType(), addressI64);
         op.getResult().replaceAllUsesWith(pointer);
-        op.erase();
     }
     return success();
 }
@@ -78,6 +78,23 @@ static Value materializePtrFromI64(OpBuilder& builder, ::tla::PtrType resultType
     if (inputs.size() != 1 || !inputs.front().getType().isInteger(64))
         return {};
     return builder.create<::tla::IntToPtrOp>(loc, resultType, inputs.front());
+}
+
+/// UPDATE next_ptr stays ``!tla.ptr`` until VectorRegion binds the hardware
+/// pointer. SCF needs i64, so materialize ``tla.ptrtoint`` (or the address
+/// already stored in ``tla.inttoptr``).
+static Value materializeI64FromPtr(OpBuilder& builder, IntegerType resultType, ValueRange inputs, Location loc)
+{
+    if (inputs.size() != 1 || resultType.getWidth() != 64)
+        return {};
+    Value ptr = inputs.front();
+    if (!isa<::tla::PtrType>(ptr.getType()))
+        return {};
+    if (auto intToPtr = ptr.getDefiningOp<::tla::IntToPtrOp>()) {
+        if (intToPtr.getAddr().getType().isInteger(64))
+            return intToPtr.getAddr();
+    }
+    return builder.create<::tla::PtrToIntOp>(loc, resultType, ptr).getResult();
 }
 
 // Name of the module-level symbol that reserves the kernel's UB scratch.
@@ -401,6 +418,8 @@ public:
 
         LLVM::GlobalOp ubScratch = createUbScratchGlobal(module, ubHighWaterBytes(*allocationPlan));
 
+        // UPDATE load/store keep next-window !tla.ptr results as SSA (no
+        // identity tensor_ptr placeholder). Ordinary tensor_ptr ops still resolve.
         if (failed(resolveTensorPtrOps(module))) {
             signalPassFailure();
             return;
@@ -414,6 +433,7 @@ public:
         // so rematerialize the typed pointer boundary for each kind of use.
         converter.addArgumentMaterialization(materializePtrFromI64);
         converter.addSourceMaterialization(materializePtrFromI64);
+        converter.addTargetMaterialization(materializeI64FromPtr);
 
         RewritePatternSet patterns(context);
         ConversionTarget target(*context);
@@ -429,9 +449,25 @@ public:
         target.addLegalOp<ModuleOp>();
         target
             .addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, mlir::memref::MemRefDialect, ::tla::TlaDialect>();
-        target.addIllegalOp<
-            ::tla::AllocPtrOp, ::tla::DynamicUbBaseOp, ::tla::RecastPtrOp, ::tla::TensorPtrOp, ::tla::PtrAddOp>();
+        target.addIllegalOp<::tla::AllocPtrOp, ::tla::DynamicUbBaseOp, ::tla::RecastPtrOp, ::tla::PtrAddOp>();
+        target.addDynamicallyLegalOp<::tla::TensorPtrOp>([](::tla::TensorPtrOp op) { return op.use_empty(); });
         target.addDynamicallyLegalOp<::tla::IntToPtrOp>(isPointerConsumerBoundary);
+        // Leave memref↔tensor scaffolding legal so tla-finalize-memref can DCE
+        // dead bridge casts. Same-width integer casts are the unsigned
+        // debug-print bridge: arith.constant cannot return uiN, and
+        // tla-lower-debug-print peels them before LLVM.
+        target.addDynamicallyLegalOp<UnrealizedConversionCastOp>([](UnrealizedConversionCastOp op) {
+            if (op.getNumOperands() != 1 || op.getNumResults() != 1)
+                return false;
+            if (auto inTy = dyn_cast<IntegerType>(op.getOperandTypes()[0])) {
+                if (auto outTy = dyn_cast<IntegerType>(op.getResultTypes()[0])) {
+                    if (inTy.getWidth() == outTy.getWidth())
+                        return true;
+                }
+            }
+            auto isTensorTy = [](Type t) { return succeeded(decodeTensorTypeInfo(t)); };
+            return llvm::any_of(op.getOperandTypes(), isTensorTy) || llvm::any_of(op.getResultTypes(), isTensorTy);
+        });
         target.addLegalOp<::tla::MakeTensorOp, ::tla::MakeTensorLikeOp>();
         target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
             return converter.isSignatureLegal(op.getFunctionType()) && converter.isLegal(&op.getBody());
@@ -448,6 +484,28 @@ public:
             signalPassFailure();
             return;
         }
+
+        // ``ptrtoint(inttoptr(i64))`` is the address itself.
+        SmallVector<::tla::PtrToIntOp, 8> ptrToInts;
+        module.walk([&](::tla::PtrToIntOp op) { ptrToInts.push_back(op); });
+        for (::tla::PtrToIntOp op : ptrToInts) {
+            if (!op || !op->getBlock())
+                continue;
+            auto intToPtr = op.getPtr().getDefiningOp<::tla::IntToPtrOp>();
+            if (!intToPtr || !intToPtr.getAddr().getType().isInteger(64))
+                continue;
+            op.getResult().replaceAllUsesWith(intToPtr.getAddr());
+            if (op.use_empty())
+                op.erase();
+        }
+
+        SmallVector<::tla::TensorPtrOp, 8> deadTensorPtrs;
+        module.walk([&](::tla::TensorPtrOp op) {
+            if (op.use_empty())
+                deadTensorPtrs.push_back(op);
+        });
+        for (::tla::TensorPtrOp op : deadTensorPtrs)
+            op.erase();
     }
 };
 

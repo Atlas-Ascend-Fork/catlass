@@ -9,8 +9,8 @@
 // Vector tensor operands and scalar-access memrefs that point at the same
 // storage reuse the same helper argument.
 // CHECK-LABEL: func.func private @vector_region_
-// CHECK-SAME: (%{{.*}}: memref<64xf32, #hivm.address_space<ub>>,
-// CHECK-SAME: %{{.*}}: memref<64xf32, #hivm.address_space<ub>>)
+// CHECK-SAME: memref<64xf32, #hivm.address_space<ub>>
+// CHECK-SAME: memref<64xf32, #hivm.address_space<ub>>
 // CHECK: ave.hir.masked_store
 // CHECK: ave.hir.membar
 // CHECK: %[[VALUE:.*]] = memref.load

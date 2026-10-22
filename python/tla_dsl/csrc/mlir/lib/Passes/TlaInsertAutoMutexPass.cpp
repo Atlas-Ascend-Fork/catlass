@@ -210,13 +210,23 @@ private:
             return resolveImpl(add.getPtr(), assumptions, visiting);
         if (auto tensorPtr = value.getDefiningOp<::tla::TensorPtrOp>())
             return resolveImpl(tensorPtr.getSrc(), assumptions, visiting);
+        // UPDATE next_ptr aliases the same UB root as the window it advanced
+        // from — required so auto-sync sees outlined chained UPDATE.
+        if (auto loadUpdate = value.getDefiningOp<::tla::LoadUpdateOp>())
+            return resolveImpl(loadUpdate.getSource(), assumptions, visiting);
+        if (auto storeUpdate = value.getDefiningOp<::tla::StoreUpdateOp>())
+            return resolveImpl(storeUpdate.getDest(), assumptions, visiting);
+        if (auto ptrToInt = value.getDefiningOp<::tla::PtrToIntOp>())
+            return resolveImpl(ptrToInt.getPtr(), assumptions, visiting);
         if (auto intToPtr = value.getDefiningOp<::tla::IntToPtrOp>()) {
             auto ptrType = dyn_cast<::tla::PtrType>(intToPtr.getResult().getType());
             if (ptrType &&
                 (ptrType.getAddrspace() == AddressSpace::gm || ptrType.getAddrspace() == AddressSpace::generic))
                 return StorageExpr::global();
-            // A bare on-chip address has no allocation capacity/root.  Auto mode
-            // deliberately refuses to guess an alias interval for it.
+            // Prefer the defining ptr when the address is ``ptrtoint`` of one;
+            // otherwise a bare on-chip i64 has no allocation root.
+            if (auto fromPtr = intToPtr.getAddr().getDefiningOp<::tla::PtrToIntOp>())
+                return resolveImpl(fromPtr.getPtr(), assumptions, visiting);
             return StorageExpr::unknown();
         }
         if (auto desc = value.getDefiningOp<::tla::TensorDescOp>())
@@ -580,8 +590,12 @@ static LogicalResult collectInstructionPlans(
             vec.walk([&](Operation* nested) {
                 if (auto load = dyn_cast<::tla::LoadOp>(nested))
                     plan.resources.push_back(resolver.resolve(load.getSource()));
+                else if (auto loadUpdate = dyn_cast<::tla::LoadUpdateOp>(nested))
+                    plan.resources.push_back(resolver.resolve(loadUpdate.getSource()));
                 else if (auto store = dyn_cast<::tla::StoreOp>(nested))
                     plan.resources.push_back(resolver.resolve(store.getDest()));
+                else if (auto storeUpdate = dyn_cast<::tla::StoreUpdateOp>(nested))
+                    plan.resources.push_back(resolver.resolve(storeUpdate.getDest()));
                 else if (auto gather = dyn_cast<::tla::GatherOp>(nested)) {
                     // Reg→Reg gather has no UB storage operand.
                     if (isa<::tla::TlaTensorType>(gather.getX().getType()))

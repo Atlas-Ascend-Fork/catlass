@@ -559,7 +559,8 @@ def Tla_LoadOp : Tla_Op<"load", []> {
       ``block_stride == 0`` repeats the first DataBlock. ``repeat_stride``
       (POST_MODE_NORMAL) is a compile-time address pre-offset in 32B
       DataBlocks. Strided load is mutually exclusive with ``load_dist`` and
-      the dual result.
+      the dual result. PostMode UPDATE is ``tla.load_update``, not this op.
+
     * ``!tla.mask`` — MaskReg load (AscendC ``LoadAlign(MaskReg&)`` /
       ``MaskDist`` / ``plds``). Source UB element type must be a 1/2/4-byte
       scalar (int or float). ``N`` on ``!tla.mask<N>`` is
@@ -576,11 +577,12 @@ def Tla_LoadOp : Tla_Op<"load", []> {
                        OptionalAttr<I32Attr>:$repeat_stride,
                        OptionalAttr<Tla_LoadDistAttr>:$load_dist,
                        OptionalAttr<UnitAttr>:$unaligned_ub_access);
+  // Second result: dintlv even/odd vector only.
   let results = (outs AnyTypeOf<[Tla_VectorSSAType, Tla_MaskSSAType]>:$result,
                       Optional<Tla_VectorSSAType>:$result2);
   let assemblyFormat = [{
-    $source attr-dict `:` type($source) `->` qualified(type($result))
-    ( `,` qualified(type($result2))^)?
+    $source attr-dict `:`
+    type($source) `->` qualified(type($result)) (`,` qualified(type($result2))^)?
   }];
   let hasVerifier = 1;
 }
@@ -592,7 +594,8 @@ def Tla_StoreOp : Tla_Op<"store", [AttrSizedOperandSegments]> {
 
     * ``!tla.vector`` — data store. Optional predicate ``mask`` controls which
       lanes are written. Optional ``unaligned_ub_access`` lowers to unaligned
-      UB store (``vstas``/``vstus`` via HIVMAVE).
+      UB store (``vstas``/``vstus`` via HIVMAVE). ``block_stride`` selects
+      DATA_BLOCK_COPY BlockStore. PostMode UPDATE is ``tla.store_update``.
     * ``!tla.mask`` — continuous-aligned MaskReg store (AscendC
       ``StoreAlign(..., MaskReg&)`` / ``DIST_NORM`` / ``psts``). Destination
       UB element type must be a 1/2/4-byte scalar (int or float). Spill size
@@ -609,10 +612,62 @@ def Tla_StoreOp : Tla_Op<"store", [AttrSizedOperandSegments]> {
                        Optional<Tla_IntegerOrIndexType>:$block_stride,
                        OptionalAttr<Tla_StoreDistAttr>:$store_dist,
                        OptionalAttr<UnitAttr>:$unaligned_ub_access);
+  let results = (outs);
   let assemblyFormat = [{
-    $dest `,` $source (`mask` $mask^)? (`stride` $block_stride^)? attr-dict `:`
+    $dest `,` $source (`mask` $mask^)? (`stride` $block_stride^)?
+    attr-dict `:`
     type($dest) `,` qualified(type($source)) (`mask` qualified(type($mask))^)?
     (`block_stride` qualified(type($block_stride))^)?
+  }];
+  let hasVerifier = 1;
+}
+
+def Tla_LoadUpdateOp : Tla_Op<"load_update", []> {
+  let summary = "Aligned PostMode UPDATE load";
+  let description = [{
+    Continuous aligned UB load with AscendC ``POST_MODE_UPDATE``.
+
+    Results are the loaded ``!tla.vector`` and the next-window ``!tla.ptr``.
+    ``post_update_stride`` is an element count (integer or index SSA).
+    VectorRegion emits HIVM ``vldsx1.post`` and maps ``newPtr`` onto that
+    pointer. The frontend builds a coord-0 tile from the pointer and yields
+    the tile. UnAlign UPDATE is not this op.
+  }];
+  let arguments = (ins Tla_TensorType:$source,
+                       Tla_IntegerOrIndexType:$post_update_stride);
+  let results = (outs Tla_VectorSSAType:$result,
+                      Tla_PtrType:$next_ptr);
+  let assemblyFormat = [{
+    $source `post_update_stride` $post_update_stride attr-dict `:`
+    type($source) `post_update_stride` qualified(type($post_update_stride))
+    `->` qualified(type($result)) `,` qualified(type($next_ptr))
+  }];
+  let hasVerifier = 1;
+}
+
+def Tla_StoreUpdateOp : Tla_Op<"store_update", []> {
+  let summary = "Aligned PostMode UPDATE store";
+  let description = [{
+    Continuous aligned UB store with AscendC ``POST_MODE_UPDATE``.
+
+    Result is the next-window ``!tla.ptr``. ``post_update_stride`` is an
+    element count (integer or index SSA). Optional predicate ``mask``.
+    VectorRegion emits HIVM ``vstsx1.post`` and maps ``newPtr`` onto that
+    pointer. The frontend builds a coord-0 tile from the pointer and yields
+    the tile. UnAlign UPDATE is not this op.
+  }];
+  let arguments = (ins Tla_TensorType:$dest,
+                       Tla_VectorSSAType:$source,
+                       Tla_IntegerOrIndexType:$post_update_stride,
+                       Optional<Tla_MaskSSAType>:$mask);
+  let results = (outs Tla_PtrType:$next_ptr);
+  let assemblyFormat = [{
+    $dest `,` $source `post_update_stride` $post_update_stride (`mask` $mask^)?
+    attr-dict `:`
+    type($dest) `,` qualified(type($source))
+    `post_update_stride` qualified(type($post_update_stride))
+    (`mask` qualified(type($mask))^)?
+    `->` qualified(type($next_ptr))
   }];
   let hasVerifier = 1;
 }

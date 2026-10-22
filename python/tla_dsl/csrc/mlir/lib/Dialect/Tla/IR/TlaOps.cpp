@@ -782,8 +782,6 @@ mlir::LogicalResult StoreOp::verify()
             return emitOpError(
                 "dest !tla.tensor element type must be a 1/2/4-byte scalar "
                 "for MaskSSA store");
-
-        // If `storeDistAttr` supports intlv mode, check here if `getResult2()` is None
         return mlir::success();
     }
 
@@ -808,11 +806,6 @@ mlir::LogicalResult StoreOp::verify()
             return emitOpError("predicate mask is not supported with first_element store_dist");
 
         auto destElementType = destType.getPtr().getPointee();
-        // Explicit masks retain their historical behavior: their predicate
-        // geometry is defined by the user and verified below against the
-        // source vector. Omitted masks and mask-ignoring first-element stores
-        // need compiler-derived geometry and therefore require a supported
-        // source/destination width pairing.
         if ((!getMask() || isFirstElement) &&
             !getPackedStorePredicateGeometry(dist, vectorSource.getElementType(), destElementType)) {
             return emitOpError() << "unsupported " << stringifyStoreDist(dist)
@@ -1082,9 +1075,6 @@ mlir::LogicalResult LoadOp::verify()
     if (!mlir::isa<VectorSSAType>(getResult().getType()))
         return emitOpError("result must be !tla.vector or !tla.mask");
 
-    // Strided block load (vsldb): mutually exclusive with load_dist, the dual
-    // result, and the MaskSSA path (checked above: mask result rejects
-    // load_dist but block_stride is rejected here for clarity).
     if (auto blockStrideAttr = getBlockStrideAttr()) {
         if (getLoadDist())
             return emitOpError("block_stride is mutually exclusive with load_dist");
@@ -1092,7 +1082,6 @@ mlir::LogicalResult LoadOp::verify()
             return emitOpError("block_stride is mutually exclusive with unaligned_ub_access");
         if (getResult2())
             return emitOpError("block_stride is not valid with a second (dual-destination) result");
-        // vsldb packs each stride into a 16-bit immediate field.
         if (blockStrideAttr.getInt() < 0 || blockStrideAttr.getInt() > 0xFFFF)
             return emitOpError("block_stride must fit the 16-bit vsldb immediate field [0, 65535]");
     }
@@ -1107,13 +1096,76 @@ mlir::LogicalResult LoadOp::verify()
     if (auto loadDistAttr = getLoadDist())
         isDintlv = loadDistAttr->getLoadDist() == ::LoadDist::dintlv_b32;
 
+    mlir::Value result2 = getResult2();
+    bool result2IsVector = result2 && mlir::isa<VectorSSAType>(result2.getType());
     if (isDintlv) {
-        if (!getResult2())
-            return emitOpError("load_dist dintlv_b32 requires a second result (dual-destination load)");
-    } else if (getResult2()) {
-        return emitOpError("second result is only valid with load_dist dintlv_b32");
+        if (!result2IsVector)
+            return emitOpError("load_dist dintlv_b32 requires a second !tla.vector result");
+    } else if (result2) {
+        return emitOpError("second result is only valid as !tla.vector (dintlv_b32)");
+    }
+    if (getBlockStride() && getUnalignedUbAccess())
+        return emitOpError("block_stride is not supported with unaligned_ub_access");
+    return mlir::success();
+}
+
+static mlir::LogicalResult verifyUpdateStride(mlir::Operation* op, mlir::Value stride)
+{
+    if (!stride)
+        return op->emitOpError("requires post_update_stride");
+    if (auto constantOp = stride.getDefiningOp<mlir::arith::ConstantOp>()) {
+        if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(constantOp.getValue())) {
+            if (intAttr.getInt() <= 0)
+                return op->emitOpError("post_update_stride must be > 0");
+        }
     }
     return mlir::success();
+}
+
+static mlir::LogicalResult verifyUpdatePtr(mlir::Operation* op, mlir::Value ptr, mlir::Type elemType)
+{
+    auto ptrTy = mlir::dyn_cast<PtrType>(ptr.getType());
+    if (!ptrTy)
+        return op->emitOpError("next-window result must be !tla.ptr");
+    if (ptrTy.getAddrspace() != AddressSpace::ub)
+        return op->emitOpError("next-window !tla.ptr must be ub");
+    if (ptrTy.getPointee() != elemType)
+        return op->emitOpError("next-window !tla.ptr pointee must match the tensor element type");
+    return mlir::success();
+}
+
+mlir::LogicalResult LoadUpdateOp::verify()
+{
+    if (!hasEnclosingRegion<VecFuncOp>(getOperation()))
+        return emitOpError("must be nested inside a tla.vec.func region");
+    auto sourceType = mlir::dyn_cast<TlaTensorType>(getSource().getType());
+    if (!sourceType)
+        return emitOpError("source must be !tla.tensor");
+    if (sourceType.getPtr().getAddrspace() != AddressSpace::ub)
+        return emitOpError("source !tla.tensor must be in ub address space");
+    if (!mlir::isa<VectorSSAType>(getResult().getType()))
+        return emitOpError("result must be !tla.vector");
+    if (failed(verifyUpdateStride(getOperation(), getPostUpdateStride())))
+        return mlir::failure();
+    return verifyUpdatePtr(getOperation(), getNextPtr(), sourceType.getPtr().getPointee());
+}
+
+mlir::LogicalResult StoreUpdateOp::verify()
+{
+    if (!hasEnclosingRegion<VecFuncOp>(getOperation()))
+        return emitOpError("must be nested inside a tla.vec.func region");
+    auto destType = mlir::dyn_cast<TlaTensorType>(getDest().getType());
+    if (!destType)
+        return emitOpError("dest must be !tla.tensor");
+    if (destType.getPtr().getAddrspace() != AddressSpace::ub)
+        return emitOpError("dest !tla.tensor must be in ub address space");
+    if (!mlir::isa<VectorSSAType>(getSource().getType()))
+        return emitOpError("source must be !tla.vector");
+    if (failed(verifyUpdateStride(getOperation(), getPostUpdateStride())))
+        return mlir::failure();
+    if (failed(verifyUpdatePtr(getOperation(), getNextPtr(), destType.getPtr().getPointee())))
+        return mlir::failure();
+    return verifyMaskMatchesVector(getOperation(), getMask(), getSource().getType());
 }
 
 static mlir::LogicalResult verifyConstantScalarIndexInBounds(mlir::Operation* op, mlir::Value index, int64_t length)

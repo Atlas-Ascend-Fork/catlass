@@ -940,7 +940,7 @@ Supported vector copy routes
 
 ### `Tensor.load`
 
-**Source:** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L220)
+**Source:** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L474)
 
 Description:
 
@@ -949,7 +949,7 @@ Load this UB tensor tile into vector or mask SSA (`tile.load`).
 Prototype:
 
 ```python
-tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[VectorSSA, VectorSSA]
+tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[VectorSSA, VectorSSA] | tuple[VectorSSA, _Tensor]
 ```
 
 Parameters:
@@ -964,11 +964,11 @@ Parameters:
   `unpack_b16` (zero-extend b16 to double width),
   `e2b_b16` / `e2b_b32` (element-to-DataBlock broadcast),
   `blk` (one 32-byte DataBlock broadcast to all 8).
-  `BlockLoadParams` is a strided DataBlock gather: loads 8
-  DataBlocks whose heads are `block_stride` DataBlocks (32B units)
-  apart; `block_stride == 0` repeats the first DataBlock into all
+  `BlockLoadParams` is a stride-based `DataBlock` gather: one load gathers
+  8 blocks whose heads are `block_stride` blocks (32B `DataBlock` units)
+  apart; `block_stride == 0` repeats the first block into all
   8 slots; `post_update_stride` is the compile-time address
-  pre-offset in 32B DataBlocks.
+  pre-offset in 32B blocks.
   `MaskLoadParams.load_dist` may be `DIST_NORM` (default bit-packed
   mask load), `DIST_US` (bit upsample), or `DIST_DS` (bit
   downsample). Optional, default `None`.
@@ -994,6 +994,15 @@ Constraints:
   base + offset×sizeof(T)): ``DIST_NORM`` → ``VL/8``;
   ``DIST_US`` → ``VL/16``; ``DIST_DS`` → ``min(32, VL/4)``.
   On VL=256 this is 32B / 16B / 32B.
+- `post_mode=update` on `NormalLoadParams` requires
+  `post_update_stride > 0` (int or runtime Numeric/index),
+  rank-1 contiguous tile (all layout strides == 1), `DIST_NORM`,
+  and element type in `{f16, bf16, f32}`; returns
+  `(vector, next_tile)`.
+  Inside `tla.vec.func`, assign `next_tile` back with `tla.range`
+  (`while` is not supported nested in `vec.func`). The window must
+  already be an origin tile (`coord=0`); cut it with `tile_view`
+  (or equivalent). UPDATE never automatically folds non-zero coordinates.
 
 Example:
 
@@ -1014,7 +1023,7 @@ with tla.vec.func(mode="simd"):
 
 ### `Tensor.store`
 
-**Source:** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L601)
+**Source:** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L889)
 
 Description:
 
@@ -1023,7 +1032,7 @@ Store vector or mask SSA into this UB tensor tile (`tile.store`).
 Prototype:
 
 ```python
-tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mask: MaskSSA | None = None) -> None
+tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mask: MaskSSA | None = None) -> _Tensor | None
 ```
 
 Parameters:
@@ -1035,7 +1044,8 @@ Parameters:
   additionally selects the first-element modes `first_element_b8` /
   `first_element_b16` / `first_element_b32`: write only lane 0 of
   the source register to the tile base, with the suffix fixing the
-  stored element width in bytes. Optional, default `None`.
+  stored element width in bytes. With `post_mode=update`, returns
+  the next window. Optional, default `None`.
 - `mask` (`MaskSSA | None`): Optional predicate for vector stores;
   rejected by `MaskStoreParams` and first-element modes. Default `None`.
 
@@ -1046,6 +1056,13 @@ Constraints:
 - First-element modes require the stored value and the dest tile to
   use the suffix-matching element width (b8 → 1-byte, b16 → 2-byte,
   b32 → 4-byte); passing a predicate mask raises an error.
+- `post_mode=update` on `NormalStoreParams` requires
+  `post_update_stride > 0` (int or runtime Numeric/index),
+  rank-1 contiguous tile (all layout strides == 1), `DIST_NORM`,
+  and element type in `{f16, bf16, f32}`; returns the next tile.
+  Inside `tla.vec.func`, assign it back with `tla.range`
+  (`while` is not supported nested in `vec.func`). Same
+  origin window (`coord=0`) contract as UPDATE `load`.
 
 Example:
 
@@ -3627,7 +3644,7 @@ with tla.vector():
 
 ### `Tensor.fill`
 
-**Source:** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L792)
+**Source:** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1115)
 
 Description:
 

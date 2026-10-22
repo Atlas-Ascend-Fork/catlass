@@ -535,6 +535,10 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                 ]
             ],
         )
+    yield (
+        "vector-load-store-update",
+        [["vector_ops/load_store_update.py", "add", "--shape", "400", *dev]],
+    )
 
     # --- tensor_index ---
     yield (

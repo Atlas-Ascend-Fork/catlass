@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from catlass._mlir import ir as mlir_ir  # type: ignore[assignment]
+from catlass._mlir.dialects import tla as _tla_ops_gen  # type: ignore[import-not-found]
 
 from .. import _tla_type_bridge
-from catlass._mlir.dialects import tla as _tla_ops_gen  # type: ignore[import-not-found]
-from ..base_dsl.op import dsl_user_op
 from .. import runtime as _runtime
+from ..base_dsl.op import dsl_user_op
 from ..base_dsl.typing import Bool, Numeric
 from ..params import LoadParams, StoreParams
 from .typing import Tensor as TensorABC
@@ -38,6 +38,255 @@ _MASK_DIST_US_DS_ELEM_BYTES = frozenset((1, 2, 4, 8))
 _MASK_DIST_US_DS_DEFAULT_LANES = 256
 
 
+def _rank1_leaf_or_meta(
+    type_leaves: list[Any],
+    meta_leaves: list[Any],
+    *,
+    rank_msg: str,
+    missing_msg: str,
+    unresolved_msg: str,
+) -> Any:
+    """Resolve one rank-1 type leaf, falling back to metadata when the type is ``?``."""
+    from ..execution_lowering import TlaLoweringError
+
+    if len(type_leaves) != 1:
+        raise TlaLoweringError(rank_msg.format(rank=len(type_leaves)))
+    value: Any = type_leaves[0]
+    if value is None:
+        if len(meta_leaves) != 1:
+            raise TlaLoweringError(missing_msg.format(meta=meta_leaves))
+        value = meta_leaves[0]
+    if value is None:
+        raise TlaLoweringError(unresolved_msg)
+    return value
+
+
+def _tile_extent_and_elem_coord(tile: _Tensor) -> tuple[Any, Any]:
+    """Return ``(extent, element_coord)`` for a rank-1 UPDATE window tile."""
+    from ..core_api import (
+        _as_value,
+        _flatten_tla_tuple,
+        _tla_tensor_type_for_mlir_value,
+    )
+
+    desc = _tla_tensor_type_for_mlir_value(_as_value(tile))
+    extent = _rank1_leaf_or_meta(
+        list(_flatten_tla_tuple(desc.shape)),
+        list(_flatten_tla_tuple(tile.shape)),
+        rank_msg="post_mode=update currently supports rank-1 tiles only, got shape rank {rank}",
+        missing_msg="post_mode=update dynamic tile extent metadata is missing; got {meta!r}",
+        unresolved_msg=(
+            "post_mode=update could not resolve the tile extent; use "
+            "tile_view(parent, make_shape(...), ...) with a static or dynamic rank-1 shape"
+        ),
+    )
+    elem_coord = _rank1_leaf_or_meta(
+        list(_flatten_tla_tuple(desc.coord)),
+        list(_flatten_tla_tuple(tile.coord)),
+        rank_msg="post_mode=update requires a 1D tile coord, got rank {rank}",
+        missing_msg="post_mode=update dynamic coord metadata is missing; got {meta!r}",
+        unresolved_msg="post_mode=update could not resolve the tile coord",
+    )
+    return extent, elem_coord
+
+
+def _tile_origin_extent(tile: _Tensor) -> Any:
+    """Rank-1 ``origin_shape`` extent for UPDATE next-window rebuild (scheme A)."""
+    from ..core_api import (
+        _as_value,
+        _flatten_tla_tuple,
+        _tla_tensor_type_for_mlir_value,
+    )
+
+    desc = _tla_tensor_type_for_mlir_value(_as_value(tile))
+    return _rank1_leaf_or_meta(
+        list(_flatten_tla_tuple(desc.origin_shape)),
+        list(_flatten_tla_tuple(tile.origin_shape)),
+        rank_msg=(
+            "post_mode=update currently supports rank-1 origin_shape only, "
+            "got origin rank {rank}"
+        ),
+        missing_msg="post_mode=update dynamic origin_shape metadata is missing; got {meta!r}",
+        unresolved_msg=(
+            "post_mode=update could not resolve origin_shape; pass "
+            "make_layout(..., origin_shape=...) on the first UPDATE window"
+        ),
+    )
+
+
+def _require_update_origin_window(
+    tile: _Tensor,
+    *,
+    loc: mlir_ir.Location | None = None,
+) -> _Tensor:
+    """Reject UPDATE load/store when the tile is not an origin window (``coord=0``).
+
+    Cut the needed window with ``tile_view`` (or equivalent) so the tile itself
+    is an origin window. UPDATE does not automatically fold non-zero coordinates.
+    """
+    del loc
+    from ..core_api import (
+        _as_value,
+        _const_int_value,
+        _flatten_tla_tuple,
+        _tla_tensor_type_for_mlir_value,
+    )
+    from ..execution_lowering import TlaLoweringError
+
+    if not isinstance(tile, _Tensor):
+        return tile
+    try:
+        desc = _tla_tensor_type_for_mlir_value(_as_value(tile))
+        type_leaves = list(_flatten_tla_tuple(desc.coord))
+        _, elem_coord = _tile_extent_and_elem_coord(tile)
+    except TlaLoweringError:
+        return tile
+    type_leaf = type_leaves[0] if len(type_leaves) == 1 else None
+    if (
+        isinstance(type_leaf, int)
+        and not isinstance(type_leaf, bool)
+        and type_leaf == 0
+    ):
+        return tile
+    if _const_int_value(elem_coord) == 0:
+        return tile
+    raise TlaLoweringError(
+        "post_mode=update requires an origin window (coord=0); cut the "
+        "needed tile with tile_view (or equivalent) before load/store"
+    )
+
+
+def _require_update_unit_stride(tile: _Tensor) -> None:
+    """Reject UPDATE when any layout stride leaf is not statically 1.
+
+    ``_make_update_tile_from_ptr`` rebuilds the next window with
+    ``make_stride(1)``; non-unit (or dynamic) strides would be silently dropped.
+    """
+    from ..core_api import (
+        _as_value,
+        _const_int_value,
+        _flatten_tla_tuple,
+        _tla_tensor_type_for_mlir_value,
+    )
+    from ..execution_lowering import TlaLoweringError
+
+    if not isinstance(tile, _Tensor):
+        return
+    desc = _tla_tensor_type_for_mlir_value(_as_value(tile))
+    type_leaves = list(_flatten_tla_tuple(desc.stride))
+    meta_leaves = list(_flatten_tla_tuple(tile.stride))
+    if not type_leaves:
+        raise TlaLoweringError(
+            "post_mode=update requires a contiguous layout (all strides == 1); "
+            "got an empty stride tree"
+        )
+    for index, type_leaf in enumerate(type_leaves):
+        leaf: Any = type_leaf
+        if leaf is None:
+            leaf = meta_leaves[index] if index < len(meta_leaves) else None
+        static = None if isinstance(leaf, bool) else _const_int_value(leaf)
+        if static != 1:
+            raise TlaLoweringError(
+                "post_mode=update requires a contiguous layout "
+                f"(all strides == 1), got stride={tile.stride!r}"
+            )
+
+
+def _make_update_tile_from_ptr(
+    ptr: Any,
+    template: _Tensor,
+    *,
+    loc: mlir_ir.Location | None = None,
+) -> _Tensor:
+    """Build next UPDATE window from a UB ptr at coord 0 (keeps template origin)."""
+    from ..base_dsl.typing import as_numeric
+    from ..core_api import (
+        _Pointer,
+        make_coord,
+        make_layout,
+        make_shape,
+        make_stride,
+        make_tensor,
+    )
+    from ..execution_lowering import TlaLoweringError
+
+    if not isinstance(ptr, _Pointer):
+        ptr = _Pointer(ptr)
+
+    _require_update_unit_stride(template)
+    extent, _ = _tile_extent_and_elem_coord(template)
+    shape_extent = as_numeric(extent)
+    origin_extent = as_numeric(_tile_origin_extent(template))
+    tag_name = str(template.layout_tag)
+    import catlass.tla as tla  # noqa: PLC0415
+
+    layout_tag = getattr(tla.arch, tag_name, None)
+    if layout_tag is None and tag_name != "RowMajor":
+        raise TlaLoweringError(
+            "post_mode=update requires a tla.arch layout tag on "
+            f"the template tile, got layout_tag={tag_name!r}"
+        )
+    layout = make_layout(
+        make_shape(shape_extent, loc=loc),
+        make_stride(1, loc=loc),
+        origin_shape=make_shape(origin_extent, loc=loc),
+        layoutTag=layout_tag,
+        loc=loc,
+    )
+    return make_tensor(ptr, layout, make_coord(as_numeric(0), loc=loc), loc=loc)
+
+
+# Align PostMode UPDATE emit path today only wires HIVM
+# ``vldsx1.post`` / ``vstsx1.post`` for these element types.
+_UPDATE_SUPPORTED_DTYPES = frozenset({"f16", "bf16", "f32"})
+
+
+def _require_update_supported_dtype(element_type: Any) -> None:
+    """Reject UPDATE tiles whose element type is not yet wired in emit."""
+    from ..execution_lowering import TlaLoweringError
+
+    dtype = str(element_type).strip().lower()
+    if dtype not in _UPDATE_SUPPORTED_DTYPES:
+        raise TlaLoweringError(
+            "post_mode=update currently supports element types "
+            f"f16/bf16/f32 only, got {element_type}"
+        )
+
+
+def _validate_post_update_params(params: Any) -> bool:
+    """Return True if UPDATE is requested; raise on illegal combinations."""
+    from ..core_api import _const_int_value
+    from ..execution_lowering import TlaLoweringError
+    from ..params import LoadDist, PostMode, StoreDist
+
+    if not hasattr(params, "post_mode"):
+        return False
+
+    is_update = params.post_mode == PostMode.POST_MODE_UPDATE
+    stride = params.post_update_stride
+    static_stride = None if isinstance(stride, bool) else _const_int_value(stride)
+    if is_update:
+        load_dist = getattr(params, "load_dist", None)
+        if load_dist is not None and load_dist != LoadDist.DIST_NORM:
+            raise NotImplementedError(
+                f"post_mode=update with load_dist={load_dist!r} is not supported yet"
+            )
+        store_dist = getattr(params, "store_dist", None)
+        if store_dist is not None and store_dist != StoreDist.DIST_NORM:
+            raise NotImplementedError(
+                f"post_mode=update with store_dist={store_dist!r} is not supported yet"
+            )
+        if static_stride is not None and static_stride <= 0:
+            raise TlaLoweringError("post_mode=update requires post_update_stride > 0")
+    elif static_stride is None or static_stride != 0:
+        raise TlaLoweringError(
+            "post_update_stride requires post_mode=update, "
+            f"got post_mode={params.post_mode!r} with "
+            f"post_update_stride={params.post_update_stride!r}"
+        )
+    return is_update
+
+
 class _Tensor(TensorABC):
     """Frontend proxy for an SSA ``!tla.tensor`` value."""
 
@@ -62,7 +311,12 @@ class _Tensor(TensorABC):
         return [self.value.type]
 
     def __extract_mlir_values__(self) -> list[Any]:
-        """Flatten this tensor and the SSA leaves of its dynamic metadata."""
+        """Flatten this tensor and the SSA leaves of its dynamic metadata.
+
+        UPDATE windows are ordinary tiles: ``tile.load`` / ``tile.store`` with
+        ``post_mode=update`` build the next window with ``make_tensor`` and
+        the loop yields that tile, the same packing as any other carried tensor.
+        """
         from ..core_api import _tla_tensor_type_for_mlir_value
 
         tensor_type = _tla_tensor_type_for_mlir_value(self.value)
@@ -80,7 +334,7 @@ class _Tensor(TensorABC):
             )
         return values
 
-    def __new_from_mlir_values__(self, values: list[Any]) -> "_Tensor":
+    def __new_from_mlir_values__(self, values: list[Any]) -> _Tensor:
         """Rebuild an SCF-carried tensor and register its selected metadata."""
         from ..core_api import (
             _metadata_from_type_tree,
@@ -222,7 +476,7 @@ class _Tensor(TensorABC):
         params: LoadParams | None = None,
         *,
         loc: mlir_ir.Location | None = None,
-    ) -> MaskSSA | VectorSSA | tuple[VectorSSA, VectorSSA]:
+    ) -> MaskSSA | VectorSSA | tuple[VectorSSA, VectorSSA] | tuple[VectorSSA, _Tensor]:
         """Directory: Data Movement
         Description:
             Load this UB tensor tile into vector or mask SSA (`tile.load`).
@@ -238,11 +492,11 @@ class _Tensor(TensorABC):
               `unpack_b16` (zero-extend b16 to double width),
               `e2b_b16` / `e2b_b32` (element-to-DataBlock broadcast),
               `blk` (one 32-byte DataBlock broadcast to all 8).
-              `BlockLoadParams` is a strided DataBlock gather: loads 8
-              DataBlocks whose heads are `block_stride` DataBlocks (32B units)
-              apart; `block_stride == 0` repeats the first DataBlock into all
+              `BlockLoadParams` is a stride-based `DataBlock` gather: one load gathers
+              8 blocks whose heads are `block_stride` blocks (32B `DataBlock` units)
+              apart; `block_stride == 0` repeats the first block into all
               8 slots; `post_update_stride` is the compile-time address
-              pre-offset in 32B DataBlocks.
+              pre-offset in 32B blocks.
               `MaskLoadParams.load_dist` may be `DIST_NORM` (default bit-packed
               mask load), `DIST_US` (bit upsample), or `DIST_DS` (bit
               downsample). Optional, default `None`.
@@ -267,6 +521,15 @@ class _Tensor(TensorABC):
               base + offset×sizeof(T)): ``DIST_NORM`` → ``VL/8``;
               ``DIST_US`` → ``VL/16``; ``DIST_DS`` → ``min(32, VL/4)``.
               On VL=256 this is 32B / 16B / 32B.
+            - `post_mode=update` on `NormalLoadParams` requires
+              `post_update_stride > 0` (int or runtime Numeric/index),
+              rank-1 contiguous tile (all layout strides == 1), `DIST_NORM`,
+              and element type in `{f16, bf16, f32}`; returns
+              `(vector, next_tile)`.
+              Inside `tla.vec.func`, assign `next_tile` back with `tla.range`
+              (`while` is not supported nested in `vec.func`). The window must
+              already be an origin tile (`coord=0`); cut it with `tile_view`
+              (or equivalent). UPDATE never automatically folds non-zero coordinates.
 
             Example:
             ```python
@@ -301,7 +564,6 @@ class _Tensor(TensorABC):
             MaskLoadDist,
             MaskLoadParams,
             NormalLoadParams,
-            PostMode,
             UnalignLoadParams,
         )
         from ..types import TlaMaskSSATypeDescriptor, dtype_size_bytes
@@ -402,16 +664,30 @@ class _Tensor(TensorABC):
                 f"BlockLoadParams, or MaskLoadParams, got {type(params).__name__}"
             )
 
-        if params.post_mode != PostMode.POST_MODE_NORMAL:
-            raise NotImplementedError(
-                f"currently unsupported post_mode {params.post_mode!r}"
+        if _validate_post_update_params(params):
+            if not isinstance(params, NormalLoadParams):
+                raise TlaLoweringError(
+                    "post_mode=update on tile.load only accepts NormalLoadParams; "
+                    f"got {type(params).__name__}"
+                )
+            window = _require_update_origin_window(self, loc=loc)
+            _require_update_unit_stride(window)
+            source = _as_value(window)
+            source_desc = _tla_tensor_type_for_mlir_value(source)
+            _require_update_supported_dtype(source_desc.element_type)
+            result_type = _coerce_type(
+                _vector_ssa_type_from_tensor_descriptor(source_desc)
             )
-        # BlockLoadParams gives post_update_stride the POST_MODE_NORMAL
-        # compile-time pre-offset meaning (vsldb repeat_stride); for the other
-        # param types it stays unsupported.
-        if params.post_update_stride != 0 and not isinstance(params, BlockLoadParams):
-            raise NotImplementedError(
-                f"currently unsupported post_update_stride {params.post_update_stride}"
+            ptr_type = _tla_type_bridge.tensor_ptr_type_get(source.type)
+            vec_val, live_ptr = _tla_ops_gen.load_update(
+                result_type,
+                ptr_type,
+                source,
+                _as_value(params.post_update_stride),
+                loc=loc,
+            )
+            return VectorSSA(vec_val), _make_update_tile_from_ptr(
+                live_ptr, window, loc=loc
             )
         if isinstance(params, UnalignLoadParams) and params.is_pre:
             raise NotImplementedError(f"currently unsupported is_pre {params.is_pre}")
@@ -459,7 +735,7 @@ class _Tensor(TensorABC):
                 if not 0 <= stride_value <= 0xFFFF:
                     raise TlaLoweringError(
                         f"BlockLoadParams.{stride_name} must be in [0, 65535] "
-                        "(16-bit vsldb immediate field), got "
+                        "(16-bit immediate field), got "
                         f"{stride_value}"
                     )
             # vsldb stubs cover 2/4-byte lanes (f32/f16/bf16/i32/u32/i16/u16);
@@ -475,6 +751,16 @@ class _Tensor(TensorABC):
         load_kwargs: dict[str, Any] = {"loc": loc}
         if isinstance(params, UnalignLoadParams):
             load_kwargs["unaligned_ub_access"] = True
+        elif isinstance(params, BlockLoadParams):
+            # block_stride / vsldb repeat_stride are passed as explicit kwargs
+            # below (same as master) — do not also put them in load_kwargs.
+            if not isinstance(params.block_stride, int) or isinstance(
+                params.block_stride, bool
+            ):
+                raise TlaLoweringError(
+                    "BlockLoadParams.block_stride must be a compile-time int, "
+                    f"got {type(params.block_stride).__name__}"
+                )
         elif (
             isinstance(params, NormalLoadParams)
             and params.load_dist != LoadDist.DIST_NORM
@@ -582,6 +868,8 @@ class _Tensor(TensorABC):
             return tuple(VectorSSA(result) for result in results)
 
         block_stride_attr = params.block_stride if is_block_load else None
+        # BlockLoadParams.post_update_stride is vsldb repeat_stride (NORMAL
+        # compile-time pre-offset in 32B DataBlocks).
         repeat_stride_attr = (
             params.post_update_stride
             if is_block_load and params.post_update_stride != 0
@@ -605,7 +893,7 @@ class _Tensor(TensorABC):
         *,
         mask: MaskSSA | None = None,
         loc: mlir_ir.Location | None = None,
-    ) -> None:
+    ) -> _Tensor | None:
         """Directory: Data Movement
         Description:
             Store vector or mask SSA into this UB tensor tile (`tile.store`).
@@ -618,7 +906,8 @@ class _Tensor(TensorABC):
               additionally selects the first-element modes `first_element_b8` /
               `first_element_b16` / `first_element_b32`: write only lane 0 of
               the source register to the tile base, with the suffix fixing the
-              stored element width in bytes. Optional, default `None`.
+              stored element width in bytes. With `post_mode=update`, returns
+              the next window. Optional, default `None`.
             - `mask` (`MaskSSA | None`): Optional predicate for vector stores;
               rejected by `MaskStoreParams` and first-element modes. Default `None`.
 
@@ -628,6 +917,13 @@ class _Tensor(TensorABC):
             - First-element modes require the stored value and the dest tile to
               use the suffix-matching element width (b8 → 1-byte, b16 → 2-byte,
               b32 → 4-byte); passing a predicate mask raises an error.
+            - `post_mode=update` on `NormalStoreParams` requires
+              `post_update_stride > 0` (int or runtime Numeric/index),
+              rank-1 contiguous tile (all layout strides == 1), `DIST_NORM`,
+              and element type in `{f16, bf16, f32}`; returns the next tile.
+              Inside `tla.vec.func`, assign it back with `tla.range`
+              (`while` is not supported nested in `vec.func`). Same
+              origin window (`coord=0`) contract as UPDATE `load`.
 
             Example:
             ```python
@@ -652,10 +948,10 @@ class _Tensor(TensorABC):
         from ..execution_lowering import TlaLoweringError
         from ..params import (
             BlockStoreParams,
-            StoreDist,
             MaskStoreDist,
             MaskStoreParams,
             NormalStoreParams,
+            StoreDist,
             UnalignStoreParams,
         )
         from ..types import dtype_size_bytes
@@ -705,7 +1001,7 @@ class _Tensor(TensorABC):
                     "UB width (e.g. f32 UB with f32 / mask<64>)",
                 )
             _tla_ops_gen.store(dest, value_val, loc=loc)
-            return
+            return None
 
         if _tla_type_bridge.type_is_mask_ssa(value_val.type):
             raise TlaLoweringError(
@@ -726,6 +1022,32 @@ class _Tensor(TensorABC):
                 "store params must be NormalStoreParams, UnalignStoreParams, or "
                 f"MaskStoreParams, got {type(params).__name__}"
             )
+        if _validate_post_update_params(params):
+            if not isinstance(params, NormalStoreParams):
+                raise TlaLoweringError(
+                    "post_mode=update on tile.store only accepts NormalStoreParams; "
+                    f"got {type(params).__name__}"
+                )
+            mask_val = _as_value(mask) if mask is not None else None
+            if mask_val is not None:
+                _require_category("store", "mask", mask, "mask_ssa", 2)
+                _require_mask_matches_vector("store", mask_val, value_val)
+            window = _require_update_origin_window(self, loc=loc)
+            _require_update_unit_stride(window)
+            dest = _as_value(window)
+            _require_update_supported_dtype(
+                _tla_tensor_type_for_mlir_value(dest).element_type
+            )
+            ptr_type = _tla_type_bridge.tensor_ptr_type_get(dest.type)
+            next_ptr = _tla_ops_gen.store_update(
+                ptr_type,
+                dest,
+                value_val,
+                _as_value(params.post_update_stride),
+                mask=mask_val,
+                loc=loc,
+            )
+            return _make_update_tile_from_ptr(next_ptr, window, loc=loc)
         mask_val = _as_value(mask) if mask is not None else None
         if mask_val is not None:
             _require_mask_matches_vector("store", mask_val, value_val)
@@ -787,6 +1109,7 @@ class _Tensor(TensorABC):
             block_stride=block_stride_value,
             **store_kwargs,
         )
+        return None
 
     @dsl_user_op
     def fill(
@@ -1172,6 +1495,18 @@ def _tensor_metadata_field(value: mlir_ir.Value, field: str) -> Any:
 
 
 def _scale_coord_leaf(coord: Any, shape: Any) -> Any:
+    # Tile-granularity coord 0 must stay a static origin after scaling by a
+    # (possibly dynamic) extent. ``0 * vl`` would otherwise become a dynamic
+    # mul and spell ``!tla.coord<?>``, breaking UPDATE's origin-window check.
+    from ..core_api import _const_int_value
+
+    coord_const = _const_int_value(coord)
+    if coord_const == 0:
+        return 0
+    shape_const = _const_int_value(shape)
+    if coord_const is not None and shape_const is not None:
+        return int(coord_const) * int(shape_const)
+
     if isinstance(coord, int):
         return coord * shape
     from ..base_dsl.typing import as_numeric

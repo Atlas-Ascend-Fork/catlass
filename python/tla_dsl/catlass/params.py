@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+from typing import Any
 
 from .types import TlaTensor
 from dataclasses import dataclass
@@ -116,11 +117,11 @@ class StoreParams:
 
 @dataclass
 class NormalStoreParams(StoreParams):
-    """Default aligned vector store."""
+    """Default aligned vector store (``post_update_stride`` in elements)."""
 
     store_dist: str = StoreDist.DIST_NORM
     post_mode: str = PostMode.POST_MODE_NORMAL
-    post_update_stride: int = 0
+    post_update_stride: Any = 0
 
 
 @dataclass
@@ -128,16 +129,17 @@ class UnalignStoreParams(StoreParams):
     """Unaligned UB vector store (lowers with ``unaligned_ub_access``)."""
 
     post_mode: str = PostMode.POST_MODE_NORMAL
-    post_update_stride: int = 0
+    post_update_stride: Any = 0
 
 
 @dataclass
 class BlockStoreParams(StoreParams):
-    """UB Block store with stride"""
+    """UB Block store with stride (AscendC ``DATA_BLOCK_COPY``).
+
+    ``block_stride`` is in 32B DataBlock units.
+    """
 
     block_stride: int = 0
-    post_mode: str = PostMode.POST_MODE_NORMAL
-    post_update_stride: int = 0
 
 
 @dataclass
@@ -161,11 +163,11 @@ class LoadParams:
 
 @dataclass
 class NormalLoadParams(LoadParams):
-    """Default aligned vector load."""
+    """Default aligned vector load (``post_update_stride`` in elements)."""
 
     load_dist: str = LoadDist.DIST_NORM
     post_mode: str = PostMode.POST_MODE_NORMAL
-    post_update_stride: int = 0
+    post_update_stride: Any = 0
 
 
 @dataclass
@@ -174,22 +176,21 @@ class UnalignLoadParams(LoadParams):
 
     is_pre: bool = False
     post_mode: str = PostMode.POST_MODE_NORMAL
-    post_update_stride: int = 0
+    post_update_stride: Any = 0
 
 
 @dataclass
 class BlockLoadParams(LoadParams):
-    """UB Block load with stride (AscendC ``vsldb``).
+    """UB Block load with stride (AscendC ``DATA_BLOCK_COPY``).
 
-    One instruction gathers 8 DataBlocks whose heads are ``block_stride``
+    One load gathers 8 DataBlocks whose heads are ``block_stride``
     DataBlocks (32B units) apart; ``block_stride == 0`` repeats the first
-    DataBlock into all 8 slots. ``post_update_stride`` is the
-    POST_MODE_NORMAL compile-time address pre-offset in 32B DataBlocks.
-    Both strides must fit in 16 bits ([0, 65535]).
+    DataBlock into all 8 slots. ``post_update_stride`` is a compile-time
+    address pre-offset in 32B DataBlocks. Both strides must fit in 16 bits
+    ([0, 65535]).
     """
 
     block_stride: int = 0
-    post_mode: str = PostMode.POST_MODE_NORMAL
     post_update_stride: int = 0
 
 

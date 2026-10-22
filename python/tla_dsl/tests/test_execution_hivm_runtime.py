@@ -700,7 +700,6 @@ def test_public_compile_dry_run_invokes_typed_bridge_and_hivmc_a5(
     monkeypatch.setattr(execution, "_run_checked", fake_run_checked)
     monkeypatch.setenv("CATLASS_DSL_CACHE", "0")
     monkeypatch.setenv("CATLASS_DSL_CACHE_DIR", str(tmp_path / "cache"))
-
     compiled = tla.compile(
         _zero_arg_tla_kernel,
         options="--npu-arch 3510",

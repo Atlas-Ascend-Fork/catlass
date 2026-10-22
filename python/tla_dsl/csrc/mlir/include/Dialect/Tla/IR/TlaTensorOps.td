@@ -4,6 +4,21 @@
 // Included by Dialect/Tla/IR/Tla.td, the file mlir-tblgen is run on.
 //===----------------------------------------------------------------------===//
 
+def Tla_PtrToIntOp : Tla_Op<"ptrtoint", [Pure]> {
+  let summary = "tla.ptr to i64 address (``tla.ptrtoint``)";
+  let description = [{
+    Reads the address of a ``!tla.ptr`` as ``i64``. This is the direct inverse of
+    ``tla.inttoptr``. SCF carries that integer; ``tla.inttoptr`` rebuilds the
+    pointer where a tensor base is required. VectorRegion replaces it with the
+    hardware ``.post`` pointer.
+  }];
+  let arguments = (ins Tla_PtrType:$ptr);
+  let results = (outs I64:$addr);
+  let assemblyFormat = [{
+    $ptr attr-dict `:` qualified(type($ptr)) `->` type($addr)
+  }];
+}
+
 def Tla_IntToPtrOp : Tla_Op<"inttoptr", [Pure]> {
   let summary = "Integer SSA to tla.ptr (``tla.inttoptr`` parity)";
   let description = [{

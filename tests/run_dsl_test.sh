@@ -20,7 +20,7 @@
 # python/tla_dsl/examples/end_to_end/vector_ops (binary_op.py, masked_binary.py,
 # bitwise_ops.py, reduction_ops.py, compare_mask.py, unary_ops.py, arange_op.py,
 # interleave_op.py, mask_interleave_op.py, mask_select_op.py, load_dintlv_op.py, load_store_mask.py,
-# load_mask_dist.py, squeeze_op.py,
+# load_mask_dist.py, load_store_update.py, squeeze_op.py,
 # register_control_flow.py, load_and_store_scalar_after_reduction.py, load_us_b8_op.py,
 # cast_multi.py, gather_op.py, shift_op.py).
 # python/tla_dsl/examples/end_to_end/tensor_index (scalar_index_control_flow.py,
@@ -122,6 +122,7 @@ LOAD_US_B8_OP_REL="examples/end_to_end/vector_ops/load_us_b8_op.py"
 LOAD_DIST_OPS_REL="examples/end_to_end/vector_ops/load_dist_ops.py"
 LOAD_STORE_MASK_REL="examples/end_to_end/vector_ops/load_store_mask.py"
 LOAD_MASK_DIST_REL="examples/end_to_end/vector_ops/load_mask_dist.py"
+LOAD_STORE_UPDATE_REL="examples/end_to_end/vector_ops/load_store_update.py"
 STORE_PACK_REL="examples/end_to_end/vector_ops/store_pack.py"
 STORE_FIRST_ELEMENT_OP_REL="examples/end_to_end/vector_ops/store_first_element_op.py"
 SQUEEZE_OP_REL="examples/end_to_end/vector_ops/squeeze_op.py"
@@ -231,6 +232,7 @@ Run end-to-end validation for:
   - grouped_matmul_slice_m (grouped_matmul_slice_m.py)
   - cast_multi (cast_multi.py)
   - gather_op (gather_op.py)
+  - load_store_update (load_store_update.py)
   - shift_op (shift_op.py <op> --all-dtypes for shift_left/shift_right/shift_lefts/shift_rights)
   - load_mask_dist (load_mask_dist.py ds|us --run)
 Runs the basic_mmad flag-sync matrix with irregular CLI shapes (333×444×555
@@ -590,6 +592,10 @@ if [[ ! -f "${CATLASS_DSL_DIR}/${CAST_MULTI_REL}" ]]; then
 fi
 if [[ ! -f "${CATLASS_DSL_DIR}/${GATHER_OP_REL}" ]]; then
     echo "error: missing ${GATHER_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+    exit 1
+fi
+if [[ ! -f "${CATLASS_DSL_DIR}/${LOAD_STORE_UPDATE_REL}" ]]; then
+    echo "error: missing ${LOAD_STORE_UPDATE_REL} under ${CATLASS_DSL_DIR}" >&2
     exit 1
 fi
 if [[ ! -f "${CATLASS_DSL_DIR}/${SHIFT_OP_REL}" ]]; then

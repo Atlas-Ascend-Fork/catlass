@@ -140,12 +140,12 @@ public:
         // this pass, so they are still present when finalize runs.
         target.addIllegalOp<
             ::tla::TileViewOp, ::tla::ScalarLoadOp, ::tla::ScalarStoreOp, ::tla::CopyOp, ::tla::MakeTensorLikeOp,
-            ::tla::MakeTensorOp, ::tla::LoadOp, ::tla::StoreOp, ::tla::FuncOp, ::tla::ReturnOp, ::tla::CubeOp,
-            ::tla::VectorOp, ::tla::MmadOp, ::tla::MmadMxOp, ::tla::FillOp, ::tla::AllocPtrOp, ::tla::RecastPtrOp,
-            ::tla::TensorPtrOp, ::tla::PtrAddOp>();
+            ::tla::MakeTensorOp, ::tla::LoadOp, ::tla::StoreOp, ::tla::LoadUpdateOp, ::tla::StoreUpdateOp,
+            ::tla::FuncOp, ::tla::ReturnOp, ::tla::CubeOp, ::tla::VectorOp, ::tla::MmadOp, ::tla::MmadMxOp,
+            ::tla::FillOp, ::tla::AllocPtrOp, ::tla::RecastPtrOp, ::tla::TensorPtrOp, ::tla::PtrAddOp>();
         target.addDynamicallyLegalOp<
             ::tla::MakeShapeOp, ::tla::MakeCoordOp, ::tla::MakeStrideOp, ::tla::MakeLayoutOp, ::tla::IntToPtrOp,
-            ::tla::TensorDescOp>([](Operation* op) { return !hasNoResultUses(op); });
+            ::tla::PtrToIntOp, ::tla::TensorDescOp>([](Operation* op) { return !hasNoResultUses(op); });
         target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
             [](UnrealizedConversionCastOp op) { return !isDeadTensorBridgeCast(op); });
         target.addDynamicallyLegalOp<mlir::memref::SubViewOp>(
@@ -159,8 +159,8 @@ public:
                 EraseDeadTensorBridgeCastPattern, EraseDeadOpPattern<::tla::MakeShapeOp>,
                 EraseDeadOpPattern<::tla::MakeCoordOp>, EraseDeadOpPattern<::tla::MakeStrideOp>,
                 EraseDeadOpPattern<::tla::MakeLayoutOp>, EraseDeadOpPattern<::tla::IntToPtrOp>,
-                EraseDeadOpPattern<mlir::memref::SubViewOp>, EraseDeadOpPattern<::tla::TensorDescOp>,
-                EraseDeadOpPattern<hivm::PointerCastOp>>(&getContext());
+                EraseDeadOpPattern<::tla::PtrToIntOp>, EraseDeadOpPattern<mlir::memref::SubViewOp>,
+                EraseDeadOpPattern<::tla::TensorDescOp>, EraseDeadOpPattern<hivm::PointerCastOp>>(&getContext());
             if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
                 signalPassFailure();
                 return;

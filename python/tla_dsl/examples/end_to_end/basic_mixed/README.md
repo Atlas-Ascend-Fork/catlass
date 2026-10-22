@@ -171,6 +171,7 @@ tla.cross_core_set_flag(ub2l1_done, tla.arch.MTE3)
 
 ```python
 import catlass.tla as tla
+from catlass.params import BlockStoreParams
 
 # ...
 ub_a_zN = tla.make_tensor_like(ub_a_zN_ptr, ub_a, tla.arch.zN)

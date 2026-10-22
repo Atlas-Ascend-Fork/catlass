@@ -27,6 +27,12 @@ find_package(Python3 COMPONENTS Interpreter Development)
 
 list(APPEND CMAKE_PREFIX_PATH "${Python3_SITELIB}")
 
+# Disable LTO: pybind11 attaches pybind11::lto (-flto=auto -fno-fat-lto-objects) to
+# pybind11_add_module() targets when CMAKE_INTERPROCEDURAL_OPTIMIZATION is undefined.
+# Combined with the old-ABI libascendc_runtime.a, that fails to link on binutils 2.44+.
+# This must be set before find_package(pybind11) since the flag is bound at target creation.
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
+
 find_package(pybind11 REQUIRED)
 find_package(Torch REQUIRED)
 

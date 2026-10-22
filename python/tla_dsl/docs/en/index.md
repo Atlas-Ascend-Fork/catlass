@@ -10,7 +10,7 @@ nav_order: 0
 |-----|--------|
 | [Quick Start](quick_start.md) | Compatibility requirements, installation methods, and the shortest path to the first example. |
 | [Environment Preparation](dsl_development/build_guide/environment.md) | Environment requirements, installation methods (Conda / Docker), and the shortest onboarding path. |
-| [Building CATLASS DSL](dsl_development/build_guide/build.md) | `./build.sh` build (Development / Release mode) and artifact checks. |
+| [Building CATLASS Python](dsl_development/build_guide/build.md) | `./build.sh` build (Development / Release mode) and artifact checks. |
 | [Running Test Cases](dsl_development/build_guide/testing.md) | pytest, lit test, and end-to-end verification. |
 | [Kernel API Reference](api/kernel_api_reference.md) | Kernel-side Core API (`tla.copy`, `tla.mmad`, Vector operations, synchronization, etc.). |
 | [Host API Reference](api/host_api_reference.md) | Host-side `@tla.kernel`, `tla.compile` / launch, Host tensor. |

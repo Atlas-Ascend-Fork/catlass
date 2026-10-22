@@ -4,7 +4,7 @@ nav_order: 40
 
 # API 文档
 
-CATLASS DSL 的 API 参考与文档生成维护说明。
+CATLASS Python 的 API 参考与文档生成维护说明。
 
 | 文档 | 范围 |
 |------|------|

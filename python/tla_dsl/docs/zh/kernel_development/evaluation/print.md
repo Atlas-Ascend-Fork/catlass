@@ -2,9 +2,9 @@
 nav_order: 30
 ---
 
-# 在 CATLASS DSL 中使用打印调试接口
+# 在 CATLASS Python 中使用打印调试接口
 
-CATLASS DSL 提供 `tla.print` 接口，用于在 kernel 内部进行调试打印。`tla.print` 有两类用法：
+CATLASS Python 提供 `tla.print` 接口，用于在 kernel 内部进行调试打印。`tla.print` 有两类用法：
 
 | 用法        | 形态                                              | 说明                                 |
 | ----------- | ------------------------------------------------- | ------------------------------------ |
@@ -77,7 +77,7 @@ Tensor 打印适合查看 GM 或 UB 中的数据。
 
 ## 编译运行
 
-确认 kernel 中只保留上述一种打印方案，并且没有残留的 L1、L0A、L0B 或 L0C Tensor 打印后再运行。CATLASS DSL 编译器会根据 kernel 中的打印类型选择对应的调试 FIFO 通路，无需额外编译选项。建议启用强制重新编译环境变量，确保修改后的 kernel 和打印辅助代码重新生成：
+确认 kernel 中只保留上述一种打印方案，并且没有残留的 L1、L0A、L0B 或 L0C Tensor 打印后再运行。CATLASS Python 编译器会根据 kernel 中的打印类型选择对应的调试 FIFO 通路，无需额外编译选项。建议启用强制重新编译环境变量，确保修改后的 kernel 和打印辅助代码重新生成：
 
 ```bash
 cd python/tla_dsl/examples/end_to_end/basic_mmad

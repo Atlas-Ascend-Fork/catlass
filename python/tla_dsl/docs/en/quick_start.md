@@ -44,7 +44,7 @@ python -m catlass.bc_compile --force
 
 ## Writing the Simplest matmul Operator
 
-The following code implements the simplest matmul operator, using only one cube core and one tile loop, for a quick hands-on experience with CATLASS DSL.
+The following code implements the simplest matmul operator, using only one cube core and one tile loop, for a quick hands-on experience with CATLASS Python.
 
 ```python
 # catlass_dsl_matmul.py

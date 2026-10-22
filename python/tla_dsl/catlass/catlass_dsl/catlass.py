@@ -1,4 +1,4 @@
-"""Catlass DSL class entry points for ``@tla.jit`` / ``@tla.kernel``."""
+"""CATLASS Python class entry points for ``@tla.jit`` / ``@tla.kernel``."""
 
 from __future__ import annotations
 

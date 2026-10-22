@@ -4,7 +4,7 @@ nav_order: 10
 
 # 环境准备与构建
 
-本目录介绍如何准备开发环境、构建 CATLASS DSL 并运行测试。
+本目录介绍如何准备开发环境、构建 CATLASS Python 并运行测试。
 
 ## 环境搭建
 
@@ -19,5 +19,5 @@ nav_order: 10
 
 | 文档 | 范围 |
 |------|------|
-| [构建 CATLASS DSL](build.md) | `./build.sh` 构建（Development / Release 模式）、产物检查。 |
+| [构建 CATLASS Python](build.md) | `./build.sh` 构建（Development / Release 模式）、产物检查。 |
 | [运行测试用例](testing.md) | pytest、lit test 与端到端验证。 |

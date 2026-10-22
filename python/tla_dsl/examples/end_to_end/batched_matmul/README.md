@@ -1,6 +1,6 @@
 # Batched Matmul 端到端示例
 
-本目录下的样例演示 **CATLASS DSL** 下的批量矩阵乘。
+本目录下的样例演示 **CATLASS Python** 下的批量矩阵乘。
 
 ## 功能说明
 

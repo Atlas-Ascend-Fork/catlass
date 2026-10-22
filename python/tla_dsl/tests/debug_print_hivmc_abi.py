@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove the static HIVMC ABI of CATLASS DSL's debug-print workspace.
+"""Prove the static HIVMC ABI of CATLASS Python's debug-print workspace.
 
 This compiler-object test starts with project-generated non-print AIV MLIR and
 creates matched control/print variants.  The print-side ABI addition is only a

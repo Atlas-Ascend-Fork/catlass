@@ -1,8 +1,8 @@
-# CATLASS DSL
+# CATLASS Python
 
-CATLASS DSL 是 CATLASS 的 Python 前端。它在 AscendNPU-IR 的基础上构建 TLA Dialect，将 Python 中描述的 TLA 操作降级为 MLIR，并由 AscendNPU-IR 工具链编译为可执行的核函数产物。
+CATLASS Python 是 CATLASS 的 Python 前端。它在 AscendNPU-IR 的基础上构建 TLA Dialect，将 Python 中描述的 TLA 操作降级为 MLIR，并由 AscendNPU-IR 工具链编译为可执行的核函数产物。
 
-目前，CATLASS DSL 主要对 TLA 框架提供了DSL封装，可以使用`tla.make_tensor`等API来描述TLA操作，完成算子的实现。未来，我们将继续扩展CATLASS DSL，在全量支持TLA tensor抽象接口、矩阵向量计算等接口的基础之上，进行类似CATLASS 模板的封装，实现对齐CATLASS C++模板算子的开发体验。
+目前，CATLASS Python 主要对 TLA 框架提供了DSL封装，可以使用`tla.make_tensor`等API来描述TLA操作，完成算子的实现。未来，我们将继续扩展CATLASS Python，在全量支持TLA tensor抽象接口、矩阵向量计算等接口的基础之上，进行类似CATLASS 模板的封装，实现对齐CATLASS C++模板算子的开发体验。
 
 ## 文档
 
@@ -13,13 +13,13 @@ CATLASS DSL 是 CATLASS 的 Python 前端。它在 AscendNPU-IR 的基础上构�
 
 ## 快速开始
 
-安装 CATLASS DSL 并运行首个算子示例，请参阅[快速开始](docs/zh/quick_start.md)。
+安装 CATLASS Python 并运行首个算子示例，请参阅[快速开始](docs/zh/quick_start.md)。
 
 ## 兼容性
 
-CATLASS DSL 各版本支持的硬件平台及所需的最低 CANN 版本如下表：
+CATLASS Python 各版本支持的硬件平台及所需的最低 CANN 版本如下表：
 
-| CATLASS DSL 版本 | 最低支持 CANN 包版本 | 支持昇腾产品 |
+| CATLASS Python 版本 | 最低支持 CANN 包版本 | 支持昇腾产品 |
 | --- | --- | --- |
 | 当前 | `>= 9.1.0` | Ascend 950PR&950DT系列产品 |
 

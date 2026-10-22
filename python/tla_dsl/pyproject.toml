@@ -11,12 +11,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ascend-catlass-dsl"
-description = "Ascend CATLASS DSL (Tla IR / Python catlass), nested under the CATLASS repository."
+description = "Ascend CATLASS Python (Tla IR / Python catlass), nested under the CATLASS repository."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license-files = ["LICENSE", "LICENSE-APACHE"]
 authors = [
-  { name = "Ascend CATLASS DSL Contributors" }
+  { name = "Ascend CATLASS Python Contributors" }
 ]
 dependencies = [
   "numpy>=1.24,<3",

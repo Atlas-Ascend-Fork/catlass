@@ -1,6 +1,6 @@
 # 基础 Mixed（Cube + Vector）端到端示例
 
-本目录下提供的系列样例演示 **CATLASS DSL** 下基础 CV（Cube + Vector）融合算子的计算过程。
+本目录下提供的系列样例演示 **CATLASS Python** 下基础 CV（Cube + Vector）融合算子的计算过程。
 
 ## 功能说明
 

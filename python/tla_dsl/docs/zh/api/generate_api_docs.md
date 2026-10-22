@@ -4,7 +4,7 @@ nav_order: 20
 
 # 生成 API 文档
 
-CATLASS DSL API 文档由脚本通过 AST 静态解析源码生成 Markdown，再由仓库根目录
+CATLASS Python API 文档由脚本通过 AST 静态解析源码生成 Markdown，再由仓库根目录
 MkDocs 构建为静态站点。
 
 - Kernel API：`core_api.py`、`tla/tensor.py` → `docs/en/api/kernel_api_reference.md`

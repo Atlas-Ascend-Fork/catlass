@@ -4,7 +4,7 @@ nav_order: 50
 
 # DSL 环境变量
 
-本文说明运行与编译 CATLASS DSL 时可设置的环境变量。除特别注明外，变量名均以 `CATLASS_DSL_` 为前缀。
+本文说明运行与编译 CATLASS Python 时可设置的环境变量。除特别注明外，变量名均以 `CATLASS_DSL_` 为前缀。
 
 ## 布尔开关的取值约定
 

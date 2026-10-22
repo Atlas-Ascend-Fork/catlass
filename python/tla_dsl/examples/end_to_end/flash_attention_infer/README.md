@@ -2,7 +2,7 @@
 
 ## 功能说明
 
-- 算子功能：基于CATLASS DSL的推理 FlashAttention（chunk-prefill 底对齐语义），支持 causal掩码与全可见两种模式、GQA、`BSND/TND` 输入布局与 PagedAttention。
+- 算子功能：基于CATLASS Python的推理 FlashAttention（chunk-prefill 底对齐语义），支持 causal掩码与全可见两种模式、GQA、`BSND/TND` 输入布局与 PagedAttention。
 - 计算公式：
 
   $$
@@ -132,7 +132,7 @@ flash_attention_infer.py [-h] [--device DEVICE] [--dtype {fp16,bf16}]
 
 ### 执行示例
 
-1. 部署 CATLASS DSL 环境后，进入 `python/tla_dsl` 目录（可参考[快速开始](../../../docs/zh/quick_start.md)）。
+1. 部署 CATLASS Python 环境后，进入 `python/tla_dsl` 目录（可参考[快速开始](../../../docs/zh/quick_start.md)）。
 
 2. 执行算子样例程序：
 

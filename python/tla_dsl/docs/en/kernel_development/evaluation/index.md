@@ -4,7 +4,7 @@ nav_order: 20
 
 # Debugging and Optimization
 
-Debugging and performance tuning during CATLASS DSL operator development.
+Debugging and performance tuning during CATLASS Python operator development.
 
 | Document | Scope |
 |------|------|

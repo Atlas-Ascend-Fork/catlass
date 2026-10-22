@@ -1,4 +1,4 @@
-# Conda environment for Ascend Catlass DSL.
+# Conda environment for Ascend CATLASS Python.
 # LLVM/MLIR are provided by the AscendNPU-IR build, not by conda.
 name: ascend-catlass-dsl
 channels:

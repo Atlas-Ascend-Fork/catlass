@@ -2,7 +2,7 @@
 nav_order: 20
 ---
 
-# Building CATLASS DSL
+# Building CATLASS Python
 
 Unless otherwise noted, all commands are run in `/path/to/catlass/python/tla_dsl`, where `/path/to/catlass` is the root directory of the CATLASS repository you cloned.
 

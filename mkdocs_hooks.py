@@ -348,7 +348,7 @@ def on_page_context(context, page, config, nav, **kwargs):
 
     for item in nav.items:
         if _nav_source(item).startswith(f"{_DSL_SITE_SECTION.as_posix()}/"):
-            item.title = "CATLASS DSL"
+            item.title = "CATLASS Python"
         _polish_dsl_nav(item, locale)
 
     if page.file.generated_by == _DSL_GENERATED_BY and page.file.abs_src_path:

@@ -4,7 +4,7 @@ nav_order: 30
 
 # DSL 框架开发指南
 
-本目录面向需要从源码配置构建环境、自行构建并深入开发 CATLASS DSL 的开发者。
+本目录面向需要从源码配置构建环境、自行构建并深入开发 CATLASS Python 的开发者。
 
 > 当前版本暂不提供完整的产品包（一键安装即可运行），以下安装与构建步骤均为从源码的开发者流程。
 
@@ -20,7 +20,7 @@ nav_order: 30
 
 | 文档 | 范围 |
 |------|------|
-| [构建 CATLASS DSL](build_guide/build.md) | `./build.sh` 构建（Development / Release 模式）、产物检查。 |
+| [构建 CATLASS Python](build_guide/build.md) | `./build.sh` 构建（Development / Release 模式）、产物检查。 |
 | [运行测试用例](build_guide/testing.md) | pytest、lit test 与端到端验证。 |
 | [构建 AscendNPU-IR](build_guide/ascend_npu_ir.md) | 手动构建 DSL 所依赖的 AscendNPU-IR。 |
 | [手动 CMake 构建](advanced/manual_cmake_build.md) | 直接配置 `csrc/mlir` 的进阶用法。 |

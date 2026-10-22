@@ -4,7 +4,7 @@ nav_order: 10
 
 # 核心概念
 
-CATLASS DSL 的核心概念与编程模型，包括 DSL 语法约束、控制流、Layout、Tensor 接入，
+CATLASS Python 的核心概念与编程模型，包括 DSL 语法约束、控制流、Layout、Tensor 接入，
 以及 Host 侧编译与启动。
 
 | 文档 | 范围 |

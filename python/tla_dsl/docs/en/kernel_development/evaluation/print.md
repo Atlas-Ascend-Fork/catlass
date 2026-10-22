@@ -2,9 +2,9 @@
 nav_order: 30
 ---
 
-# Using the Print Debugging Interface in CATLASS DSL
+# Using the Print Debugging Interface in CATLASS Python
 
-CATLASS DSL provides the `tla.print` interface for debugging output inside a kernel. `tla.print` can be used in two ways:
+CATLASS Python provides the `tla.print` interface for debugging output inside a kernel. `tla.print` can be used in two ways:
 
 | Usage       | Form                                              | Description                                 |
 | ----------- | ------------------------------------------------- | ------------------------------------------- |
@@ -77,7 +77,7 @@ Tensor printing is suitable for inspecting data in GM or UB.
 
 ## Building and Running
 
-Before running, ensure that the kernel uses only one of the preceding printing approaches and contains no remaining calls that print L1, L0A, L0B, or L0C Tensors. The CATLASS DSL compiler selects the corresponding debugging FIFO path based on the type of printing used in the kernel, with no additional compilation options required. Enabling the force-recompilation environment variable is recommended to ensure that the modified kernel and printing helper code are regenerated:
+Before running, ensure that the kernel uses only one of the preceding printing approaches and contains no remaining calls that print L1, L0A, L0B, or L0C Tensors. The CATLASS Python compiler selects the corresponding debugging FIFO path based on the type of printing used in the kernel, with no additional compilation options required. Enabling the force-recompilation environment variable is recommended to ensure that the modified kernel and printing helper code are regenerated:
 
 ```bash
 cd python/tla_dsl/examples/end_to_end/basic_mmad

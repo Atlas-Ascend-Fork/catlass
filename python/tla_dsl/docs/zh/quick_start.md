@@ -41,7 +41,7 @@ python -m catlass.bc_compile --force
 
 ## 编写一个最简单的 matmul 算子
 
-下列代码实现了一个最简单的 matmul 算子，仅使用一个 cube 核、一次 tile 循环，用于快速体验 CATLASS DSL。
+下列代码实现了一个最简单的 matmul 算子，仅使用一个 cube 核、一次 tile 循环，用于快速体验 CATLASS Python。
 
 ```python
 # catlass_dsl_matmul.py

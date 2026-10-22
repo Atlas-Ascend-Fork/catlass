@@ -4,7 +4,7 @@
 
 ### CATLASS 2.1.0
 
-#### CATLASS DSL
+#### CATLASS Python
 
 - 关键特性
   - 面向 Ascend950 扩展低精度计算与寄存器编程能力：
@@ -33,9 +33,9 @@
 
 ### CATLASS 2.0.0
 
-#### CATLASS DSL
+#### CATLASS Python
 
-- 正式上线**CATLASS DSL**支持Pythonic Kernel，原生支持Tile编程。在 AscendNPU-IR 的基础上构建 TLA Dialect，将 Python 中描述的 TLA 操作降级为 MLIR，并由 AscendNPU-IR 工具链编译为可执行的核函数产物。
+- 正式上线**CATLASS Python**支持Pythonic Kernel，原生支持Tile编程。在 AscendNPU-IR 的基础上构建 TLA Dialect，将 Python 中描述的 TLA 操作降级为 MLIR，并由 AscendNPU-IR 工具链编译为可执行的核函数产物。
   - 覆盖矩阵乘、向量计算、动态控制流等完整算子表达能力，`tla.print` 支持`GM/UB`上的格式化标量输出及动态控制流内 tensor/scalar 打印
   - Host 侧提供统一的 tensor 构造入口 `from_dlpack` / `make_fake_tensor`，支持 `@dataclass` 结构体作为 kernel 入参
 - 样例
@@ -50,7 +50,7 @@
 - 工具支持
   - 构建体系：基于 AscendNPU-IR 子模块构建，提供 Docker 开发镜像，支持 CANN >= 9.1.0
 - 文档资料
-  - 提供 [CATLASS DSL 文档集](https://gitcode.com/cann/catlass/tree/v2.0.0/python/tla_dsl/docs/)，包含 [Kernel API Reference](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/kernel_api_reference.md)、[DSL Python 语法指南](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/dsl_python_syntax_guide.md)、[BC 后端集成文档](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/bc-backend-integration.md)、[环境变量说明](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/environment_variables.md)及[环境搭建指南](https://gitcode.com/cann/catlass/tree/v2.0.0/python/tla_dsl/docs/dev_guide/00_environment_setup.md)等
+  - 提供 [CATLASS Python 文档集](https://gitcode.com/cann/catlass/tree/v2.0.0/python/tla_dsl/docs/)，包含 [Kernel API Reference](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/kernel_api_reference.md)、[DSL Python 语法指南](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/dsl_python_syntax_guide.md)、[BC 后端集成文档](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/bc-backend-integration.md)、[环境变量说明](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/environment_variables.md)及[环境搭建指南](https://gitcode.com/cann/catlass/blob/v2.0.0/python/tla_dsl/docs/zh/dev_guide/00_environment_setup.md)等
 
 #### CATLASS C++
 
@@ -69,7 +69,7 @@
   - [AtlasA2 Planar Complex Matmul](https://gitcode.com/cann/catlass/blob/v2.0.0/examples/77_planar_complex_matmul/README.md)：平面复数矩阵乘，输出实部与虚部两路结果
 - 工具支持
   - [optest](https://gitcode.com/cann/catlass/blob/v2.0.0/tests/optest/README.md) 接口扩展至 72 个，新增 Symm、Trmm、PlanarComplexMatmul、GroupedMatmulSliceMGelu、A8W4GroupedMxMatmul 等 10 个接口
-  - Agent Skill 新增 [CANNBot CATLASS C++](https://gitcode.com/cann/cannbot-skills/blob/master/plugins-official/catlass-op-generator/AGENTS.md)、[CANNBot CATLASS DSL](https://gitcode.com/cann/cannbot-skills/blob/master/plugins-official/catlass-dsl-plugin)算子自动生成工具链，及[A2/A3 向 Ascend950 迁移工作流](https://gitcode.com/cann/catlass/tree/v2.0.0/.agents/skills/catlass-ascend950-migration)和[Tile 层级单元测试编写技能](https://gitcode.com/cann/catlass/tree/v2.0.0/.agents/skills/catlass-tile-level-ut)
+  - Agent Skill 新增 [CANNBot CATLASS C++](https://gitcode.com/cann/cannbot-skills/blob/master/plugins-official/catlass-op-generator/AGENTS.md)、CANNBot CATLASS Python 算子自动生成工具链，及[A2/A3 向 Ascend950 迁移工作流](https://gitcode.com/cann/catlass/tree/v2.0.0/.agents/skills/catlass-ascend950-migration)和[Tile 层级单元测试编写技能](https://gitcode.com/cann/catlass/tree/v2.0.0/.agents/skills/catlass-tile-level-ut)
 - 文档资料
   - 更新 README 中 gcc 版本约束说明
   - 更新 Gemm/Tile UT 依赖说明

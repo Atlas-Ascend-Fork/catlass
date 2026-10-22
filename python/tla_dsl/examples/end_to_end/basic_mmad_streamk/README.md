@@ -1,6 +1,6 @@
 # StreamK MMAD 端到端示例
 
-本目录下的样例演示 **CATLASS DSL** 下 StreamK MatMul 的实现。
+本目录下的样例演示 **CATLASS Python** 下 StreamK MatMul 的实现。
 
 ## 功能说明
 

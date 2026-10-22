@@ -4,13 +4,13 @@ nav_order: 10
 
 # DSL Syntax Constraints
 
-CATLASS DSL uses Python as the kernel description language, but due to NPU architecture, performance considerations, and other factors, the DSL does not support the full set of Python language features. Only part of the Python description can be mapped to meaningful NPU instructions. This document introduces these restrictions.
+CATLASS Python uses Python as the kernel description language, but due to NPU architecture, performance considerations, and other factors, the DSL does not support the full set of Python language features. Only part of the Python description can be mapped to meaningful NPU instructions. This document introduces these restrictions.
 
 ## Basic Concepts
 
 ### `@tla.kernel` and `@tla.jit` decorators
 
-Not all Python code is translated by CATLASS DSL into NPU instructions. Only functions decorated with `@tla.kernel` or `@tla.jit` are processed by the frontend and converted into the corresponding NPU instructions.
+Not all Python code is translated by CATLASS Python into NPU instructions. Only functions decorated with `@tla.kernel` or `@tla.jit` are processed by the frontend and converted into the corresponding NPU instructions.
 
 - `@tla.kernel`: the NPU kernel entry point; direct invocation is currently unsupported. It must first be compiled explicitly with `compiled = tla.compile(kernel, *sample_args)`, then launched with `compiled(*runtime_args, block_num=...)`.
 - `@tla.jit`: a helper function that can be called during kernel lowering; calling or launching an `@tla.kernel` from it is currently unsupported.

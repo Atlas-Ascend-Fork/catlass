@@ -4,7 +4,7 @@ nav_order: 20
 
 # Generating API Documentation
 
-CATLASS DSL API documentation is generated as Markdown by scripts that statically parse the source with AST analysis, and is then built into a static site by the MkDocs configuration at the repository root.
+CATLASS Python API documentation is generated as Markdown by scripts that statically parse the source with AST analysis, and is then built into a static site by the MkDocs configuration at the repository root.
 
 - Kernel API: `core_api.py`, `tla/tensor.py` → `docs/en/api/kernel_api_reference.md`
 - Host API: Host source files → `docs/en/api/host_api_reference.md`

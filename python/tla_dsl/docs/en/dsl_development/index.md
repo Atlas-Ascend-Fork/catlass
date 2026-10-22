@@ -4,7 +4,7 @@ nav_order: 30
 
 # DSL Framework Development Guide
 
-This directory is for developers who need to configure a build environment from source, build CATLASS DSL themselves, and work on it in depth.
+This directory is for developers who need to configure a build environment from source, build CATLASS Python themselves, and work on it in depth.
 
 > This version does not currently provide a complete product package (install-and-run). The installation and build steps below are the from-source developer workflow.
 
@@ -20,7 +20,7 @@ This directory is for developers who need to configure a build environment from 
 
 | Document | Scope |
 |------|------|
-| [Building CATLASS DSL](build_guide/build.md) | `./build.sh` build (Development / Release mode) and artifact checks. |
+| [Building CATLASS Python](build_guide/build.md) | `./build.sh` build (Development / Release mode) and artifact checks. |
 | [Running Test Cases](build_guide/testing.md) | pytest, lit test, and end-to-end verification. |
 | [Building AscendNPU-IR](build_guide/ascend_npu_ir.md) | Manually build the AscendNPU-IR that the DSL depends on. |
 | [Manual CMake Build](advanced/manual_cmake_build.md) | Advanced usage: configuring `csrc/mlir` directly. |

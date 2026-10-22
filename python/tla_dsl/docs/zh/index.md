@@ -10,7 +10,7 @@ nav_order: 0
 |-----|--------|
 | [快速开始](quick_start.md) | 兼容性要求、安装方式与首个示例的最短路径。 |
 | [环境准备](dsl_development/build_guide/environment.md) | 环境要求、安装方式（Conda / Docker）与最短上手路径。 |
-| [构建 CATLASS DSL](dsl_development/build_guide/build.md) | `./build.sh` 构建（Development / Release 模式）、产物检查。 |
+| [构建 CATLASS Python](dsl_development/build_guide/build.md) | `./build.sh` 构建（Development / Release 模式）、产物检查。 |
 | [运行测试用例](dsl_development/build_guide/testing.md) | pytest、lit test 与端到端验证。 |
 | [Kernel API 参考](api/kernel_api_reference.md) | Kernel 侧 Core API（`tla.copy`、`tla.mmad`、Vector 运算、同步等）。 |
 | [Host API 参考](api/host_api_reference.md) | Host 侧 `@tla.kernel`、`tla.compile` / 启动、Host tensor。 |

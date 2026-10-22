@@ -4,7 +4,7 @@ nav_order: 10
 
 # 环境准备
 
-本文档介绍 CATLASS DSL 的构建环境要求与环境检查方法。
+本文档介绍 CATLASS Python 的构建环境要求与环境检查方法。
 
 ## 快速准备构建环境
 
@@ -19,7 +19,7 @@ nav_order: 10
 
 ## 构建环境要求
 
-CATLASS DSL 仅支持 Ascend 950PR&950DT系列产品。
+CATLASS Python 仅支持 Ascend 950PR&950DT系列产品。
 
 | 组件 | 版本或要求 |
 | --- | --- |

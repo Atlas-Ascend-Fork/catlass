@@ -4,7 +4,7 @@ nav_order: 40
 
 # API Documentation
 
-API references and documentation generation/maintenance instructions for CATLASS DSL.
+API references and documentation generation/maintenance instructions for CATLASS Python.
 
 | Document | Scope |
 |------|------|

@@ -2,9 +2,9 @@
 nav_order: 20
 ---
 
-# Tuning the Performance of CATLASS DSL Operators
+# Tuning the Performance of CATLASS Python Operators
 
-The following document describes the complete workflow of end-to-end compilation, functional testing, and performance measurement using the CATLASS DSL (hereafter abbreviated as DSL) toolchain.
+The following document describes the complete workflow of end-to-end compilation, functional testing, and performance measurement using the CATLASS Python (hereafter abbreviated as DSL) toolchain.
 
 ## Performance Tuning Tool Overview
 

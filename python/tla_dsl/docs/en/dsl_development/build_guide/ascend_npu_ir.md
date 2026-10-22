@@ -4,7 +4,7 @@ nav_order: 40
 
 # Building AscendNPU-IR
 
-CATLASS DSL builds the TLA Dialect on top of the AscendNPU-IR Dialect. The source headers, generated headers, static libraries, MLIR CMake packages, and Python bindings required for the build all come from AscendNPU-IR.
+CATLASS Python builds the TLA Dialect on top of the AscendNPU-IR Dialect. The source headers, generated headers, static libraries, MLIR CMake packages, and Python bindings required for the build all come from AscendNPU-IR.
 
 The AscendNPU-IR version is the revision locked by CATLASS (that is, the commit `feature/regbase@a07821269…` pointed to by `python/tla_dsl/3rdparty/AscendNPU-IR` in `.gitmodules`). For specific environment version requirements, see [Environment Preparation](environment.md#build-environment-requirements).
 
@@ -26,7 +26,7 @@ git submodule status python/tla_dsl/3rdparty/AscendNPU-IR
 git -C python/tla_dsl/3rdparty/AscendNPU-IR rev-parse HEAD
 ```
 
-The compatibility scope of CATLASS DSL is determined by the fixed AscendNPU-IR revision recorded in the repository.
+The compatibility scope of CATLASS Python is determined by the fixed AscendNPU-IR revision recorded in the repository.
 
 ## Build
 
@@ -73,4 +73,4 @@ Export the current build tree as:
 export CATLASS_DSL_PREBUILT_ASCENDNPU_IR="$PWD"
 ```
 
-Then return to the DSL subproject and continue with [Building CATLASS DSL](build.md) and [Running Test Cases](testing.md).
+Then return to the DSL subproject and continue with [Building CATLASS Python](build.md) and [Running Test Cases](testing.md).

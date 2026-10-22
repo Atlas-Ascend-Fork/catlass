@@ -1,6 +1,6 @@
 # 外部 Ascend C 算子端到端示例
 
-本目录下样例演示如何使用 `@tla.extern` 将用户提供的 Ascend C 函数嵌入 **CATLASS DSL** Kernel，包括单 Kernel 调用多个外部算子，以及同一个外部符号同时被 AIC 和 AIV 调用。
+本目录下样例演示如何使用 `@tla.extern` 将用户提供的 Ascend C 函数嵌入 **CATLASS Python** Kernel，包括单 Kernel 调用多个外部算子，以及同一个外部符号同时被 AIC 和 AIV 调用。
 
 ## VecAdd 功能说明
 

@@ -1,6 +1,6 @@
 # Grouped Matmul Slice-M 端到端示例
 
-本目录下的样例演示 **CATLASS DSL** 下按 M 切分的分组矩阵乘。
+本目录下的样例演示 **CATLASS Python** 下按 M 切分的分组矩阵乘。
 
 ## 功能说明
 

@@ -4,7 +4,7 @@ nav_order: 10
 
 # Core Concepts
 
-The core concepts and programming model of CATLASS DSL, including DSL syntax constraints, control flow, Layout, Tensor integration,
+The core concepts and programming model of CATLASS Python, including DSL syntax constraints, control flow, Layout, Tensor integration,
 and Host-side compile and launch.
 
 | Document | Scope |

@@ -4,7 +4,7 @@ nav_order: 50
 
 # DSL Environment Variables
 
-This document describes the environment variables that can be set when running and compiling CATLASS DSL. Unless otherwise noted, all variable names use the `CATLASS_DSL_` prefix.
+This document describes the environment variables that can be set when running and compiling CATLASS Python. Unless otherwise noted, all variable names use the `CATLASS_DSL_` prefix.
 
 ## Value Conventions for Boolean Switches
 

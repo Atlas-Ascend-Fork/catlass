@@ -2,7 +2,7 @@
 nav_order: 20
 ---
 
-# 构建 CATLASS DSL
+# 构建 CATLASS Python
 
 除特别说明外，命令均在 `/path/to/catlass/python/tla_dsl` 执行，其中 `/path/to/catlass` 需替换为你 clone 的 CATLASS 仓库根目录。
 

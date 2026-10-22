@@ -2,9 +2,9 @@
 nav_order: 20
 ---
 
-# 对 CATLASS DSL 算子进行性能调优
+# 对 CATLASS Python 算子进行性能调优
 
-下述文档介绍使用 CATLASS DSL （以下简称为DSL）工具链的端到端编译、功能测试及性能维测的完整流程。
+下述文档介绍使用 CATLASS Python （以下简称为DSL）工具链的端到端编译、功能测试及性能维测的完整流程。
 
 ## 性能调优工具简介
 

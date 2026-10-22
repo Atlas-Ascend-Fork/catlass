@@ -4,7 +4,7 @@ nav_order: 10
 
 # Environment Preparation
 
-This document describes the build environment requirements and environment check methods for CATLASS DSL.
+This document describes the build environment requirements and environment check methods for CATLASS Python.
 
 ## Quickly Preparing the Build Environment
 
@@ -19,7 +19,7 @@ The following sections list all required dependency software; choose an installa
 
 ## Build Environment Requirements
 
-CATLASS DSL supports only Ascend 950PR&950DT series products.
+CATLASS Python supports only Ascend 950PR&950DT series products.
 
 | Component | Version or requirement |
 | --- | --- |

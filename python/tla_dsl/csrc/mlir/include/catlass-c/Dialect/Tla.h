@@ -1,6 +1,6 @@
 //===- Tla.h - C API for the CATLASS TLA dialect -----------------*- C -*-===//
 //
-// Part of the CATLASS DSL project.
+// Part of the CATLASS Python project.
 //
 //===----------------------------------------------------------------------===//
 

@@ -4,7 +4,7 @@ nav_order: 10
 
 # Environment Preparation and Build
 
-This directory explains how to prepare the development environment, build CATLASS DSL, and run tests.
+This directory explains how to prepare the development environment, build CATLASS Python, and run tests.
 
 ## Environment Setup
 
@@ -19,5 +19,5 @@ This directory explains how to prepare the development environment, build CATLAS
 
 | Document | Scope |
 |------|------|
-| [Building CATLASS DSL](build.md) | `./build.sh` build (Development / Release mode) and artifact checks. |
+| [Building CATLASS Python](build.md) | `./build.sh` build (Development / Release mode) and artifact checks. |
 | [Running Test Cases](testing.md) | pytest, lit test, and end-to-end verification. |

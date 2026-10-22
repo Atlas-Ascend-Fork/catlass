@@ -29,7 +29,7 @@ import catlass.tla as tla
 import torch
 import torch_npu  # noqa: F401
 
-from common import TilingParams
+from common import SwizzleParams, TilingParams
 
 
 @tla.kernel
@@ -38,6 +38,7 @@ def basic_mmad_kernel(
     gm_b: tla.Tensor,
     gm_c: tla.Tensor,
     _tiling: tla.Constexpr[TilingParams],
+    _swizzle: tla.Constexpr[SwizzleParams],
     hf32_mode: tla.Constexpr[tla.params.HF32Mode],
     acc_is_int: tla.Constexpr[bool],
     relu_enable: tla.Constexpr[bool],
@@ -118,12 +119,48 @@ def basic_mmad_kernel(
         l1_buf_idx = runtime_zero
         l0_buf_idx = runtime_zero
 
+        last_n_row = grid_m - _swizzle.SWIZZLE_OFFSET * (
+            (grid_m + _swizzle.SWIZZLE_OFFSET - 1) // _swizzle.SWIZZLE_OFFSET - 1
+        )
+        last_n_col = grid_n - _swizzle.SWIZZLE_OFFSET * (
+            (grid_n + _swizzle.SWIZZLE_OFFSET - 1) // _swizzle.SWIZZLE_OFFSET - 1
+        )
         block_range = tla.range(
             tla.arch.block_idx(), total_blocks, tla.arch.block_num()
         )
         for block_linear in block_range:
-            block_row = block_linear // grid_n
-            block_col = block_linear % grid_n
+            # Identity block swizzle; DIRECTION is host/compile-time.
+            if tla.const_expr(_swizzle.SWIZZLE_DIRECTION == 0):
+                tile_block_idx = block_linear // (_swizzle.SWIZZLE_OFFSET * grid_n)
+                in_tile = block_linear % (_swizzle.SWIZZLE_OFFSET * grid_n)
+                tile_block_loop = (
+                    grid_m + _swizzle.SWIZZLE_OFFSET - 1
+                ) // _swizzle.SWIZZLE_OFFSET
+                n_row = (
+                    last_n_row
+                    if tile_block_idx == tile_block_loop - 1
+                    else _swizzle.SWIZZLE_OFFSET
+                )
+                block_row = tile_block_idx * _swizzle.SWIZZLE_OFFSET + in_tile % n_row
+                block_col = in_tile // n_row
+                odd = tile_block_idx % 2
+                block_col = block_col + odd * (grid_n - 1 - 2 * block_col)
+            else:
+                tile_block_idx = block_linear // (_swizzle.SWIZZLE_OFFSET * grid_m)
+                in_tile = block_linear % (_swizzle.SWIZZLE_OFFSET * grid_m)
+                tile_block_loop = (
+                    grid_n + _swizzle.SWIZZLE_OFFSET - 1
+                ) // _swizzle.SWIZZLE_OFFSET
+                n_col = (
+                    last_n_col
+                    if tile_block_idx == tile_block_loop - 1
+                    else _swizzle.SWIZZLE_OFFSET
+                )
+                block_row = in_tile // n_col
+                block_col = tile_block_idx * _swizzle.SWIZZLE_OFFSET + in_tile % n_col
+                odd = tile_block_idx % 2
+                block_row = block_row + odd * (grid_m - 1 - 2 * block_row)
+
             gm_a_by_core = tla.tile_view(
                 gm_a, tla.make_shape(_tiling.l1_tm, k), tla.make_coord(block_row, c0)
             )
@@ -322,6 +359,9 @@ def run(args: argparse.Namespace) -> int:
 
     hf32_mode = tla.params.HF32Mode.HF32_NEAREST_EVEN
 
+    swizzle_dir = 0 if args.m >= args.n else 1
+    swizzle = SwizzleParams(SWIZZLE_DIRECTION=swizzle_dir, SWIZZLE_OFFSET=3)
+
     # i8,i8 -> i32 is the integer MMAD route; the accumulator in L0C is i32.
     # It is exact and never takes the hf32 path, which is fp32-only.
     is_int_route = args.dtype_a == "i8"
@@ -389,6 +429,7 @@ def run(args: argparse.Namespace) -> int:
         b_tensor,
         c_tensor,
         TilingParams(),  # default tiling: L1: (256, 256, 128); L0: (256, 256, 32)
+        swizzle,
         hf32_mode,
         is_int_route,
         bool(args.relu_enable),

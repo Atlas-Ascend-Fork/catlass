@@ -213,7 +213,7 @@ static void Run(const Options& options, QuantMode x1QuantMode, QuantMode x2Quant
     using BlockScheduler = typename Gemm::Block::BlockSchedulerAswt<L1TileShape, L0TileShape>;
 
     // kernel level
-    using MatmulKernel = Gemm::Kernel::KernelMatmulDequant<ProblemShape, BlockMmad, BlockEpilogue, BlockScheduler>;
+    using MatmulKernel = Gemm::Kernel::GemmUniversal<ProblemShape, BlockMmad, BlockEpilogue, BlockScheduler>;
 
     using MatmulAdapter = Gemm::Device::DeviceGemm<MatmulKernel>;
 

@@ -24,12 +24,12 @@
 namespace Catlass::Gemm::Kernel {
 
 template <class ProblemShape_, class BlockMmad_, class BlockEpilogue_, class BlockScheduler_>
-class KernelMatmulDequant {
+class GemmUniversal {
 public:
     CATLASS_DEVICE
-    KernelMatmulDequant() = default;
+    GemmUniversal() = default;
     CATLASS_DEVICE
-    ~KernelMatmulDequant() = default;
+    ~GemmUniversal() = default;
 
     using ProblemShape = ProblemShape_;
     using BlockMmad = BlockMmad_;

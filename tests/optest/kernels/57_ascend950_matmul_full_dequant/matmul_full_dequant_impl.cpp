@@ -117,7 +117,7 @@ using BlockEpilogue = Epilogue::Block::BlockEpilogue<EpilogueDispatchPolicy, L0T
 
 using BlockScheduler = typename Gemm::Block::BlockSchedulerAswt<L1TileShape, L0TileShape>;
 
-using MatmulKernel = Gemm::Kernel::KernelMatmulDequant<ProblemShape, BlockMmad, BlockEpilogue, BlockScheduler>;
+using MatmulKernel = Gemm::Kernel::GemmUniversal<ProblemShape, BlockMmad, BlockEpilogue, BlockScheduler>;
 
 extern "C" void run(uint32_t blockNum, aclrtStream stream, const CatlassKernel::MatmulParams* params)
 {

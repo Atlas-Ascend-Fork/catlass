@@ -102,30 +102,27 @@ private:
     }
 
     LogicalResult ensureEventId(
-        Operation* op, FlagInfo& info, DenseMap<PipePair, int64_t, PipePairInfo>& nextEventIdByPipe) const
+        Operation* op, FlagInfo& info, DenseMap<PipePair, uint32_t, PipePairInfo>& usedEventIdsByPipe) const
     {
         if (info.eventId >= 0)
             return success();
         PipePair pair{static_cast<int32_t>(info.srcPipe.getPipe()), static_cast<int32_t>(info.dstPipe.getPipe())};
+        uint32_t& usedIds = usedEventIdsByPipe[pair];
         int64_t eventId = 0;
-        auto pairIt = nextEventIdByPipe.find(pair);
-        if (pairIt == nextEventIdByPipe.end()) {
-            nextEventIdByPipe[pair] = 1;
-        } else {
-            eventId = pairIt->second;
-            if (eventId > kMaxHivmPipePairEventIndex) {
-                op->emitError() << "event id exhausted (max " << kMaxHivmPipePairEventIndex << ")";
-                return failure();
-            }
-            pairIt->second = eventId + 1;
+        while (eventId <= kMaxHivmPipePairEventIndex && (usedIds & (1u << eventId)))
+            ++eventId;
+        if (eventId > kMaxHivmPipePairEventIndex) {
+            op->emitError() << "event id exhausted (max " << kMaxHivmPipePairEventIndex << ")";
+            return failure();
         }
+        usedIds |= 1u << eventId;
         info.eventId = eventId;
         return success();
     }
 
     LogicalResult lowerSetOrWait(
         Operation* op, bool isSet, llvm::StringMap<FlagInfo>& flagInfoByName,
-        DenseMap<PipePair, int64_t, PipePairInfo>& nextEventIdByPipe, SmallVectorImpl<Operation*>& toErase) const
+        DenseMap<PipePair, uint32_t, PipePairInfo>& usedEventIdsByPipe, SmallVectorImpl<Operation*>& toErase) const
     {
         if (op->getNumOperands() > 1) {
             op->emitError() << "expected " << op->getName().getStringRef() << " to have at most 1 operand";
@@ -150,7 +147,7 @@ private:
             if (!info.firstWaitOp)
                 info.firstWaitOp = op;
         }
-        if (failed(ensureEventId(op, info, nextEventIdByPipe)))
+        if (failed(ensureEventId(op, info, usedEventIdsByPipe)))
             return failure();
 
         PatternRewriter rewriter(op->getContext());
@@ -353,7 +350,7 @@ public:
         SmallVector<::tla::CrossFlagOp, 8> tlaCrossFlagOps;
         SmallVector<Operation*, 8> flagUseOps;
         SmallVector<::tla::PipeBarrierOp, 8> pipeBarrierOps;
-        DenseMap<PipePair, int64_t, PipePairInfo> nextEventIdByPipe;
+        DenseMap<PipePair, uint32_t, PipePairInfo> usedEventIdsByPipe;
         llvm::StringMap<FlagInfo> flagInfoByName;
         llvm::StringMap<CrossFlagInfo> crossFlagInfoByName;
         SmallVector<Operation*, 8> toErase;
@@ -385,20 +382,24 @@ public:
                 signalPassFailure();
                 return;
             }
-            auto insert = flagInfoByName.try_emplace(nameAttr.getValue(), FlagInfo{srcPipeAttr, dstPipeAttr, -1});
+            int64_t eventId = flagOp.getId();
+            if (eventId < -1 || eventId > kMaxHivmPipePairEventIndex) {
+                flagOp.emitOpError("id must be -1 or in range 0..7");
+                signalPassFailure();
+                return;
+            }
+            auto insert = flagInfoByName.try_emplace(nameAttr.getValue(), FlagInfo{srcPipeAttr, dstPipeAttr, eventId});
             if (!insert.second) {
                 flagOp->emitError() << "duplicate tla.flag name '" << nameAttr.getValue() << "'";
                 signalPassFailure();
                 return;
             }
-            for (auto& use : flagOp->getResult(0).getUses()) {
-                Operation* userOp = use.getOwner();
-                if (llvm::isa<::tla::SetFlagOp, ::tla::WaitFlagOp>(userOp))
-                    continue;
-                flagOp->emitError() << "tla.flag result is used by unsupported op '" << userOp->getName().getStringRef()
-                                    << "'";
-                signalPassFailure();
-                return;
+            // Reserve every explicit id before lowering uses, including ids
+            // declared after an automatically allocated flag. Explicit reuse is
+            // intentional; automatic flags must never claim those ids.
+            if (eventId >= 0) {
+                PipePair pair{static_cast<int32_t>(srcPipeAttr.getPipe()), static_cast<int32_t>(dstPipeAttr.getPipe())};
+                usedEventIdsByPipe[pair] |= 1u << eventId;
             }
         }
 
@@ -406,7 +407,7 @@ public:
             if (!op->getBlock())
                 continue;
             bool isSet = llvm::isa<::tla::SetFlagOp>(op);
-            if (failed(lowerSetOrWait(op, isSet, flagInfoByName, nextEventIdByPipe, toErase))) {
+            if (failed(lowerSetOrWait(op, isSet, flagInfoByName, usedEventIdsByPipe, toErase))) {
                 signalPassFailure();
                 return;
             }
@@ -483,28 +484,26 @@ public:
         for (auto [id, name] : llvm::enumerate(crossFlagNames))
             crossFlagInfoByName.find(name)->second.id = id;
 
-        for (::tla::FlagOp flagOp : tlaFlagOps) {
-            Operation* flagRaw = flagOp.getOperation();
-            if (!flagRaw->getBlock() || flagRaw->getNumResults() != 1)
-                continue;
-            if (flagRaw->getResult(0).use_empty()) {
-                toErase.push_back(flagRaw);
-                continue;
-            }
-            bool allUsersErased = true;
-            for (auto& use : flagRaw->getResult(0).getUses()) {
-                if (!llvm::is_contained(toErase, use.getOwner())) {
-                    allUsersErased = false;
-                    break;
-                }
-            }
-            if (allUsersErased)
-                toErase.push_back(flagRaw);
-        }
-
         for (Operation* op : toErase) {
             if (op && op->getBlock())
                 op->erase();
+        }
+
+        // Other dialects may consume the flag itself. Preserve their SSA value
+        // and pipe metadata, and write back a resolved id for downstream passes.
+        // Allocate these flags after set/wait to preserve existing allocation
+        // order for kernels that only use local synchronization.
+        for (::tla::FlagOp flagOp : tlaFlagOps) {
+            if (flagOp.getFlag().use_empty()) {
+                flagOp.erase();
+                continue;
+            }
+            FlagInfo& info = flagInfoByName.find(flagOp.getName())->second;
+            if (failed(ensureEventId(flagOp.getOperation(), info, usedEventIdsByPipe))) {
+                signalPassFailure();
+                return;
+            }
+            flagOp->setAttr("id", IntegerAttr::get(IntegerType::get(&getContext(), 64), info.eventId));
         }
 
         module.walk([&](::tla::PipeBarrierOp op) { pipeBarrierOps.push_back(op); });
@@ -524,8 +523,11 @@ public:
 
         ConversionTarget target(getContext());
         target.markUnknownOpDynamicallyLegal([](Operation*) { return true; });
+        target.addDynamicallyLegalOp<::tla::FlagOp>([](::tla::FlagOp op) {
+            return !op.getFlag().use_empty() && op.getId() >= 0 && op.getId() <= kMaxHivmPipePairEventIndex;
+        });
         target.addIllegalOp<
-            ::tla::FlagOp, ::tla::SetFlagOp, ::tla::WaitFlagOp, ::tla::CrossFlagOp, ::tla::CrossCoreSetFlagOp,
+            ::tla::SetFlagOp, ::tla::WaitFlagOp, ::tla::CrossFlagOp, ::tla::CrossCoreSetFlagOp,
             ::tla::CrossCoreWaitFlagOp, ::tla::PipeBarrierOp>();
 
         RewritePatternSet patterns(&getContext());

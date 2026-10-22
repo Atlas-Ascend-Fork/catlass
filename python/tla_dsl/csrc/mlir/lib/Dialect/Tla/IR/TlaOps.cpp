@@ -1268,6 +1268,14 @@ mlir::LogicalResult ArangeOp::verify()
     return mlir::success();
 }
 
+mlir::LogicalResult FlagOp::verify()
+{
+    int64_t id = getId();
+    if (id < -1 || id > 7)
+        return emitOpError("id must be -1 or in range 0..7");
+    return mlir::success();
+}
+
 // Synchronization/mutex/barrier ops must live inside a tla.cube or tla.vector
 // region (either core-kind region; not the func-level scope).
 #define TLA_VERIFY_IN_CUBE_OR_VECTOR(OpTy)                                                                \

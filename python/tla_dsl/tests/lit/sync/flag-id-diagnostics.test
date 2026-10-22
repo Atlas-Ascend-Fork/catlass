@@ -1,0 +1,59 @@
+// RUN: split-file %s %t
+// RUN: not %tla_compile %t/negative.mlir -o - 2>&1 | %filecheck %s --check-prefix=INVALID
+// RUN: not %tla_compile %t/high.mlir -o - 2>&1 | %filecheck %s --check-prefix=INVALID
+// RUN: not %tla_compile %t/exhausted.mlir -o - 2>&1 | %filecheck %s --check-prefix=EXHAUSTED
+
+// INVALID: id must be -1 or in range 0..7
+// EXHAUSTED: event id exhausted (max 7)
+
+//--- negative.mlir
+module {
+  tla.func @negative() {
+    %flag = tla.flag "negative" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = -2 : i64} -> !tla.flag
+    tla.return
+  }
+}
+
+//--- high.mlir
+module {
+  tla.func @high() {
+    %flag = tla.flag "high" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 8 : i64} -> !tla.flag
+    tla.return
+  }
+}
+
+//--- exhausted.mlir
+module {
+  tla.func @exhausted() {
+    "tla.vector"() ({
+      %auto = tla.flag "auto" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>} -> !tla.flag
+      %f0 = tla.flag "f0" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 0 : i64} -> !tla.flag
+      %f1 = tla.flag "f1" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 1 : i64} -> !tla.flag
+      %f2 = tla.flag "f2" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 2 : i64} -> !tla.flag
+      %f3 = tla.flag "f3" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 3 : i64} -> !tla.flag
+      %f4 = tla.flag "f4" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 4 : i64} -> !tla.flag
+      %f5 = tla.flag "f5" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 5 : i64} -> !tla.flag
+      %f6 = tla.flag "f6" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 6 : i64} -> !tla.flag
+      %f7 = tla.flag "f7" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte1>, id = 7 : i64} -> !tla.flag
+      tla.set_flag %auto : !tla.flag
+      tla.wait_flag %auto : !tla.flag
+      tla.set_flag %f0 : !tla.flag
+      tla.wait_flag %f0 : !tla.flag
+      tla.set_flag %f1 : !tla.flag
+      tla.wait_flag %f1 : !tla.flag
+      tla.set_flag %f2 : !tla.flag
+      tla.wait_flag %f2 : !tla.flag
+      tla.set_flag %f3 : !tla.flag
+      tla.wait_flag %f3 : !tla.flag
+      tla.set_flag %f4 : !tla.flag
+      tla.wait_flag %f4 : !tla.flag
+      tla.set_flag %f5 : !tla.flag
+      tla.wait_flag %f5 : !tla.flag
+      tla.set_flag %f6 : !tla.flag
+      tla.wait_flag %f6 : !tla.flag
+      tla.set_flag %f7 : !tla.flag
+      tla.wait_flag %f7 : !tla.flag
+    }) : () -> ()
+    tla.return
+  }
+}

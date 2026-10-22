@@ -5834,6 +5834,7 @@ def flag(
     name: str,
     src_pipe: PipeLike,
     dst_pipe: PipeLike,
+    id: int = -1,
     *,
     loc: mlir_ir.Location | None = None,
 ) -> TlaFlag:
@@ -5845,10 +5846,13 @@ def flag(
         - `name` (`str`): In-pipe flag name. Required.
         - `src_pipe` (`PipeLike`): Source pipe id (e.g. `tla.arch.MTE2`). Required.
         - `dst_pipe` (`PipeLike`): Destination pipe id (e.g. `tla.arch.VECTOR`). Required.
+        - `id` (`int`): Hardware event id. Optional, default `-1` for automatic allocation.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Creates a flag handle; `set_flag`/`wait_flag` must be paired inside cube/vector regions.
+        - `id` must be `-1` or `0..7`. Automatic allocation skips explicit ids for the same pipe pair.
+        - Explicit ids may be reused; the caller must ensure their synchronization lifetimes do not overlap.
 
         Example:
         ```python
@@ -5867,6 +5871,13 @@ def flag(
         )
     _require_pipe("flag", "src_pipe", src_pipe, 1)
     _require_pipe("flag", "dst_pipe", dst_pipe, 2)
+    if isinstance(id, bool) or not isinstance(id, int):
+        _op_error(
+            "flag",
+            f"invalid argument 'id' (position 3): expected int in {{-1, 0..7}}, got {_type_name(id)}",
+        )
+    if id != -1 and not 0 <= id <= 7:
+        _op_error("flag", "id must be -1 or in range 0..7")
     _require_frontend_state("flag")
     ctx = loc.context if loc is not None else mlir_ir.Context.current
     src_value = str(_token(src_pipe)).lower()
@@ -5878,6 +5889,7 @@ def flag(
         name,
         src_attr,
         dst_attr,
+        id=id,
         loc=loc,
     )
 

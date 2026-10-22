@@ -46,12 +46,18 @@ def Tla_FlagOp : Tla_Op<"flag", [Pure]> {
   let summary = "Flag literal";
   let description = [{
     Materialize a static synchronization flag.
+    ``id = -1`` requests automatic allocation; ``0`` through ``7`` select an
+    explicit hardware event id for the source/destination pipe pair.
+    Automatic allocation skips explicit ids. Explicit reuse is allowed when
+    the caller ensures synchronization lifetimes do not overlap.
   }];
-  let arguments = (ins StrAttr:$name, Tla_PipeAttr:$src_pipe, Tla_PipeAttr:$dst_pipe);
+  let arguments = (ins StrAttr:$name, Tla_PipeAttr:$src_pipe, Tla_PipeAttr:$dst_pipe,
+                       DefaultValuedAttr<I64Attr, "-1">:$id);
   let results = (outs Tla_FlagType:$flag);
   let assemblyFormat = [{
     $name attr-dict `->` qualified(type($flag))
   }];
+  let hasVerifier = 1;
 }
 
 def Tla_PipeBarrierOp : Tla_Op<"pipe_barrier", []> {

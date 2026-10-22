@@ -268,17 +268,22 @@ def test_38_w4a4_matmul(build_env):
 def test_41_sparse_matmul_tla(build_env):
     # gen_data args: m, n, k
     case_py = [str(i) for i in [160, 320, 64]]  # (M, N, K)
+    # sparse_gen_data.py writes <example_dir>/input|output, while the example reads "./input|output",
+    # so both steps must run with the example directory as CWD.
+    case_dir = os.path.join(CMAKE_EXAMPLES_PATH, "41_sparse_matmul_tla")
     subprocess.run(
         [
             "python",
-            os.path.join(CMAKE_EXAMPLES_PATH, "41_sparse_matmul_tla", "sparse_gen_data.py"),
+            os.path.join(case_dir, "sparse_gen_data.py"),
         ]
         + case_py,
         check=False,
+        cwd=case_dir,
     )
     # example args: m, n, k, device_id
     case_cpp = case_py + [DEVICE_ID]
-    run_case(build_env, "41_sparse_matmul_tla", case_cpp)
+    ret = run_case(build_env, "41_sparse_matmul_tla", case_cpp, cwd=case_dir)
+    assert ret.returncode == 0
 
 
 @only_on_3510

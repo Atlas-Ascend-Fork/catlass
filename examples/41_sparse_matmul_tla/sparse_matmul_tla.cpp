@@ -101,14 +101,14 @@ static void Run(const Options& options)
 
     uint8_t* hostA;
     ACL_CHECK(aclrtMallocHost((void**)(&hostA), sizeA));
-    ReadFile("./input/x1_gm.bin", hostA, sizeA);
+    ReadFile("../../examples/41_sparse_matmul_tla/input/x1_gm.bin", hostA, sizeA);
     uint8_t* deviceA{nullptr};
     ACL_CHECK(aclrtMalloc(reinterpret_cast<void**>(&deviceA), sizeA, ACL_MEM_MALLOC_HUGE_FIRST));
     ACL_CHECK(aclrtMemcpy(deviceA, sizeA, hostA, sizeA, ACL_MEMCPY_HOST_TO_DEVICE));
 
     uint8_t* hostB;
     ACL_CHECK(aclrtMallocHost((void**)(&hostB), sizeB));
-    ReadFile("./input/x2_gm.bin", hostB, sizeB);
+    ReadFile("../../examples/41_sparse_matmul_tla/input/x2_gm.bin", hostB, sizeB);
     uint8_t* deviceB{nullptr};
     ACL_CHECK(aclrtMalloc(reinterpret_cast<void**>(&deviceB), sizeB, ACL_MEM_MALLOC_HUGE_FIRST));
     ACL_CHECK(aclrtMemcpy(deviceB, sizeB, hostB, sizeB, ACL_MEMCPY_HOST_TO_DEVICE));
@@ -120,7 +120,7 @@ static void Run(const Options& options)
 
     uint8_t* hostIdx;
     ACL_CHECK(aclrtMallocHost((void**)(&hostIdx), sizeIdx));
-    ReadFile("./input/index_gm.bin", hostIdx, sizeIdx);
+    ReadFile("../../examples/41_sparse_matmul_tla/input/index_gm.bin", hostIdx, sizeIdx);
     uint8_t* deviceIdx{nullptr};
     ACL_CHECK(aclrtMalloc(reinterpret_cast<void**>(&deviceIdx), sizeIdx, ACL_MEM_MALLOC_HUGE_FIRST));
     ACL_CHECK(aclrtMemcpy(deviceIdx, sizeIdx, hostIdx, sizeIdx, ACL_MEMCPY_HOST_TO_DEVICE));
@@ -177,7 +177,7 @@ static void Run(const Options& options)
     ACL_CHECK(aclrtMemcpy(hostC.data(), sizeC, deviceC, sizeC, ACL_MEMCPY_DEVICE_TO_HOST));
 
     std::vector<int32_t> hostGolden(goldenSize);
-    std::string expected_path = "./output/golden.bin";
+    std::string expected_path = "../../examples/41_sparse_matmul_tla/output/golden.bin";
     ReadFile(expected_path, hostGolden.data(), goldenSize);
 
     std::vector<uint64_t> errorIndices = golden::CompareData(hostC, hostGolden, k);

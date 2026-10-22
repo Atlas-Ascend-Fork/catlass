@@ -826,7 +826,6 @@ __all__ = [
     "TlaStride",
     "TlaLayout",
     "TlaRegion",
-    "Tensor",
     "RuntimeTensorError",
     "DslType",
     "NumericMeta",

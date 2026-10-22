@@ -36,8 +36,8 @@ echo "Step 4: Viewing coverage report..."
 echo "============================================"
 if [[ $ENABLE_HTML_VIEW -eq 1 ]]; then
     cd coverage/html
-    local PORT=8080
-    local PORT_INC=0
+    PORT=8080
+    PORT_INC=0
     while lsof -i :$PORT &>/dev/null && ((PORT_INC < PORT_INC_MAX)); do
         echo "Port $PORT is already in use, trying next port..."
         ((PORT++))

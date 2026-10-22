@@ -78,6 +78,18 @@ _STORAGE_VIEW_BY_WIDTH = {
     64: torch.int64,
 }
 
+# Layout spellings accepted by create_tla_tensor. "col" is not a typo to be
+# cleaned up: basic_syrk.py passes it literally and the splitk examples expose
+# it as the --layout-a / --layout-b choice, so it has to keep working. VectorLayout is
+# the 1-D contiguous tag the flat GM->L1 and L1->biasbuf copy routes are keyed
+# on.
+_LAYOUT_TAG_BY_NAME = {
+    "row": tla.arch.RowMajor,
+    "col": tla.arch.ColumnMajor,
+    "column": tla.arch.ColumnMajor,
+    "vector": tla.arch.VectorLayout,
+}
+
 
 def create_tla_tensor(buf, layout: str, element_type=None):
     """Wrap a device buffer as a TLA tensor.
@@ -85,8 +97,20 @@ def create_tla_tensor(buf, layout: str, element_type=None):
     ``element_type`` overrides the element type derived from the DLPack dtype.
     torch cannot export fp8 over DLPack at all, so an fp8 buffer is handed over
     as a same-width integer view with the real type supplied here.
+
+    ``layout`` is ``"row"``, ``"col"`` / ``"column"``, or ``"vector"``.
+    ``"col"`` is the spelling the existing examples and their ``--layout-a`` /
+    ``--layout-b`` choices already use, so both spellings are accepted.
+    ``"vector"`` is the one-dimensional contiguous tag (``tla.arch.VectorLayout``) the
+    flat copy routes are keyed on; it is what a 1-D tile such as a bias row uses.
     """
-    tag = tla.arch.RowMajor if layout == "row" else tla.arch.ColumnMajor
+    tag = _LAYOUT_TAG_BY_NAME.get(layout)
+    if tag is None:
+        raise ValueError(
+            "create_tla_tensor layout must be one of "
+            + ", ".join(sorted(_LAYOUT_TAG_BY_NAME))
+            + f"; got {layout!r}"
+        )
     if element_type is not None:
         # Derive the view from the override's own width rather than assuming one
         # byte: from_dlpack accepts any same-width override, and viewing through

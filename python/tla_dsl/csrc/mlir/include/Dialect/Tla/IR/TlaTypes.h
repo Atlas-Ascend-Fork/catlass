@@ -36,6 +36,29 @@ inline bool isNZFamilyLayout(::LayoutTag layoutTag)
            layoutTag == ::LayoutTag::nNMxScale || isMxScaleGmLayout(layoutTag);
 }
 
+/// A flat, unit-stride run of elements: rank-1 shape/stride, a single coordinate.
+///
+/// This is the tag that lines up with `tla::detail::isVector` on the tile side
+/// (depth 1, rank 1, stride 0 == 1), so the VectorLayout TileCopyTla
+/// specializations serve a VectorLayout tile without the bc layer having to project a
+/// two-dimensional layout down to one. RowMajor deliberately stays rank-2: a
+/// flat tile is spelled with this tag rather than as a (1, N) RowMajor one.
+inline bool isVectorLayout(::LayoutTag layoutTag)
+{
+    return layoutTag == ::LayoutTag::VectorLayout;
+}
+
+/// Linear layouts carry a flat (non-fractal) shape/stride pair. VectorLayout is one of
+/// them, so every linear rule -- rank-1 or rank-2 metadata, unit padding in
+/// descriptor slots 2 and 3, `layout()(coord)` addressing -- covers it too.
+///
+/// This is the single classifier for that family; the descriptor/schema code and
+/// the dialect verifiers all ask it rather than re-listing the three tags.
+inline bool isLinearLayout(::LayoutTag layoutTag)
+{
+    return layoutTag == ::LayoutTag::RowMajor || layoutTag == ::LayoutTag::ColumnMajor || isVectorLayout(layoutTag);
+}
+
 inline int64_t getByteSizeOfFixedWidthScalarType(::mlir::Type type)
 {
     if (type.isBF16() || type.isF16())

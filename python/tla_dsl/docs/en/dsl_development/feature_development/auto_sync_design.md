@@ -164,7 +164,7 @@ The resource collection rules are as follows:
 | `tla.copy` with an L1 source | `mte1` | the on-chip src and dst |
 | `tla.copy` with a UB source | `mte3` | the on-chip src and dst |
 | `tla.copy` with an L0C source | `fix` | the on-chip src and dst, plus the quant scale passed as a tensor; when `unit_flag=3` the L0C is handled by the unit flag protocol and is not locked again |
-| `tla.mmad` | `cube` | L0A and L0B; also the L0C accumulator when the unit flag is not enabled |
+| `tla.mmad` / `tla.mmad_mx` | `cube` | L0A, L0B, and the bias (when `bias` is supplied); also the L0C accumulator when the unit flag is not enabled |
 | `tla.vec.func` | `vector` | the UB roots accessed by load/store/gather/scalar load/store in the region, locked uniformly after deduplication |
 
 GM operands are filtered out during resource normalization. When one instruction accesses the same root multiple times, it is locked only once.
@@ -202,7 +202,7 @@ Each side uses at most 32 automatic mutex IDs. Exceeding the limit reports an er
 Resources on the same side are sorted first by address space, then by static base. The address space order is fixed as:
 
 ```text
-L1 < L0A < L0B < L0C < UB
+L1 < L0A < L0B < L0C < UB < biasbuf
 ```
 
 Deterministic ordering has two purposes:
@@ -252,6 +252,7 @@ The `unit_flag` of MMAD/FIX already handles part of the L0C pipeline handshake. 
 
 - `unit_flag=0`: the L0C accumulator is included in the mutex together with L0A and L0B;
 - `unit_flag=2` or `3`: the L0C is protected by the unit flag protocol, and AutoSync locks only L0A and L0B;
+- the bias table has the same standing as L0A and L0B: whenever the MMAD carries a `bias`, it is locked as a `cube` resource alongside L0A and L0B; the `unit_flag` protocol covers only L0C and never exempts the bias;
 - obtaining the unit flag through a cast, `arith.select`, or `scf.if` is allowed, but it must be statically provable that it is always 0 or always lies in `{2, 3}`;
 - when it may switch between 0 and 2/3 at runtime, whether an L0C mutex is needed cannot be determined, so an error is reported.
 
@@ -286,6 +287,7 @@ AutoSync's tests are divided into three layers:
 1. Python frontend tests verify argument validation, off-by-default, and propagation of the `tla.auto_sync` attribute, see [test_local_autosync.py](../../../../tests/frontend/ops/sync/test_local_autosync.py).
 2. MLIR lit tests directly check pass output and failure diagnostics:
    - [auto-mutex-instruction-pipes.mlir](../../../../tests/lit/sync/mutex/auto-mutex-instruction-pipes.mlir): instruction resources, pipes, lock order, and unit flag;
+   - [auto-mutex-bias.mlir](../../../../tests/lit/sync/mutex/auto-mutex-bias.mlir): the bias resource of `tla.mmad` / `tla.mmad_mx` and its boundary with the unit flag;
    - [auto-mutex-alias-root.mlir](../../../../tests/lit/sync/mutex/auto-mutex-alias-root.mlir): alias roots;
    - [auto-mutex-dynamic-select.mlir](../../../../tests/lit/sync/mutex/auto-mutex-dynamic-select.mlir): dynamic selection;
    - [auto-mutex-id-spaces.test](../../../../tests/lit/sync/mutex/auto-mutex-id-spaces.test): independent ID spaces and the 32-ID limit;

@@ -250,7 +250,7 @@ mlir::LogicalResult TensorDescOp::verify()
     auto tensorType = getResult().getType();
     auto layout = tensorType.getLayout();
     auto layoutTag = layout.getLayoutTag();
-    bool isLinear = layoutTag == LayoutTag::RowMajor || layoutTag == LayoutTag::ColumnMajor;
+    bool isLinear = isLinearLayout(layoutTag);
     bool isNZFamily = isNZFamilyLayout(layoutTag);
     if (!isLinear && !isNZFamily)
         return emitOpError("result must use a supported linear or NZFamily layout");
@@ -1882,8 +1882,8 @@ static mlir::LogicalResult verifyScalarTensorAccess(
     }
 
     auto layoutTag = tensorType.getLayout().getLayoutTag();
-    if (layoutTag != LayoutTag::RowMajor && layoutTag != LayoutTag::ColumnMajor)
-        return op->emitOpError() << tensorRole << " layout must be RowMajor or ColumnMajor";
+    if (!isLinearLayout(layoutTag))
+        return op->emitOpError() << tensorRole << " layout must be RowMajor, ColumnMajor, or VectorLayout";
 
     mlir::Type expected = ptrType.getPointee();
     if (scalarType != expected)

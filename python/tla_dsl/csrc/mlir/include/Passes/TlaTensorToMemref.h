@@ -122,9 +122,15 @@ mlir::LogicalResult collectMaterializedTensorDescriptors(
 /// buffer, otherwise a `memref.subview` at the tile's (row,col) offset and shape.
 /// Descriptor-driven tile materialization shared by tile subview lowering and
 /// the tla.copy / tla.mmad operand paths.
+///
+/// `foldRankOneCoord` decides who owns a rank-1 tile's coordinate. The copy
+/// routes ship it in the descriptor payload and let the bc layer compute the
+/// address, so folding it into the memref as well would offset twice; tla.mmad
+/// hands the memref straight to a wrapper that never looks at a coordinate, so
+/// it is the one caller that has to have the offset baked in.
 mlir::FailureOr<mlir::Value> materializeTileMemrefFromDescriptor(
     mlir::OpBuilder& builder, mlir::Location loc, const TensorDescriptor& desc, mlir::Operation* diagnosticOp,
-    llvm::DenseMap<mlir::Value, mlir::Value>& baseMemrefCache);
+    llvm::DenseMap<mlir::Value, mlir::Value>& baseMemrefCache, bool foldRankOneCoord = false);
 
 // ---------------------------------------------------------------------------
 // Vector tile memref materialization (the tla.vector lowering passes). Vector-specific

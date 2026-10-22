@@ -294,9 +294,11 @@ static unsigned addressSpaceRank(::AddressSpace space)
             return 3;
         case AddressSpace::ub:
             return 4;
+        case AddressSpace::biasbuf:
+            return 6;
         case AddressSpace::generic:
         case AddressSpace::gm:
-            return 5;
+            return 7;
     }
     llvm_unreachable("unknown TLA address space");
 }
@@ -320,6 +322,7 @@ static FailureOr<::Pipe> inferCopyPipe(Value src)
         case AddressSpace::generic:
         case AddressSpace::l0a:
         case AddressSpace::l0b:
+        case AddressSpace::biasbuf:
             return failure();
     }
     return failure();
@@ -543,23 +546,26 @@ static LogicalResult collectInstructionPlans(
             return;
         }
         // tla.mmad and tla.mmad_mx are treated identically here: same cube pipe,
-        // same acc/lhs/rhs resources, same unit_flag rule. Handled through the
-        // common accessors so the MX flavour cannot silently skip auto-mutex.
+        // same acc/lhs/rhs/bias resources, same unit_flag rule. Handled through
+        // the common accessors so the MX flavour cannot silently skip auto-mutex.
         if (isa<::tla::MmadOp, ::tla::MmadMxOp>(operation)) {
             Value mmAcc;
             Value mmLhs;
             Value mmRhs;
+            Value mmBias;
             Value mmUnitFlag;
             if (auto mm = dyn_cast<::tla::MmadOp>(operation)) {
                 mmAcc = mm.getAcc();
                 mmLhs = mm.getLhs();
                 mmRhs = mm.getRhs();
+                mmBias = mm.getBias();
                 mmUnitFlag = mm.getUnitFlag();
             } else {
                 auto mmx = cast<::tla::MmadMxOp>(operation);
                 mmAcc = mmx.getAcc();
                 mmLhs = mmx.getLhs();
                 mmRhs = mmx.getRhs();
+                mmBias = mmx.getBias();
                 mmUnitFlag = mmx.getUnitFlag();
             }
             FailureOr<MutexIdSpace> idSpace = resolveMutexIdSpace(func, operation);
@@ -577,6 +583,12 @@ static LogicalResult collectInstructionPlans(
                 plan.resources.push_back(resolver.resolve(mmAcc));
             plan.resources.push_back(resolver.resolve(mmLhs));
             plan.resources.push_back(resolver.resolve(mmRhs));
+            // The bias table is an L0-class operand exactly like lhs/rhs: the
+            // cube reads it for the same instruction, so the MTE1 copy that
+            // fills biasbuf and the next reload of it both have to be ordered
+            // against that read. unit_flag only covers acc, never the bias.
+            if (mmBias)
+                plan.resources.push_back(resolver.resolve(mmBias));
             plans.push_back(std::move(plan));
             return;
         }

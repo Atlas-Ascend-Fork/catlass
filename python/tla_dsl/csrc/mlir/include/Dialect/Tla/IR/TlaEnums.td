@@ -27,6 +27,11 @@ def Tla_LayoutTag_RowMajorMxScaleA : I32EnumAttrCase<"RowMajorMxScaleA", 9>;
 def Tla_LayoutTag_ColMajorMxScaleA : I32EnumAttrCase<"ColMajorMxScaleA", 10>;
 def Tla_LayoutTag_RowMajorMxScaleB : I32EnumAttrCase<"RowMajorMxScaleB", 11>;
 def Tla_LayoutTag_ColMajorMxScaleB : I32EnumAttrCase<"ColMajorMxScaleB", 12>;
+// A one-dimensional, unit-stride run of elements. This is the tag that matches
+// `tla::detail::isVector` on the tile side, so the VectorLayout TileCopyTla
+// specializations serve it directly. RowMajor stays two-dimensional on purpose:
+// a flat tile says so with this tag rather than overloading RowMajor's shape.
+def Tla_LayoutTag_VectorLayout : I32EnumAttrCase<"VectorLayout", 13>;
 def Tla_LayoutTagEnum : Tla_I32Enum<"LayoutTag", "Tensor layout tag for tla.tensor types.", [
   Tla_LayoutTag_Unknown,
   Tla_LayoutTag_RowMajor,
@@ -40,10 +45,11 @@ def Tla_LayoutTagEnum : Tla_I32Enum<"LayoutTag", "Tensor layout tag for tla.tens
   Tla_LayoutTag_RowMajorMxScaleA,
   Tla_LayoutTag_ColMajorMxScaleA,
   Tla_LayoutTag_RowMajorMxScaleB,
-  Tla_LayoutTag_ColMajorMxScaleB]>;
+  Tla_LayoutTag_ColMajorMxScaleB,
+  Tla_LayoutTag_VectorLayout]>;
 def Tla_LayoutTagAttr : Tla_I32EnumAttr<"layout_tag", Tla_LayoutTagEnum> {
   let description = [{
-    tla layout_tag RowMajor,ColumnMajor,zN,nZ,L0Clayout,zNUnAlign for generic data types,
+    tla layout_tag RowMajor,ColumnMajor,zN,nZ,L0Clayout,zNUnAlign,VectorLayout for generic data types,
     and zZMxScale,nNMxScale,RowMajorMxScaleA,ColMajorMxScaleA,RowMajorMxScaleB,ColMajorMxScaleB for mxfp4/mxfp8 scale.
   }];
 }
@@ -55,7 +61,17 @@ def Tla_AddressSpace_L0a : I32EnumAttrCase<"l0a", 3>;
 def Tla_AddressSpace_L0b : I32EnumAttrCase<"l0b", 4>;
 def Tla_AddressSpace_L0c : I32EnumAttrCase<"l0c", 5>;
 def Tla_AddressSpace_Ub : I32EnumAttrCase<"ub", 6>;
-def Tla_AddressSpaceEnum : Tla_I32Enum<"AddressSpace", "Tla pointer/tensor/memref address space.", [Tla_AddressSpace_Generic, Tla_AddressSpace_Gm, Tla_AddressSpace_L1, Tla_AddressSpace_L0a, Tla_AddressSpace_L0b, Tla_AddressSpace_L0c, Tla_AddressSpace_Ub]>;
+def Tla_AddressSpace_Biasbuf : I32EnumAttrCase<"biasbuf", 12>;
+def Tla_AddressSpaceEnum : Tla_I32Enum<"AddressSpace", "Tla pointer/tensor/memref address space.", [
+  Tla_AddressSpace_Generic,
+  Tla_AddressSpace_Gm,
+  Tla_AddressSpace_L1,
+  Tla_AddressSpace_L0a,
+  Tla_AddressSpace_L0b,
+  Tla_AddressSpace_L0c,
+  Tla_AddressSpace_Ub,
+  Tla_AddressSpace_Biasbuf
+]>;
 
 def Tla_Pipe_Scalar : I32EnumAttrCase<"scalar", 0>;
 def Tla_Pipe_Vector : I32EnumAttrCase<"vector", 1>;

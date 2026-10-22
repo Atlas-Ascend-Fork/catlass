@@ -27,6 +27,8 @@ inline mlir::FailureOr<int64_t> mapTlaAddressSpaceToMlirMemRefSpaceValue(Address
             return 5;
         case AddressSpace::ub:
             return 6;
+        case AddressSpace::biasbuf:
+            return 12;
     }
     return mlir::failure();
 }

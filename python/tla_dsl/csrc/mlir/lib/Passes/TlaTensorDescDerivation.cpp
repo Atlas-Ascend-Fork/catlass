@@ -726,7 +726,9 @@ mlir::LogicalResult TensorDescriptorDerivation::derive(mlir::func::FuncOp funcOp
                 auto materializeLinearStride = [&](int64_t leaf, size_t idx) -> FailureOr<Value> {
                     if (leaf != ShapedType::kDynamic)
                         return getOrCreateConstant(op, leaf, 0);
-                    if (childInfo->layoutTag == LayoutTag::RowMajor)
+                    // Vector is stored as the normalized (1, N) row-major shape in
+                    // the descriptor, so it takes the same stride rule.
+                    if (childInfo->layoutTag == LayoutTag::RowMajor || isVectorLayout(childInfo->layoutTag))
                         return idx == 0 ? alignLinearExtent(shape[1]) : one;
                     if (childInfo->layoutTag == LayoutTag::ColumnMajor)
                         return idx == 0 ? one : alignLinearExtent(shape[0]);

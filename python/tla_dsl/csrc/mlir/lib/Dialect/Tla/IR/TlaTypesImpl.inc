@@ -244,9 +244,15 @@ LogicalResult LayoutType::verify(function_ref<InFlightDiagnostic()> emitError, S
   SmallVector<int64_t, 8> originLeaves;
   if (failed(flattenIndexTree(origin.getTree(), originLeaves)))
     return emitError() << "tla.layout origin must be valid and non-empty";
-  if ((layoutTag == LayoutTag::RowMajor || layoutTag == LayoutTag::ColumnMajor) &&
-      originLeaves.size() != shapeLeaves.size())
+  // Linear layouts (RowMajor / ColumnMajor / Vector) are non-fractal, so their
+  // origin shape mirrors the shape leaves one for one.
+  if (::tla::isLinearLayout(layoutTag) && originLeaves.size() != shapeLeaves.size())
     return emitError() << "tla.layout linear origin must match shape leaf count";
+  // Vector is the one-dimensional linear tag: a flat, unit-stride run of
+  // elements. Spelling it with more than one leaf would silently address only
+  // the leading index, so it is rejected here rather than in each consumer.
+  if (::tla::isVectorLayout(layoutTag) && shapeLeaves.size() != 1)
+    return emitError() << "tla.layout Vector shape must be one-dimensional";
   return success();
 }
 

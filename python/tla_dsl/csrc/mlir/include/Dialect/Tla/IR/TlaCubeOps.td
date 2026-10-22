@@ -26,12 +26,12 @@ def Tla_MmadOp : Tla_Op<"mmad", []> {
     runtime call instead.
   }];
   let arguments = (ins Tla_TensorType:$acc, Tla_TensorType:$lhs, Tla_TensorType:$rhs,
-                       I1:$init_c, I64:$unit_flag,
+                       I1:$init_c, I64:$unit_flag, Optional<Tla_TensorType>:$bias,
                        Tla_ComputeOrderAttr:$compute_order,
                        Tla_HF32ModeAttr:$hf32_mode);
   let assemblyFormat = [{
-    $acc `,` $lhs `,` $rhs `,` $init_c `,` $unit_flag attr-dict `:`
-    qualified(type($acc)) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `,` type($init_c) `,` type($unit_flag)
+    $acc `,` $lhs `,` $rhs `,` $init_c `,` $unit_flag (`,` $bias ^)? attr-dict `:`
+    qualified(type($acc)) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `,` type($init_c) `,` type($unit_flag) (`,` qualified(type($bias))^)?
   }];
   let hasVerifier = 1;
 }
@@ -56,11 +56,11 @@ def Tla_MmadMxOp : Tla_Op<"mmad_mx", []> {
     nothing that can disagree with the load that wrote the tile.
   }];
   let arguments = (ins Tla_TensorType:$acc, Tla_TensorType:$lhs, Tla_TensorType:$rhs,
-                       I1:$init_c, I64:$unit_flag,
+                       I1:$init_c, I64:$unit_flag, Optional<Tla_TensorType>:$bias,
                        Tla_ComputeOrderAttr:$compute_order);
   let assemblyFormat = [{
-    $acc `,` $lhs `,` $rhs `,` $init_c `,` $unit_flag attr-dict `:`
-    qualified(type($acc)) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `,` type($init_c) `,` type($unit_flag)
+    $acc `,` $lhs `,` $rhs `,` $init_c `,` $unit_flag (`,` $bias ^)? attr-dict `:`
+    qualified(type($acc)) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `,` type($init_c) `,` type($unit_flag) (`,` qualified(type($bias))^)?
   }];
   let hasVerifier = 1;
 }

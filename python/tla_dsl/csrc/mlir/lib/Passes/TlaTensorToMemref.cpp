@@ -2,6 +2,7 @@
 
 #include "PassesCommon.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "mlir/IR/Matchers.h"
 
 namespace tla {
 
@@ -100,14 +101,16 @@ static bool tryGmOriginLayout(
         return false;
     if (info->addressSpace != ::AddressSpace::gm)
         return false;
-    if (info->layoutTag != LayoutTag::RowMajor && info->layoutTag != LayoutTag::ColumnMajor)
+    if (!isLinearLayout(info->layoutTag))
         return false;
     if (llvm::any_of(info->originShape, [](int64_t d) { return d == ShapedType::kDynamic; }))
         return false;
     unsigned rank = info->originShape.size();
     originDims.assign(info->originShape.begin(), info->originShape.end());
     contigStrides.assign(rank, 1);
-    if (info->layoutTag == LayoutTag::RowMajor) {
+    // VectorLayout is rank-1 and unit-stride, so the row-major accumulation below
+    // yields the same single stride; keeping it in this branch says so.
+    if (info->layoutTag == LayoutTag::RowMajor || isVectorLayout(info->layoutTag)) {
         int64_t acc = 1;
         for (int i = rank - 1; i >= 0; --i) {
             contigStrides[i] = acc;
@@ -126,7 +129,7 @@ static bool tryGmOriginLayout(
 static bool isOnChipAddressSpace(StringRef addressSpace)
 {
     return addressSpace == "l1" || addressSpace == "l0a" || addressSpace == "l0b" || addressSpace == "l0c" ||
-           addressSpace == "ub";
+           addressSpace == "biasbuf" || addressSpace == "ub";
 }
 
 mlir::FailureOr<mlir::Value> materializePtrValueAsMemref(
@@ -220,7 +223,7 @@ mlir::FailureOr<mlir::Value> materializeDescriptorBaseMemref(
 
 mlir::FailureOr<mlir::Value> materializeTileMemrefFromDescriptor(
     mlir::OpBuilder& builder, mlir::Location loc, const TensorDescriptor& desc, mlir::Operation* diagnosticOp,
-    llvm::DenseMap<mlir::Value, mlir::Value>& baseMemrefCache)
+    llvm::DenseMap<mlir::Value, mlir::Value>& baseMemrefCache, bool foldRankOneCoord)
 {
     FailureOr<Value> baseMemref =
         getOrMaterializeDescriptorBaseMemref(builder, loc, desc, diagnosticOp, baseMemrefCache);
@@ -232,11 +235,22 @@ mlir::FailureOr<mlir::Value> materializeTileMemrefFromDescriptor(
             diagnosticOp->emitError() << "expected descriptor base to materialize to memref type";
         return failure();
     }
-    // Flattened 1D buffers are already in the runtime ABI shape expected by
-    // downstream lowering; avoid fabricating subviews that downstream passes
-    // erase anyway.
-    if (baseType.getRank() == 1)
-        return *baseMemref;
+    // A rank-1 buffer is either addressed by the descriptor coordinate -- which
+    // the copy routes carry in the payload and the bc layer turns into an
+    // offset -- or, for the callers that hand the memref itself to a wrapper
+    // with no coordinate, by a subview at that coordinate. Only the latter
+    // folds it in: doing both would apply the offset twice, which is why this
+    // is the caller's decision rather than an unconditional rewrite.
+    if (baseType.getRank() == 1) {
+        if (!foldRankOneCoord || mlir::matchPattern(desc.coord[1], mlir::m_Zero()))
+            return *baseMemref;
+        Value one = builder.create<arith::ConstantIndexOp>(loc, 1);
+        Value size = isLinearLayout(desc.layoutTag) ? desc.shape[1] : desc.originShape[1];
+        return builder
+            .create<mlir::memref::SubViewOp>(
+                loc, *baseMemref, ValueRange{desc.coord[1]}, ValueRange{size}, ValueRange{one})
+            .getResult();
+    }
     Value one = builder.create<arith::ConstantIndexOp>(loc, 1);
     Value size0 = isLinearLayout(desc.layoutTag) ? desc.shape[0] : desc.originShape[0];
     Value size1 = isLinearLayout(desc.layoutTag) ? desc.shape[1] : desc.originShape[1];
@@ -425,6 +439,7 @@ static bool isOnChipAddressSpace(::AddressSpace addressSpace)
         case ::AddressSpace::l0b:
         case ::AddressSpace::l0c:
         case ::AddressSpace::ub:
+        case ::AddressSpace::biasbuf:
             return true;
         case ::AddressSpace::generic:
         case ::AddressSpace::gm:
@@ -817,6 +832,17 @@ std::string getCopyRouteCallee(
             return {};
         return Twine("copy_gm_RowMajor_to_l1_zN_").concat(suffix).str();
     }
+    // GM->L1 flat run. A continuous one-dimensional tile is spelled VectorLayout;
+    // RowMajor no longer has a route here.
+    if (*srcSpace == hivm::AddressSpace::GM && *dstSpace == hivm::AddressSpace::L1 &&
+        srcLayout == LayoutTag::VectorLayout && dstLayout == LayoutTag::VectorLayout) {
+        if (srcElementType != dstElem)
+            return {};
+        StringRef suffix = copyRuntimeElemSuffix(srcElementType);
+        if (suffix.empty())
+            return {};
+        return Twine("copy_gm_VectorLayout_to_l1_VectorLayout_").concat(suffix).str();
+    }
     if (*srcSpace == hivm::AddressSpace::GM && *dstSpace == hivm::AddressSpace::L1 &&
         srcLayout == LayoutTag::ColumnMajor && dstLayout == LayoutTag::nZ) {
         if (srcElementType != dstElem)
@@ -861,6 +887,15 @@ std::string getCopyRouteCallee(
         if (suffix.empty())
             return {};
         return Twine("copy_l1_nZ_to_l0b_nZ_").concat(suffix).str();
+    }
+    if (*srcSpace == hivm::AddressSpace::L1 && *dstSpace == hivm::AddressSpace::BiasBUF &&
+        srcLayout == LayoutTag::VectorLayout && dstLayout == LayoutTag::VectorLayout) {
+        if (srcElementType != dstElem)
+            return {};
+        StringRef suffix = copyRuntimeElemSuffix(srcElementType);
+        if (suffix.empty())
+            return {};
+        return Twine("copy_l1_VectorLayout_to_biasbuf_VectorLayout_").concat(suffix).str();
     }
     // L0C -> GM row-major: an fp32 acc may narrow to f32 / f16 / bf16 on fixpipe;
     // an i32 acc (int8 MMAD) stays i32.
@@ -969,17 +1004,23 @@ SmallVector<Value, 24> buildCopyPayloadForRoute(
 static bool isAicTemplateRuntimeCall(StringRef name)
 {
     if (name == "mmad_float_float_float" || name == "mmad_half_half_float" || name == "mmad_bf16_bf16_float" ||
-        name == "mmad_int8_int8_int32" || name == "tla_print_tensor_l1_f32")
+        name == "mmad_int8_int8_int32" || name == "mmad_bias_float_float_float" ||
+        name == "mmad_bias_half_half_float" || name == "mmad_bias_bf16_bf16_float" ||
+        name == "mmad_bias_int8_int8_int32" || name == "tla_print_tensor_l1_f32")
         return true;
     // FP8 MMAD: one symbol per operand-format pairing (the two formats can mix).
     // The BC symbols are named after the C++ element type the wrapper
-    // instantiates, so the operands read fp8_e4m3fn_t / fp8_e5m2_t.
-    if (name.starts_with("mmad_fp8_e") && name.ends_with("_float"))
+    // instantiates, so the operands read fp8_e4m3fn_t / fp8_e5m2_t. A bias twin
+    // inserts the `bias_` marker after `mmad_` and is otherwise the same name.
+    if (name.ends_with("_float") && (name.starts_with("mmad_fp8_e") || name.starts_with("mmad_bias_fp8_e")))
         return true;
-    // MX mmad: same per-pairing naming, on the mx_fp8_* / float4_* operand types.
-    // fp4 carries no `mx` marker because its C++ type has none -- there is no
-    // non-microscaling fp4 route for it to be confused with.
-    if ((name.starts_with("mmad_mx_fp8_e") || name.starts_with("mmad_float4_e")) && name.ends_with("_float"))
+    // MX mmad (tla.mmad_mx): one symbol per operand-format pairing, named after
+    // the C++ element type the wrapper instantiates -- mx_fp8_e4m3_t /
+    // mx_fp8_e5m2_t on the microscaled fp8 routes, float4_e2m1x2_t /
+    // float4_e1m2x2_t on fp4 (no `mx` marker there, because the fp4 type has no
+    // non-microscaling counterpart to be confused with). The bias twin inserts
+    // `bias_` after the shared `mmadmx_` prefix.
+    if (name.ends_with("_float") && name.starts_with("mmadmx_"))
         return true;
     // L1 -> L0 loads that also attach the e8m0 scale block.
     if (name.starts_with("copy_mx_l1_"))
@@ -999,12 +1040,14 @@ static bool isAicTemplateRuntimeCall(StringRef name)
     if (!(name.ends_with("_float") || name.ends_with("_half") || name.ends_with("_bf16") || name.ends_with("_int8_t") ||
           name.ends_with("_int32_t") || name.ends_with("_fp8_e4m3fn_t") || name.ends_with("_fp8_e5m2_t")))
         return false;
+
     return name.starts_with("copy_gm_RowMajor_to_l1_zN_") || name.starts_with("copy_gm_ColumnMajor_to_l1_nZ_") ||
            name.starts_with("copy_l1_zN_to_l0a_zN_") || name.starts_with("copy_l1_nZ_to_l0a_zN_") ||
            name.starts_with("copy_l1_zN_to_l0b_nZ_") || name.starts_with("copy_l1_nZ_to_l0b_nZ_") ||
            name.starts_with("copy_l0c_to_ub_RowMajor_") || name.starts_with("copy_l0c_to_gm_RowMajor_") ||
            name.starts_with("copy_l0c_to_gm_ColumnMajor_") || name.starts_with("copy_l0c_to_ub_ColumnMajor_") ||
-           name.starts_with("copy_l0c_to_l1_zN_");
+           name.starts_with("copy_l0c_to_l1_zN_") || name.starts_with("copy_gm_VectorLayout_to_l1_VectorLayout_") ||
+           name.starts_with("copy_l1_VectorLayout_to_biasbuf_VectorLayout_");
 }
 
 static bool isAivTemplateRuntimeCall(StringRef name)

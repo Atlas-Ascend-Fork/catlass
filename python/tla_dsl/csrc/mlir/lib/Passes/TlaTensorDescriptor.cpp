@@ -13,11 +13,6 @@ mlir::FailureOr<mlir::MemRefType> bridgeTlaTensorType(mlir::Type tlaTensorType)
     return bridgeTlaTensorStorageType(tlaTensorType);
 }
 
-bool isLinearLayout(::LayoutTag layoutTag)
-{
-    return layoutTag == ::LayoutTag::RowMajor || layoutTag == ::LayoutTag::ColumnMajor;
-}
-
 mlir::FailureOr<TensorTypeInfo> decodeTensorTypeInfo(mlir::Type tensorType)
 {
     TensorTypeInfo info;

@@ -22,7 +22,7 @@
 
 // RUN: %python %S/Inputs/generate_mmad_ir.py mxfp4-mixed-encodings | %tla_compile - -o - 2>&1 | %filecheck %s --check-prefix=FMTMIXED
 
-// FMTMIXED: mmad_float4_e1m2x2_t_float4_e2m1x2_t_float
+// FMTMIXED: mmadmx_float4_e1m2x2_t_float4_e2m1x2_t_float
 
 // Packed fp4 is microscaling-only: an unscaled fp4 tile has no L1->L0A/L0B
 // route at all, so the frontend stops it earlier, at the tla.copy that would

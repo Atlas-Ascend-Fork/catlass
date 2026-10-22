@@ -4,6 +4,7 @@
 #include "catlass/gemm/tile/copy_l0c_to_gm.hpp"
 #include "catlass/gemm/tile/copy_l0c_to_ub.hpp"
 #include "catlass/gemm/tile/copy_l0c_to_l1.hpp"
+#include "catlass/gemm/tile/copy_l1_to_bt.hpp"
 #include "catlass/gemm/tile/copy_l1_to_l0a.hpp"
 #include "catlass/gemm/tile/copy_l1_to_l0b.hpp"
 #include "catlass/epilogue/tile/tile_copy.hpp"
@@ -12,6 +13,11 @@ template <class ArchTag, LayoutTag SrcLayout, LayoutTag DstLayout, typename T>
 CATLASS_DEVICE void copyGMToL1(
     memref_t<__gm__ T, 2>* src, memref_t<__cbuf__ T, 1>* dst, const TensorDesc& srcDesc, const TensorDesc& dstDesc)
 {
+    // Every route here is served by one TileCopyTla specialization: the tag
+    // selects both the layout constructor (makeGMTensor / makeL1Tensor) and the
+    // copy. VectorLayout is the flat case -- both endpoints come out rank-1
+    // (VectorLayout), which is exactly what the VectorLayout specialization in
+    // copy_gm_to_l1.hpp matches.
     auto srcTensor = makeGMTensor<SrcLayout, T>(src, srcDesc);
     auto dstTensor = makeL1Tensor<DstLayout, T>(dst, dstDesc);
     Catlass::Gemm::Tile::TileCopyTla<ArchTag, decltype(srcTensor), decltype(dstTensor)>{}(dstTensor, srcTensor);
@@ -32,6 +38,18 @@ CATLASS_DEVICE void copyL1ToL0B(
 {
     auto srcTensor = makeL1Tensor<SrcLayout, T>(src, srcDesc);
     auto dstTensor = makeL0BTensor<LayoutTag::nZ, T>(dst, dstDesc);
+    Catlass::Gemm::Tile::TileCopyTla<ArchTag, decltype(srcTensor), decltype(dstTensor)>{}(dstTensor, srcTensor);
+}
+
+// L1 -> bias table. Both endpoints are flat row-major runs, so the copy is the
+// VectorLayout specialization in gemm/tile/ascend950/copy_l1_to_bt.hpp -- the
+// same template Catlass's own bias pipeline uses. Nothing is reimplemented here.
+template <class ArchTag, typename T>
+CATLASS_DEVICE void copyL1ToBias(
+    memref_t<__cbuf__ T, 1>* src, memref_t<__biasbuf__ T, 1>* dst, const TensorDesc& srcDesc, const TensorDesc& dstDesc)
+{
+    auto srcTensor = makeL1Tensor<LayoutTag::VectorLayout, T>(src, srcDesc);
+    auto dstTensor = makeBiasTensor<LayoutTag::VectorLayout, T>(dst, dstDesc);
     Catlass::Gemm::Tile::TileCopyTla<ArchTag, decltype(srcTensor), decltype(dstTensor)>{}(dstTensor, srcTensor);
 }
 
@@ -224,6 +242,14 @@ extern "C" {
             src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst));                                                      \
     }
 
+#define REGISTER_L1_TO_BIAS(DType)                                                                                  \
+    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l1_VectorLayout_to_biasbuf_VectorLayout_##DType( \
+        memref_t<__cbuf__ DType, 1>* src, memref_t<__biasbuf__ DType, 1>* dst, DESC_ABI_PARAMS(src),                \
+        DESC_ABI_PARAMS(dst))                                                                                       \
+    {                                                                                                               \
+        copyL1ToBias<Catlass::Arch::Ascend950, DType>(src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst));          \
+    }
+
 // Non-MxMatmul related copy
 REGISTER_GM_TO_L1(RowMajor, zN, float)
 REGISTER_GM_TO_L1(RowMajor, zN, half)
@@ -241,6 +267,17 @@ REGISTER_GM_TO_L1(ColumnMajor, nZ, uint16_t)
 REGISTER_GM_TO_L1(ColumnMajor, nZ, uint32_t)
 REGISTER_GM_TO_L1(ColumnMajor, nZ, fp8_e4m3fn_t)
 REGISTER_GM_TO_L1(ColumnMajor, nZ, fp8_e5m2_t)
+
+// RowMajor -> RowMajor is the contiguous-run route: the bias table staging
+// pipeline and, on the same shape, fixpipe per-channel scales. copyGMToL1
+// builds both endpoints rank-1 inside that specialization, so the VectorLayout
+// TileCopyTla specialization serves it -- no separate hand-written DMA.
+// VectorLayout -> VectorLayout is the flat contiguous run: GM and L1 both come out rank-1
+// (VectorLayout), so the VectorLayout TileCopyTla specialization in
+// copy_gm_to_l1.hpp serves it. RowMajor has no variant here: a flat tile is
+// spelled VectorLayout, and RowMajor stays two-dimensional.
+REGISTER_GM_TO_L1(VectorLayout, VectorLayout, float)
+REGISTER_GM_TO_L1(VectorLayout, VectorLayout, int32_t)
 
 REGISTER_L1_TO_L0A(zN, float)
 REGISTER_L1_TO_L0A(zN, half)
@@ -273,6 +310,9 @@ REGISTER_L1_TO_L0B(nZ, int8_t)
 REGISTER_L1_TO_L0B(nZ, uint32_t)
 REGISTER_L1_TO_L0B(nZ, fp8_e4m3fn_t)
 REGISTER_L1_TO_L0B(nZ, fp8_e5m2_t)
+
+REGISTER_L1_TO_BIAS(float)
+REGISTER_L1_TO_BIAS(int32_t)
 
 #define REGISTER_GM_TO_L1_FP4(NameSrc, NameDst, TFp4)                                                       \
     [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_gm_##NameSrc##_to_l1_##NameDst##_##TFp4( \

@@ -168,6 +168,35 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                     ]],
                 )
 
+    # --- mx_mmad with bias: the same kernel plus a 1 x N fp32 row that travels
+    # GM -> L1 -> biasbuf once per block and is consumed by the first mmad_mx of
+    # that block. The bias tile is VectorLayout, so these cases also exercise the flat
+    # GM -> L1 / L1 -> biasbuf copy routes end to end.
+    #
+    # Deliberately fewer axes than the plain mx-mmad block above: the bias
+    # pipeline does not depend on the operand format or on the scale-block
+    # orientation, so one fp8 pair across all four layouts plus both fp4
+    # encodings pins everything that can differ -- and still runs the unaligned
+    # shape, where the last block's bias slice is shorter than the tile.
+    for case, bias_layouts in (
+        ("f8e4m3fn,f8e5m2", (("row", "row"), ("row", "col"), ("col", "row"), ("col", "col"))),
+        ("f4e2m1", (("row", "col"),)),
+        ("f4e1m2", (("row", "col"),)),
+    ):
+        for shape_label, shape_args in (
+            ("regular", []),
+            ("unaligned", ["--m", "333", "--n", "444", "--k", "535"]),
+        ):
+            for la, lb in bias_layouts:
+                yield (
+                    f"mx-mmad-bias-{case.replace(',', '-')}-{la}{lb}-{shape_label}",
+                    [[
+                        "mx_mmad/mx_matmul_bias.py", "--case", case,
+                        "--layout-a", la, "--layout-b", lb,
+                        *shape_args, *dev,
+                    ]],
+                )
+
     for script, label in (
         ("basic_matmul_mutex.py", "mutex"),
         ("basic_matmul_mutex_with.py", "mutex-with"),
@@ -187,6 +216,38 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             [[
                 "basic_mmad/basic_matmul_atomic_add.py", *MMAD_MNK, *MMAD_ROW_ROW,
                 "--dtype-a", dtype, "--dtype-b", dtype, "--dtype-c", "f32", *dev,
+            ]],
+        )
+
+    # --- basic_matmul_bias: a required 1 x N bias operand, loaded GM -> L1 ->
+    # biasbuf through the flat VectorLayout routes and consumed by the first MMAD of
+    # every block. Operand dtypes follow basic_matmul.py, and the output follows
+    # from them, so there is no --dtype-c to vary: i8 x i8 writes an i32
+    # accumulator, every other route keeps fp32.
+    yield ("mmad-bias-default", [["basic_mmad/basic_matmul_bias.py", *dev]])
+    for dtype in ("f16", "bf16", "f32", "i8"):
+        yield (
+            f"mmad-bias-{dtype}",
+            [[
+                "basic_mmad/basic_matmul_bias.py",
+                *MMAD_MNK,
+                "--dtype-a", dtype, "--dtype-b", dtype, *dev,
+            ]],
+        )
+    # fp8 is the one family whose two formats mix freely, so each pairing is a
+    # distinct route through the cube and gets its own case.
+    for dtype_a, dtype_b in (
+        ("f8e4m3fn", "f8e4m3fn"),
+        ("f8e4m3fn", "f8e5m2"),
+        ("f8e5m2", "f8e4m3fn"),
+        ("f8e5m2", "f8e5m2"),
+    ):
+        yield (
+            f"mmad-bias-{dtype_a}-{dtype_b}",
+            [[
+                "basic_mmad/basic_matmul_bias.py",
+                *MMAD_MNK,
+                "--dtype-a", dtype_a, "--dtype-b", dtype_b, *dev,
             ]],
         )
 

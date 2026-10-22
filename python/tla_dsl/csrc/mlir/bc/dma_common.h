@@ -38,6 +38,7 @@ enum class LayoutTag : uint32_t
     ColMajorMxScaleA = 10,
     RowMajorMxScaleB = 11,
     ColMajorMxScaleB = 12,
+    VectorLayout = 13,
 };
 
 /// Unified 4D (12-field) tensor descriptor. Linear layouts (RowMajor/
@@ -110,6 +111,27 @@ CATLASS_DEVICE auto makeColumnMajorTlaLayout(const TensorDesc& desc)
     return tla::MakeLayout(
         tla::MakeShape(desc.shape0, desc.shape1), tla::MakeStride(tla::Int<1>{}, desc.stride1),
         tla::MakeShape(desc.originShape0, desc.originShape1));
+}
+
+// A row-major tile read as one flat contiguous run. VectorLayout is rank-1, so
+// the descriptor's two dimensions collapse into a single index: the extent is
+// the row width, and the row coordinate folds into the base offset. layout()
+// then yields the same address the rank-2 RowMajor layout would.
+//
+// The stride is a literal 1, not desc.stride1: `tla::detail::isVector` reads
+// `stride<0>()` at compile time, so a runtime stride would simply not match the
+// VectorLayout specializations. The frontend therefore refuses a VectorLayout
+// tile whose stride is anything but a static 1; a strided rank-1 view is spelled
+// RowMajor, whose descriptor keeps the real pitch.
+CATLASS_DEVICE auto makeVectorTlaLayout(const TensorDesc& desc)
+{
+    return tla::MakeLayout(
+        tla::MakeShape(desc.shape1), tla::MakeStride(tla::Int<1>{}), tla::MakeShape(desc.originShape1));
+}
+
+CATLASS_DEVICE int64_t makeVectorTlaCoord(const TensorDesc& desc)
+{
+    return static_cast<int64_t>(desc.coord0) * desc.stride0 + static_cast<int64_t>(desc.coord1);
 }
 
 template <typename T>
@@ -189,10 +211,16 @@ CATLASS_DEVICE auto makeGMTensor(memref_t<__gm__ T, 2>* memref, const TensorDesc
         return tla::MakeTensor(
             makeGlobalTensor(basePtr(memref)), makeColumnMajorTlaLayout(desc), makeTlaTileCoord(desc),
             Catlass::Arch::PositionGM{});
+    } else if constexpr (Tag == LayoutTag::VectorLayout) {
+        // VectorLayout is the flat tag: rank-1, so the VectorLayout
+        // TileCopyTla specialization matches it directly.
+        return tla::MakeTensor(
+            makeGlobalTensor(basePtr(memref)), makeVectorTlaLayout(desc), tla::MakeCoord(makeVectorTlaCoord(desc)),
+            Catlass::Arch::PositionGM{});
     } else {
         static_assert(
-            Tag == LayoutTag::RowMajor || Tag == LayoutTag::ColumnMajor,
-            "GM tensor supports RowMajor/ColumnMajor only");
+            Tag == LayoutTag::RowMajor || Tag == LayoutTag::ColumnMajor || Tag == LayoutTag::VectorLayout,
+            "GM tensor supports RowMajor/ColumnMajor/VectorLayout only");
     }
 }
 
@@ -225,8 +253,18 @@ CATLASS_DEVICE auto makeL1Tensor(memref_t<__cbuf__ T, 1>* memref, const TensorDe
         return tla::MakeTensor(tensor, makezNTlaLayout<T>(desc), makeTlaTileCoord(desc), Catlass::Arch::PositionL1{});
     } else if constexpr (Tag == LayoutTag::nZ) {
         return tla::MakeTensor(tensor, makenZTlaLayout<T>(desc), makeTlaTileCoord(desc), Catlass::Arch::PositionL1{});
+    } else if constexpr (Tag == LayoutTag::VectorLayout) {
+        // A row-major L1 tile is one contiguous run of elements, so it is built
+        // rank-1: the VectorLayout TileCopyTla specializations match on that
+        // shape, and fixpipe reads the same base offset through layout()(coord).
+        // VectorLayout says the same thing as a tag instead of by shape, and needs the
+        // identical construction.
+        return tla::MakeTensor(
+            tensor, makeVectorTlaLayout(desc), tla::MakeCoord(makeVectorTlaCoord(desc)), Catlass::Arch::PositionL1{});
     } else {
-        static_assert(Tag == LayoutTag::zN || Tag == LayoutTag::nZ, "L1 tensor supports zN/nZ only");
+        static_assert(
+            Tag == LayoutTag::zN || Tag == LayoutTag::nZ || Tag == LayoutTag::VectorLayout,
+            "L1 tensor supports zN/nZ/VectorLayout only");
     }
 }
 
@@ -405,6 +443,15 @@ template <LayoutTag Tag, typename T>
 CATLASS_DEVICE auto makeL0BTensor(memref_t<__cb__ T, 1>* memref, const TensorDesc& desc)
 {
     return makeL0BTensorAs<Tag, T, T>(memref, desc);
+}
+
+template <LayoutTag Tag, typename T>
+CATLASS_DEVICE auto makeBiasTensor(memref_t<__biasbuf__ T, 1>* memref, const TensorDesc& desc)
+{
+    static_assert(Tag == LayoutTag::VectorLayout, "Bias tensor supports VectorLayout only");
+    AscendC::LocalTensor<T> tensor(AscendC::TPosition::C2, localAddr(memref), elementCount(memref));
+    return tla::MakeTensor(
+        tensor, makeVectorTlaLayout(desc), tla::MakeCoord(makeVectorTlaCoord(desc)), Catlass::Arch::PositionBias{});
 }
 
 template <LayoutTag Tag, typename T>

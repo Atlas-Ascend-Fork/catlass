@@ -19,7 +19,8 @@ functions over one shared scale packing.
 Scale blocks go over as the plain (M, ceil(K/32)) and (ceil(K/32), N) matrices,
 padded to an even group count. The GM->L1
 DMA does the zZMxScale / nNMxScale fractal reorder, steered by the GM-side layout tag, so the
-host never pre-swizzles them.
+host never pre-swizzles them. The host-side quantisation itself lives in the
+sibling ``gen_data.py``: this file is the kernel plus the argument handling.
 """
 
 from __future__ import annotations
@@ -36,24 +37,23 @@ import argparse
 from dataclasses import dataclass
 
 import catlass.tla as tla
+import gen_data
 import torch
 import torch_npu  # noqa: F401
 from catlass.tla.runtime import from_dlpack
+from gen_data import MX_SCALE_GROUP_NUM
 
-# One e8m0 shared exponent per this many elements along K (OCP microscaling).
-MX_SCALE_GROUP_NUM = 32
 # L1 tile extents. The problem is chunked at these widths and the kernel derives
 # the grid and the K-tile count from the operands themselves.
 MX_L1_TM = 128
 MX_L1_TN = 128
 MX_L1_TK = 128
 
-C0_NUM_PER_FRACTAL = 16
-MX_SCALE_ELE_NUM_PER_C0 = 2
-MX_SCALE_ELE_NUM_PER_FRACTAL = 32
-
-# Host-side only: which tla element type an fp4 case's GM tensors carry. The
-# kernel reads the dtype off the operands, so the selection never reaches it.
+# Host-side only: the tla element type each fp8 case's GM tensors carry. The
+# torch dtype that selects the quantization grid lives in gen_data, keyed by the
+# same case name. The kernel reads the dtype off the operands, so the selection
+# never reaches it.
+FP8_SEL = {"f8e4m3fn": tla.Float8E4M3FN, "f8e5m2": tla.Float8E5M2}
 FP4_SEL = {"f4e2m1": tla.Float4E2M1, "f4e1m2": tla.Float4E1M2}
 
 
@@ -265,217 +265,6 @@ def mx_mmad_kernel(
             tla.copy(gm_c_t, t_l0c, tla.params.CopyL0C2DstParams(unit_flag=0b11))
 
 
-# ---------------------------------------------------------------------------
-# Host-side quantisation. fp8 and fp4 diverge here and nowhere else.
-# ---------------------------------------------------------------------------
-
-# fp8 format constants, mirroring examples/53_ascend950_fp8_mx_matmul/gen_data.py.
-_FP8_FORMATS = {
-    torch.float8_e4m3fn: {"emax": 8, "max_value": 448.0},
-    torch.float8_e5m2: {"emax": 15, "max_value": 57344.0},
-}
-
-# fp4 format constants, mirroring examples/54_ascend950_fp4_mx_matmul/gen_data.py.
-_FP4_FORMATS = {
-    "f4e2m1": {
-        "exp_bits": 2,
-        "mantissa_bits": 1,
-        "bias": 1,
-        "emax": 2,
-        "max_value": 6.0,
-    },
-    "f4e1m2": {
-        "exp_bits": 1,
-        "mantissa_bits": 2,
-        "bias": 1,
-        "emax": 0,
-        "max_value": 1.75,
-    },
-}
-
-_FP8 = {
-    "f8e4m3fn": (torch.float8_e4m3fn, tla.Float8E4M3FN),
-    "f8e5m2": (torch.float8_e5m2, tla.Float8E5M2),
-}
-
-
-def _e8m0_exp(max_abs: torch.Tensor, emax: int) -> torch.Tensor:
-    """Per-block e8m0 exponent, bit-exact with gen_data.py's ``_e8m0_exp``.
-
-    ``floor(log2(x))`` for positive finite fp32 ``x`` is exactly
-    ``biased_exp(x) - 127``, so it is read off the exponent field rather than
-    computed in floating point.
-    """
-    zero_mask = max_abs < 1e-30
-    safe = torch.where(zero_mask, torch.ones_like(max_abs), max_abs).float()
-    bits = safe.contiguous().view(torch.int32)
-    exp = ((bits >> 23) & 0xFF) - 127 - emax
-    exp = exp.clamp(-128, 127)
-    return torch.where(zero_mask, torch.zeros_like(exp), exp)
-
-
-def _scale_bytes(scale: torch.Tensor, rows: int, nb: int) -> torch.Tensor:
-    """e8m0 storage bytes: torch encodes exp2(e) as the biased exponent 127+e."""
-    return torch.tensor(
-        scale.to(torch.float8_e8m0fnu).flatten().untyped_storage(), dtype=torch.uint8
-    ).reshape(rows, nb)
-
-
-def quantize_mx_fp8(matrix: torch.Tensor, axis: int, fp8_dtype):
-    """Split ``matrix`` into fp8 mantissas plus e8m0 block scales along ``axis``.
-
-    K is padded up to a whole scale group before quantising, then the pad is
-    trimmed back off the quantized and dequantized matrices -- only the scale
-    keeps the padded group count, rounded up to an even number of groups for
-    the 16-bit e8m0 DMA units (gen_data.py's pad-then-trim plus its
-    ``padded_blocks`` rounding). The operands go over at their real K and the
-    DMA adapts to the unaligned tail; the pad elements, quantized zeros, exist
-    only so the boundary block can be built.
-
-    Returns ``(fp8_values, e8m0_scale_bytes, dequantized_fp32)``. The
-    dequantized tensor is what the device actually multiplies, so the reference
-    is built from it -- only accumulation order then differs.
-    """
-    fmt = _FP8_FORMATS[fp8_dtype]
-    work = matrix if axis == 1 else matrix.transpose(0, 1)
-    work = work.float().contiguous()
-    rows, cols = work.shape
-    nb = (cols + MX_SCALE_GROUP_NUM - 1) // MX_SCALE_GROUP_NUM
-    padded_cols = nb * MX_SCALE_GROUP_NUM
-    if padded_cols != cols:
-        work = torch.cat([work, work.new_zeros(rows, padded_cols - cols)], dim=1)
-
-    blocks = work.view(rows, nb, MX_SCALE_GROUP_NUM)
-    exp = _e8m0_exp(blocks.abs().amax(dim=-1), fmt["emax"])
-    scale = torch.exp2(exp.float())
-    scaled = (blocks / scale.unsqueeze(-1)).clamp(-fmt["max_value"], fmt["max_value"])
-    q = scaled.to(fp8_dtype)
-    dequant = (q.float() * scale.unsqueeze(-1)).reshape(rows, padded_cols)
-    q = q.reshape(rows, padded_cols)
-    # Trim the pad back off; the scale keeps the padded group count.
-    if padded_cols != cols:
-        q = q[:, :cols].reshape(rows, cols)
-        dequant = dequant[:, :cols].reshape(rows, cols)
-    scale_bytes = _scale_bytes(scale, rows, nb)
-    # Pad the scale to an even group count, as gen_data.py's ``padded_blocks``
-    # rounding does: the GM MxScale layout moves e8m0 as 16-bit units -- two
-    # groups per unit -- so an odd group total cannot be moved. Padded groups
-    # carry the e8m0 byte for 1.0 and land on operand pad that is quantized
-    # zeros (the bc-side K alignment zeroes the L1 pad too), so 1.0-scaled
-    # zeros add nothing.
-    sk_pad = (nb + 1) // 2 * 2
-    if sk_pad != nb:
-        scale_bytes = torch.cat(
-            [scale_bytes, scale_bytes.new_full((rows, sk_pad - nb), 127)], dim=1
-        )
-
-    if axis == 1:
-        return q, scale_bytes, dequant
-    return (
-        q.transpose(0, 1).contiguous(),
-        scale_bytes.transpose(0, 1).contiguous(),
-        dequant.transpose(0, 1).contiguous(),
-    )
-
-
-def _fp4_lut(fmt: str) -> torch.Tensor:
-    """The 16 representable fp4 values, in encoding order."""
-    cfg = _FP4_FORMATS[fmt]
-    exp_bits, mbits, bias = cfg["exp_bits"], cfg["mantissa_bits"], float(cfg["bias"])
-    values = []
-    for i in range(16):
-        sign = (i >> 3) & 0x01
-        exp = (i >> mbits) & ((1 << exp_bits) - 1)
-        mant = i & ((1 << mbits) - 1)
-        if exp == 0:
-            v = 0.0 if mant == 0 else (mant / float(1 << mbits)) * (2.0 ** (1.0 - bias))
-        else:
-            v = (1.0 + mant / float(1 << mbits)) * (2.0 ** (float(exp) - bias))
-        values.append(-v if sign else v)
-    return torch.tensor(values, dtype=torch.float32)
-
-
-def quantize_mx_fp4(matrix: torch.Tensor, axis: int, fmt: str):
-    """Split ``matrix`` into fp4 nibble indices plus e8m0 block scales.
-
-    Returns ``(packed_uint8, e8m0_scale_bytes, dequantized_fp32)``. Packing is
-    two elements per byte, element 2i in the low nibble (as gen_data.py does);
-    an odd K puts the last element in a final byte whose high nibble carries
-    the zero pad element.
-
-    As in the fp8 path, K is padded up to a whole scale group before quantising
-    and the pad is trimmed back off afterwards -- the packed operand goes over
-    at its real K (``ceil(K/2)`` bytes per row) and only the scale keeps the
-    padded group count, rounded up to an even number of groups for the 16-bit
-    e8m0 DMA units.
-    """
-    cfg = _FP4_FORMATS[fmt]
-    lut = _fp4_lut(fmt)
-    work = (matrix if axis == 1 else matrix.transpose(0, 1)).float().contiguous()
-    rows, cols = work.shape
-    nb = (cols + MX_SCALE_GROUP_NUM - 1) // MX_SCALE_GROUP_NUM
-    padded_cols = nb * MX_SCALE_GROUP_NUM
-    if padded_cols != cols:
-        work = torch.cat([work, work.new_zeros(rows, padded_cols - cols)], dim=1)
-
-    blocks = work.view(rows, nb, MX_SCALE_GROUP_NUM)
-    max_abs = blocks.abs().amax(dim=-1)
-    exp = torch.floor(torch.log2(max_abs.clamp(min=1e-30))) - cfg["emax"]
-    exp = torch.where(max_abs > 0, exp, torch.zeros_like(exp)).clamp(-127, 127)
-    scale = torch.exp2(exp)
-
-    scaled = (blocks / scale.unsqueeze(-1)).clamp(-cfg["max_value"], cfg["max_value"])
-    # Nearest representable value; ties go to the lower index, matching argmin.
-    # The index IS the fp4 bit pattern (the LUT is addressed by encoding:
-    # sign/exp/mantissa), so the nibbles packed below are what the device
-    # stores -- gen_data.py recovers the same indices by re-running the LUT
-    # argmin over the quantized values, an identity except for -0 -> +0, which
-    # this argmin never picks anyway (the tie goes to +0's lower index).
-    idx = (scaled.unsqueeze(-1) - lut).abs().argmin(dim=-1)
-    dequant = (lut[idx] * scale.unsqueeze(-1)).reshape(rows, padded_cols)
-    idx = idx.reshape(rows, padded_cols)
-    # Trim the pad back off, then pack whole bytes: an odd tail element takes a
-    # zero pad nibble in the high half of its byte.
-    if padded_cols != cols:
-        dequant = dequant[:, :cols].reshape(rows, cols)
-        idx = idx[:, :cols]
-    if cols % 2 != 0:
-        idx = torch.cat([idx, torch.zeros(rows, 1, dtype=idx.dtype)], dim=1)
-    idx = idx.to(torch.uint8)
-
-    packed = (idx[:, 0::2] | (idx[:, 1::2] << 4)).to(torch.uint8)
-    scale_bytes = _scale_bytes(scale, rows, nb)
-    # Same even-group scale padding as the fp8 path (gen_data.py's
-    # ``padded_blocks`` rounding): the GM MxScale layout moves e8m0 as 16-bit
-    # units -- two groups per unit. Padded groups carry the e8m0 byte for 1.0
-    # and land on operand pad that is quantized zeros, so they add nothing.
-    sk_pad = (nb + 1) // 2 * 2
-    if sk_pad != nb:
-        scale_bytes = torch.cat(
-            [scale_bytes, scale_bytes.new_full((rows, sk_pad - nb), 127)], dim=1
-        )
-
-    if axis == 1:
-        return packed, scale_bytes, dequant
-    # For the B side the caller wants (K, N) orientation back.
-    return (
-        packed,  # already (N, K/2): B is column-major
-        scale_bytes.transpose(0, 1).contiguous(),  # (K/32, N)
-        dequant.transpose(0, 1).contiguous(),  # (K, N)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Scale packing. Format-independent: an e8m0 block is a byte per 32 elements
-# whatever the operands are, so both paths share this.
-# ---------------------------------------------------------------------------
-def _random_operands(m: int, n: int, k: int, spread: float):
-    return (
-        torch.randn(m, k, device="cpu") * spread,
-        torch.randn(k, n, device="cpu") * spread,
-    )
-
-
 def _canImplement(args: argparse.Namespace) -> None:
     """Reject inputs that violate the README constraints before any real work.
 
@@ -488,7 +277,7 @@ def _canImplement(args: argparse.Namespace) -> None:
     # Element-width consistency: fp8 never multiplies fp4. Within one family any
     # encoding may pair (fp8 x fp8, fp4 x fp4), but the family is fixed by case.
     if is_fp4:
-        if args.fp4_case not in _FP4_FORMATS:
+        if args.fp4_case not in gen_data.FP4_FORMATS:
             raise SystemExit(f"unknown fp4 encoding: {args.fp4_case!r}")
         if args.dtype_a is not None or args.dtype_b is not None:
             raise SystemExit(
@@ -497,10 +286,13 @@ def _canImplement(args: argparse.Namespace) -> None:
                 f"dtype_b={args.dtype_b!r}"
             )
     else:
-        if args.dtype_a not in _FP8 or args.dtype_b not in _FP8:
+        if (
+            args.dtype_a not in gen_data.FP8_DTYPES
+            or args.dtype_b not in gen_data.FP8_DTYPES
+        ):
             raise SystemExit(
                 "fp8 dtype pair must each be one of "
-                f"{', '.join(sorted(_FP8))}, got "
+                f"{', '.join(sorted(gen_data.FP8_DTYPES))}, got "
                 f"dtype_a={args.dtype_a!r} dtype_b={args.dtype_b!r}"
             )
 
@@ -549,75 +341,28 @@ def run(args: argparse.Namespace) -> int:
             f"dtype={args.dtype_a}/{args.dtype_b} "
             f"grid={(m + tm - 1) // tm}x{(n + tn - 1) // tn} k_tiles={(k + tk - 1) // tk} ---"
         )
-    torch.manual_seed(0)
+    # Host-side quantisation and the GM scale-block packing both live in
+    # gen_data: one call produces the operands, the e8m0 blocks and the fp32
+    # golden, already oriented for the layouts this run asked for. The returned
+    # buffers are byte views (the operand element type is carried by the TLA
+    # descriptor), so all that is left here is moving them to the device.
+    inputs = gen_data.gen_mx_matmul_inputs(
+        m,
+        n,
+        k,
+        fp4_format=fmt if is_fp4 else None,
+        dtype_a=args.dtype_a,
+        dtype_b=args.dtype_b,
+        layout_a=layout_a,
+        layout_b=layout_b,
+    )
+    ref = inputs.ref
 
-    # fp4's tighter dynamic range wants a smaller spread than fp8's.
-    a_f, b_f = _random_operands(m, n, k, 4.0 if is_fp4 else 10.0)
-    if not is_fp4:
-        a_f, b_f = a_f - 5.0, b_f - 5.0
-
-    # Quantise the whole operand at once. An MX scale group is 32 elements along
-    # K and never straddles a K tile, so this is identical to quantising per tile
-    # and concatenating -- which is what this used to do, back when the host also
-    # pre-swizzled each tile's scale block into zZMxScale / nNMxScale. The DMA does that
-    # reorder now, so the blocks go over as the plain (M, K/32) and (K/32, N)
-    # matrices and there is nothing left for the host to chunk.
-    if is_fp4:
-        qa, sa_packed, adq = quantize_mx_fp4(a_f, 1, fmt)
-        qb, sb_packed, bdq = quantize_mx_fp4(b_f, 0, fmt)
-    else:
-        qa, sa_packed, adq = quantize_mx_fp8(a_f, 1, _FP8[args.dtype_a][0])
-        qb, sb_packed, bdq = quantize_mx_fp8(b_f, 0, _FP8[args.dtype_b][0])
-
-    ref = adq @ bdq
-
-    # Each operand is physically transposed to match its --layout-*, the same
-    # convention create_tla_tensor expects and basic_matmul uses: a column-major
-    # operand is handed over as the transposed contiguous buffer.
-    if layout_a == "col":
-        qa = qa.permute(1, 0).contiguous()
-    # fp4's B side comes back already packed as (N, ceil(K/2)) -- the
-    # column-major form, because the nibble pairing runs along K. fp8's is
-    # (K, N).
-    if (layout_b == "row") if is_fp4 else (layout_b == "col"):
-        qb = qb.permute(1, 0).contiguous()
-    # Packed blocks are stacked per chunk along rows so chunk kk is at (kk, 0).
-    # Natural blocks are the real matrices, so A's chunks join along columns.
-
-    a_npu = qa.contiguous().view(torch.int8).npu()
-    b_npu = qb.contiguous().view(torch.int8).npu()
+    a_npu = inputs.a.npu()
+    b_npu = inputs.b.npu()
+    sa_npu = inputs.scale_a.npu()
+    sb_npu = inputs.scale_b.npu()
     c_npu = torch.zeros(m, n, dtype=torch.float32).npu()
-
-    # Each GM tag says how its logical scale matrix is laid out, and the two
-    # copies really do differ: the row-major A / column-major B pair reach L1
-    # through a transposing DN2NZ, the other pair through a plain ND2NZ. Because
-    # the DMA moves e8m0 reinterpreted as half, every 16-bit unit has to hold two
-    # groups of the *same* row (A) or column (B) -- so the ND2NZ pair takes the
-    # block with its groups interleaved in C0-sized pairs, and a plain transpose
-    # would pair two different rows and could never be right.
-    C0 = MX_SCALE_ELE_NUM_PER_C0
-
-    def _pair_interleave_a(t):  # (M, G) -> pairs of groups, M fastest between
-        rows, groups = t.shape
-        inter = t.view(rows, groups // C0, C0).permute(1, 0, 2).contiguous().reshape(-1)
-        return inter.view(rows, groups)
-
-    def _pair_interleave_b(t):  # (G, N) -> pairs of groups, N fastest between
-        groups, cols = t.shape
-        inter = t.view(groups // C0, C0, cols).permute(0, 2, 1).contiguous().reshape(-1)
-        return inter.view(groups, cols)
-
-    sa_npu = sa_packed.view(torch.int8).contiguous().npu()
-    sb_npu = sb_packed.view(torch.int8).contiguous().npu()
-    # ColMajorMxScaleA and RowMajorMxScaleB reach L1 through ND2NZ and need the
-    # groups interleaved in C0-sized pairs; their DN2NZ counterparts take the
-    # block as it comes.
-    if layout_a == "col":
-        sa_npu = _pair_interleave_a(sa_npu)
-    if layout_b == "row":
-        sb_npu = _pair_interleave_b(sb_npu)
-    else:
-        sb_npu = sb_npu.permute(1, 0).contiguous()
 
     if is_fp4:
         # The GM tile carries the fp4 element type, exactly as the fp8 branch
@@ -640,8 +385,8 @@ def run(args: argparse.Namespace) -> int:
             element_type=fp4_t,
         ).mark_layout_dynamic()
     else:
-        a_t = create_tla_tensor(a_npu, layout_a, _FP8[args.dtype_a][1])
-        b_t = create_tla_tensor(b_npu, layout_b, _FP8[args.dtype_b][1])
+        a_t = create_tla_tensor(a_npu, layout_a, FP8_SEL[args.dtype_a])
+        b_t = create_tla_tensor(b_npu, layout_b, FP8_SEL[args.dtype_b])
     c_t = create_tla_tensor(c_npu, "row")
     tag_sa = (
         tla.arch.RowMajorMxScaleA if layout_a == "row" else tla.arch.ColMajorMxScaleA
@@ -649,7 +394,7 @@ def run(args: argparse.Namespace) -> int:
     tag_sb = (
         tla.arch.RowMajorMxScaleB if layout_b == "row" else tla.arch.ColMajorMxScaleB
     )
-    sk_pad = sa_packed.shape[1]
+    sk_pad = inputs.scale_groups
     sa_t = from_dlpack(
         sa_npu,
         layout_tag=tag_sa,
@@ -698,18 +443,18 @@ def run(args: argparse.Namespace) -> int:
 def _apply_case(args: argparse.Namespace, case: str, parser) -> None:
     """Point `args` at one case: an fp8 operand pair, or a single fp4 encoding."""
     case = case.strip()
-    if case in _FP4_FORMATS:
+    if case in gen_data.FP4_FORMATS:
         args.fp4_case, args.dtype_a, args.dtype_b = case, None, None
         return
     parts = [part.strip() for part in case.split(",")]
-    if len(parts) == 2 and all(part in _FP8 for part in parts):
+    if len(parts) == 2 and all(part in gen_data.FP8_DTYPES for part in parts):
         args.fp4_case = None
         args.dtype_a, args.dtype_b = parts
         return
     parser.error(
-        f"--case expects an fp4 encoding {{{', '.join(sorted(_FP4_FORMATS))}}} "
+        f"--case expects an fp4 encoding {{{', '.join(sorted(gen_data.FP4_FORMATS))}}} "
         f"or an fp8 pair DTYPE_A,DTYPE_B with each in "
-        f"{{{', '.join(sorted(_FP8))}}}, got {case!r}"
+        f"{{{', '.join(sorted(gen_data.FP8_DTYPES))}}}, got {case!r}"
     )
 
 

@@ -173,6 +173,8 @@ inline FailureOr<hivm::AddressSpace> mapTlaAddressSpaceToHivm(AddressSpace addre
             return hivm::AddressSpace::L0C;
         case AddressSpace::ub:
             return hivm::AddressSpace::UB;
+        case AddressSpace::biasbuf:
+            return hivm::AddressSpace::BiasBUF;
     }
     return failure();
 }

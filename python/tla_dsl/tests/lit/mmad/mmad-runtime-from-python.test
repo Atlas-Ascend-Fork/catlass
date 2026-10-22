@@ -78,29 +78,29 @@
 // which therefore stays on mad.
 // MX-DAG: func.func private @copy_mx_l1_zN_to_l0a_zN_fp8_e4m3fn_t(
 // MX-DAG: func.func private @copy_mx_l1_nZ_to_l0b_nZ_fp8_e4m3fn_t(
-// MX-DAG: func.func private @mmad_mx_fp8_e4m3_t_mx_fp8_e4m3_t_float(
+// MX-DAG: func.func private @mmadmx_mx_fp8_e4m3_t_mx_fp8_e4m3_t_float(
 // MX: call @copy_mx_l1_zN_to_l0a_zN_fp8_e4m3fn_t(
 // MX: call @copy_mx_l1_nZ_to_l0b_nZ_fp8_e4m3fn_t(
-// MX: call @mmad_mx_fp8_e4m3_t_mx_fp8_e4m3_t_float(
+// MX: call @mmadmx_mx_fp8_e4m3_t_mx_fp8_e4m3_t_float(
 // MX-NOT: tla.copy_mx
 // MX-NOT: tla.mmad
 
 // The two fp8 formats mix, so the callee name is per-operand.
-// MXMIX-DAG: func.func private @mmad_mx_fp8_e5m2_t_mx_fp8_e4m3_t_float(
-// MXMIX: call @mmad_mx_fp8_e5m2_t_mx_fp8_e4m3_t_float(
+// MXMIX-DAG: func.func private @mmadmx_mx_fp8_e5m2_t_mx_fp8_e4m3_t_float(
+// MXMIX: call @mmadmx_mx_fp8_e5m2_t_mx_fp8_e4m3_t_float(
 // MXMIX-NOT: tla.mmad
 
 // Packed fp4: the encoding cannot be read off the element type (the tile is i8
 // storage), so it is taken from the load and threaded into the callee name.
 // MXFP4-DAG: func.func private @copy_mx_l1_zN_to_l0a_zN_float4_e2m1x2_t(
 // MXFP4-DAG: func.func private @copy_mx_l1_nZ_to_l0b_nZ_float4_e2m1x2_t(
-// MXFP4-DAG: func.func private @mmad_float4_e2m1x2_t_float4_e2m1x2_t_float(
-// MXFP4: call @mmad_float4_e2m1x2_t_float4_e2m1x2_t_float(
+// MXFP4-DAG: func.func private @mmadmx_float4_e2m1x2_t_float4_e2m1x2_t_float(
+// MXFP4: call @mmadmx_float4_e2m1x2_t_float4_e2m1x2_t_float(
 // MXFP4-NOT: tla.copy_mx
 // MXFP4-NOT: tla.mmad
 
-// MXFP4B-DAG: func.func private @mmad_float4_e1m2x2_t_float4_e1m2x2_t_float(
-// MXFP4B: call @mmad_float4_e1m2x2_t_float4_e1m2x2_t_float(
+// MXFP4B-DAG: func.func private @mmadmx_float4_e1m2x2_t_float4_e1m2x2_t_float(
+// MXFP4B: call @mmadmx_float4_e1m2x2_t_float4_e1m2x2_t_float(
 // MXFP4B-NOT: tla.mmad
 
 // DYN-INIT-COUNT-1: func.func private @mmad_float_float_float(

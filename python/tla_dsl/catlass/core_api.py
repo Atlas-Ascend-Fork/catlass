@@ -1885,7 +1885,7 @@ _CATLASS_C0_NUM_PER_FRACTAL = 16
 _MX_SCALE_GM_LAYOUT_TOKENS = frozenset(
     {"RowMajorMxScaleA", "ColMajorMxScaleA", "RowMajorMxScaleB", "ColMajorMxScaleB"}
 )
-_LINEAR_LAYOUT_TOKENS = frozenset({"RowMajor", "ColumnMajor"})
+_LINEAR_LAYOUT_TOKENS = frozenset({"RowMajor", "ColumnMajor", "VectorLayout"})
 # Orientation of a linear layout, named once. Everything downstream -- stride
 # derivation, the dynamic GM prologue, leading-dim inference -- must ask these
 # rather than compare against "RowMajor"/"ColumnMajor" literally: a tag that is
@@ -1893,7 +1893,7 @@ _LINEAR_LAYOUT_TOKENS = frozenset({"RowMajor", "ColumnMajor"})
 # fallback that no validator can see, because the tag is a perfectly valid
 # linear tag.
 _ROW_MAJOR_LAYOUT_TOKENS = frozenset({"RowMajor"})
-_COLUMN_MAJOR_LAYOUT_TOKENS = _LINEAR_LAYOUT_TOKENS - _ROW_MAJOR_LAYOUT_TOKENS
+_COLUMN_MAJOR_LAYOUT_TOKENS = frozenset({"ColumnMajor"})
 # Which flat stride leaf of each GM MxScale tag is the runtime pitch (everything
 # else is a structural constant: the 0 broadcast, unit strides, and the e8m0
 # scale C0 = 2). mark_layout_dynamic keeps the constants static and marks only
@@ -1916,7 +1916,9 @@ _NZ_FAMILY_LAYOUT_TOKENS = frozenset(
     }
     | _MX_SCALE_GM_LAYOUT_TOKENS
 )
-_MAKE_TENSOR_LIKE_ON_CHIP_ADDRSPACES = frozenset({"l1", "l0a", "l0b", "l0c", "ub"})
+_MAKE_TENSOR_LIKE_ON_CHIP_ADDRSPACES = frozenset(
+    {"l1", "l0a", "l0b", "l0c", "ub", "biasbuf"}
+)
 _BITS_PER_BYTE = 8
 
 
@@ -2066,6 +2068,17 @@ def _validate_static_make_tensor_layout(
 
     if layout_tag in _LINEAR_LAYOUT_TOKENS:
         if len(shape_const_tree) == 1:
+            # VectorLayout is unit-stride by definition: the bc layer builds its
+            # rank-1 layout with a literal stride of 1, so an unknown (dynamic)
+            # stride would be silently treated as 1 rather than honoured. The
+            # one-dimensional linear spelling that does admit a runtime stride
+            # is RowMajor, whose descriptor keeps the real value.
+            if layout_tag == "VectorLayout" and stride_const_tree[0] is None:
+                raise TlaLoweringError(
+                    "tla.make_tensor layout 'VectorLayout' requires a static stride "
+                    "of 1; a dynamic stride has no representation in this layout "
+                    "(use RowMajor for a strided rank-1 view)"
+                )
             checks = ((stride_const_tree[0], 1),)
         elif layout_tag in _ROW_MAJOR_LAYOUT_TOKENS:
             checks = ((stride_const_tree[1], 1),)
@@ -2403,7 +2416,7 @@ def _remap_tensor_like_prefix_fields_for_layout_trees(
 
     ``origin_shape`` must be a flat ``(N,)`` or ``(M, N)`` Tla index tree with ``int`` or
     ``None`` leaves. ``None`` represents an unknown dimension, spelled ``?`` in MLIR.
-    Rank-1 ``RowMajor`` uses ``(N):(1)``, ``coord=(0,)``. Rank-2 **coord** is always
+    Rank-1 ``VectorLayout`` uses ``(N):(1)``, ``coord=(0,)``. Rank-2 **coord** is always
     ``(0, 0)``. Naming follows ``tla::GetTileLayout`` / fractal ``MakeLayout``
     (``rows`` / ``cols`` / ``ELE_NUM_PER_C0`` / ``C0_NUM_PER_FRACTAL``).
     """
@@ -2412,7 +2425,11 @@ def _remap_tensor_like_prefix_fields_for_layout_trees(
         if isinstance(length, tuple):
             return None
         layout_tag = layout.strip()
-        if layout_tag == "RowMajor":
+        # VectorLayout is the explicit one-dimensional tag. Rank-1 RowMajor keeps
+        # its existing meaning too: a 1-D RowMajor view may be strided
+        # (stride != 1), which VectorLayout -- unit-stride by definition --
+        # cannot express.
+        if layout_tag in ("RowMajor", "VectorLayout"):
             shape = (length,)
             stride = (1,)
             origin = (length,)
@@ -4929,9 +4946,27 @@ def make_tensor_like(
                 layout = "zN"
             elif like_type.layout_tag in ("ColumnMajor", "nZ"):
                 layout = "nZ"
+            elif like_type.layout_tag == "VectorLayout":
+                # VectorLayout stays VectorLayout. Folding it into zN would drop
+                # the flat (rank-1) form the VectorLayout copy specializations
+                # match, and a 1-D tile has no zN fractal structure to infer
+                # from. A 1-D RowMajor source keeps its existing zN inference
+                # above.
+                layout = "VectorLayout"
             else:
                 raise TlaLoweringError(
                     f"tla.make_tensor_like cannot infer layout for addrspace l1 "
+                    f"with likeTensor layoutTag '{like_type.layout_tag}'; please specify layoutTag explicitly"
+                )
+        elif addr == "biasbuf":
+            # The bias table is one contiguous run of elements, so it mirrors the
+            # VectorLayout source it is loaded from. There is no other layout it
+            # can take, so any other source tag asks the caller to be explicit.
+            if like_type.layout_tag == "VectorLayout":
+                layout = "VectorLayout"
+            else:
+                raise TlaLoweringError(
+                    f"tla.make_tensor_like cannot infer layout for addrspace biasbuf "
                     f"with likeTensor layoutTag '{like_type.layout_tag}'; please specify layoutTag explicitly"
                 )
         else:
@@ -5038,6 +5073,7 @@ _COPY_CUBE_ROUTES = {
     ("l0c", "l1"),
     ("l0c", "ub"),
     ("l1", "ub"),
+    ("l1", "biasbuf"),
 }
 
 _COPY_VECTOR_ROUTES = {("gm", "ub"), ("ub", "gm"), ("ub", "l1"), ("ub", "ub")}
@@ -5075,6 +5111,10 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
     ("gm", "ColMajorMxScaleA", "l1", "zZMxScale"): ("f8e8m0",),
     ("gm", "RowMajorMxScaleB", "l1", "nNMxScale"): ("f8e8m0",),
     ("gm", "ColMajorMxScaleB", "l1", "nNMxScale"): ("f8e8m0",),
+
+    ("gm", "VectorLayout", "l1", "VectorLayout"): ("f32", "i32"),
+    ("l1", "VectorLayout", "biasbuf", "VectorLayout"): ("f32", "i32"),
+
     # L1->L0 — AscendC LoadData 2dv2 accepts u32 but not u16 on dav-3510.
     ("l1", "zN", "l0a", "zN"): ("f32", "f16", "bf16", "i8", "u32", "f8e4m3fn", "f8e5m2"),
     ("l1", "nZ", "l0a", "zN"): ("f32", "f16", "bf16", "i8", "u32", "f8e4m3fn", "f8e5m2"),
@@ -5524,7 +5564,7 @@ def copy(
     """Directory: Data Movement
     Description:
         Copy data between tiles. The hardware path follows `src`/`dst` address spaces
-        (vector: GM↔UB, UB→L1, UB→UB; cube: GM→L1, L1→L0A/L0B, L0C→GM|UB|L1).
+        (vector: GM↔UB, UB→L1, UB→UB; cube: GM→L1, L1→L0A/L0B, L1→biasbuf, L0C→GM|UB|L1).
         UB→UB always uses the dedicated `MOV.UB.TO.UB` block move, so any element
         width (1-byte types included) and any row length are accepted. That move
         counts in whole 32-byte blocks, so a row that is not a whole number of
@@ -5543,6 +5583,18 @@ def copy(
         DataBlock (8 / 16 / 32 for 4 / 2 / 1-byte types). The tile must therefore
         be a whole number of those blocks: 16 rows by C0 columns, or 32 rows by 32
         columns for a 1-byte type, which needs four calls to cover its block.
+        On the cube side, the contiguous-run routes are `GM`→`L1` and
+        `L1`→`biasbuf`, and both spell a flat tile with `VectorLayout`.
+        `VectorLayout` is rank-1 by definition, so the tile is `(N):(1)` and only
+        its innermost extent is addressed. `RowMajor` does not spell either route
+        -- it stays a two-dimensional tag.
+
+        A tile that spans more than one row cannot use `VectorLayout`, and the
+        two routes differ in what is left. A multi-row `GM`→`L1` tile has the
+        `zN` / `nZ` routes, which keep both dimensions. `L1`→`biasbuf` has no
+        such alternative: the bias table is a flat `N`-element run, so a
+        multi-row bias tile is not representable at all -- slice the row you need
+        rather than loading a taller tile.
 
         Copy / tiling sizes follow each tile's logical `origin_shape`
         (not the nested physical `shape`). Physical `shape` / `stride` describe
@@ -5620,6 +5672,18 @@ def copy(
         l1_unalign = tla.make_tensor_like(l1_ptr, gm_tile, layoutTag=tla.arch.zNUnAlign)
         with tla.cube():
             tla.copy(dst=l1_unalign, src=gm_tile)
+
+        # --- 4) Flat contiguous run: VectorLayout ---
+        # A 1-N bias row is one run of elements, not a (1, N) tile. Both
+        # endpoints of the staging pipeline carry the same tag: GM -> L1 first,
+        # then L1 -> the bias table buffer.
+        gm_bias = tla.tile_view(gm_bias_full, tla.make_shape(n), tla.make_coord(0))
+        l1_bias = tla.make_tensor_like(l1_bias_ptr, gm_bias, tla.arch.VectorLayout)
+        l0_bias = tla.make_tensor_like(l0_bias_ptr, l1_bias, tla.arch.VectorLayout)
+        with tla.cube():
+            tla.copy(dst=l1_bias, src=gm_bias)
+            tla.copy(dst=l0_bias, src=l1_bias)
+            tla.mmad(l0_c, l0_a, l0_b, init_c=True, unit_flag=0, bias=l0_bias)
 
         # Related (register path, not tla.copy): unaligned UB ↔ vector register
         #   with tla.vec.func(mode="simd"):
@@ -6708,6 +6772,7 @@ def _validate_mmad_contract(
     lhs: mlir_ir.Value,
     rhs: mlir_ir.Value,
     is_mx: bool,
+    bias: mlir_ir.Value | None = None,
 ) -> None:
     acc_desc = _tla_tensor_type_for_mlir_value(acc)
     lhs_desc = _tla_tensor_type_for_mlir_value(lhs)
@@ -6728,8 +6793,8 @@ def _validate_mmad_contract(
         rhs_desc.element_type,
         acc_desc.element_type,
     )
+    _op_name = is_mx and "mmad_mx" or "mmad"
     if not _validate_mmad_dtypes(*element_types, is_mx=is_mx):
-        _op_name = is_mx and "mmad_mx" or "mmad"
         raise TlaLoweringError(
             f"unsupported tla.{_op_name} element types, got {element_types}"
         )
@@ -6743,6 +6808,39 @@ def _validate_mmad_contract(
         raise TlaLoweringError(
             "unsupported tla.mmad tile shape contract; expected lhs(MxK), rhs(KxN), acc(MxN)"
         )
+
+    # The bias table feeds the accumulator directly, so it has to carry the same
+    # element type the accumulator does: fp32 alongside fp32 accumulation, i32
+    # alongside the integer MMAD route. The device reads it element for element,
+    # and a mismatch would be reinterpreted rather than converted.
+    if bias is not None:
+        bias_desc = _tla_tensor_type_for_mlir_value(bias)
+        if bias_desc.element_type != acc_desc.element_type:
+            raise TlaLoweringError(
+                f"unsupported tla.{_op_name} bias element type; expected the "
+                f"accumulator type {acc_desc.element_type}, got "
+                f"{bias_desc.element_type}"
+            )
+        if bias_desc.addrspace != "biasbuf":
+            raise TlaLoweringError(
+                f"unsupported tla.{_op_name} bias addrspace; expected biasbuf, "
+                f"got {bias_desc.addrspace}"
+            )
+        # VectorLayout is rank-1 by definition -- its verifier admits exactly
+        # one shape leaf -- so a bias tile is a flat N-element run and there is
+        # no leading extent to check. All that is left is N against the
+        # accumulator's.
+        if bias_desc.layout_tag != "VectorLayout":
+            raise TlaLoweringError(
+                f"unsupported tla.{_op_name} bias layout; expected a 1-D "
+                f"VectorLayout tile, got {bias_desc.layout_tag}"
+            )
+        (bias_n,) = bias_desc.origin_shape
+        if None not in (bias_n, acc_n) and bias_n != acc_n:
+            raise TlaLoweringError(
+                f"unsupported tla.{_op_name} bias shape; expected N matching acc "
+                f"({acc_n}), got {bias_n}"
+            )
 
     expected_layouts = (
         (acc, "L0Clayout"),
@@ -6766,6 +6864,7 @@ def mmad(
     unit_flag: IndexLike | None = None,
     compute_order: ComputeOrder = ComputeOrder.M_FIRST,
     hf32_mode: HF32Mode = HF32Mode.HF32_DISABLE,
+    bias: Tensor | None = None,
     loc: mlir_ir.Location | None = None,
     **extra_kwargs: object,
 ) -> None:
@@ -6778,12 +6877,20 @@ def mmad(
         - `lhs` (`Tensor`): Left-hand matrix tile (usually on L0A). Required.
         - `rhs` (`Tensor`): Right-hand matrix tile (usually on L0B). Required.
         - `init_c` (`bool | Bool | None`): Whether to clear the accumulator first;
-          defaults to `False` when omitted. Optional, default `None`.
+          defaults to `False` when omitted. Ignored when `bias` is provided, since
+          the bias then decides what the accumulator starts from. Optional,
+          default `None`.
         - `unit_flag` (`IndexLike | None`): Unit-flag control bits; defaults to `0`
           when omitted. Optional, default `None`.
         - `compute_order` (`ComputeOrder`): M/N compute-direction priority; default `M_FIRST`.
         - `hf32_mode` (`HF32Mode`): HF32 rounding mode for FP32 operands in L0A/L0B
           before the matrix multiply. Optional, default `HF32_DISABLE`.
+        - `bias` (`Tensor | None`): 1-D `VectorLayout` tile of `N` elements on the bias
+          table buffer (C2) that the first matmul of each block accumulates from;
+          its element type follows the accumulator. When it is not `None` the
+          accumulator starts from the bias instead of from the values already in
+          L0C, so `init_c` has no effect on the instruction that consumes it.
+          Optional, default `None`.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
@@ -6823,13 +6930,23 @@ def mmad(
     hf32_mode_attr = mlir_ir.Attribute.parse(
         f"#tla.hf32_mode<{str(hf32_mode)}>", context=ctx
     )
-    _validate_mmad_contract(acc_value, lhs_value, rhs_value, is_mx=False)
+
+    if bias is not None:
+        _require_category("mmad", "bias", bias, "tensor", 7)
+        bias_value = _as_value(bias)
+    else:
+        bias_value = None
+
+    _validate_mmad_contract(
+        acc_value, lhs_value, rhs_value, is_mx=False, bias=bias_value
+    )
     _tla_ops_gen.mmad(
         acc_value,
         lhs_value,
         rhs_value,
         init_c_value,
         unit_flag_value,
+        bias=bias_value,
         loc=loc,
         compute_order=compute_order_attr,
         hf32_mode=hf32_mode_attr,
@@ -6876,6 +6993,7 @@ def mmad_mx(
     init_c: bool | Bool | None = None,
     unit_flag: IndexLike | None = None,
     compute_order: ComputeOrder = ComputeOrder.M_FIRST,
+    bias: Tensor | None = None,
     loc: mlir_ir.Location | None = None,
     **extra_kwargs: object,
 ) -> None:
@@ -6899,10 +7017,18 @@ def mmad_mx(
         - `lhs` (`Tensor`): Left-hand matrix tile on L0A. Required.
         - `rhs` (`Tensor`): Right-hand matrix tile on L0B. Required.
         - `init_c` (`bool | Bool | None`): Whether to clear the accumulator first;
-          defaults to `False` when omitted. Optional, default `None`.
+          defaults to `False` when omitted. Ignored when `bias` is provided, since
+          the bias then decides what the accumulator starts from. Optional,
+          default `None`.
         - `unit_flag` (`IndexLike | None`): Unit-flag control bits; defaults to `0`
           when omitted. Optional, default `None`.
         - `compute_order` (`ComputeOrder`): M/N compute-direction priority; default `M_FIRST`.
+        - `bias` (`Tensor | None`): 1-D `VectorLayout` tile of `N` elements on the bias
+          table buffer (C2) that the first matmul of each block accumulates from;
+          always f32, matching the accumulator. When it is not `None` the
+          accumulator starts from the bias instead of from the values already in
+          L0C, so `init_c` has no effect on the instruction that consumes it.
+          Optional, default `None`.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
@@ -6935,7 +7061,16 @@ def mmad_mx(
         "mmad_mx", acc, lhs, rhs, init_c, unit_flag, compute_order, loc, extra_kwargs
     )
     _check_mx_provenance("mmad_mx", lhs_value, rhs_value)
-    _validate_mmad_contract(acc_value, lhs_value, rhs_value, is_mx=True)
+
+    if bias is not None:
+        _require_category("mmad_mx", "bias", bias, "tensor", 6)
+        bias_value = _as_value(bias)
+    else:
+        bias_value = None
+
+    _validate_mmad_contract(
+        acc_value, lhs_value, rhs_value, is_mx=True, bias=bias_value
+    )
     # hf32_mode is deliberately absent: it is an fp32 rounding mode, and MX
     # operands are fp8/fp4.
     # An fp4 operand states its encoding in its own element type, so there is
@@ -6947,6 +7082,7 @@ def mmad_mx(
         rhs_value,
         init_c_value,
         unit_flag_value,
+        bias=bias_value,
         loc=loc,
         **mmad_kwargs,
     )
@@ -9980,7 +10116,7 @@ on-chip memory-scope tokens, and block / SIMT helpers.
 
 Parameters:
 - Layout tags (`_LayoutTag`, used by `make_layout` / `make_tensor` /
-  `make_tensor_like`): `RowMajor`, `ColumnMajor`, `zN`, `nZ`,
+  `make_tensor_like`): `RowMajor`, `ColumnMajor`, `VectorLayout`, `zN`, `nZ`,
   `L0Clayout`, `zNUnAlign`.
 - Pipe identifiers (used by `flag` / `pipe_barrier` / `mutex_*` /
   cross-core sync): `SCALAR`, `VECTOR`, `CUBE`, `MTE1`, `MTE2`, `MTE3`, `FIX`.
@@ -10061,6 +10197,7 @@ arch._set("RowMajor", _LayoutTag("RowMajor"))
 arch._set("ColumnMajor", _LayoutTag("ColumnMajor"))
 arch._set("L0Clayout", _LayoutTag("L0Clayout"))
 arch._set("zNUnAlign", _LayoutTag("zNUnAlign"))
+arch._set("VectorLayout", _LayoutTag("VectorLayout"))
 
 vec = _Namespace()
 vec._set("func", _vec_func)

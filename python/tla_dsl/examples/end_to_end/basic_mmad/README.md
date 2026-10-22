@@ -21,6 +21,7 @@ $$
 ./basic_mmad
 ├── basic_matmul_atomic_add.py
 ├── basic_matmul_auto_sync.py
+├── basic_matmul_bias.py
 ├── basic_matmul_mutex.py
 ├── basic_matmul_mutex_with.py
 ├── basic_matmul.py
@@ -36,6 +37,7 @@ $$
 | [**`basic_matmul_mutex_with.py`**](basic_matmul_mutex_with.py) | 同样是利用`Mutex` 原语的矩阵乘示例，使用 `with tla.mutex_guard(...)` 表达，替换 `mutex.lock/unlock` 的做法。        |
 | [**`basic_matmul_auto_sync.py`**](basic_matmul_auto_sync.py)   | 使用`@tla.kernel(auto_sync="v0")` 自动插入核内 mutex 的独立端到端用例，覆盖 MMAD/FIX unit flag 协议且无需手写本地同步。 |
 | [**`basic_mmad_ptr.py`**](basic_mmad_ptr.py)                   | 矩阵乘最小集示例，显式构造`tla.Tensor` 供 kernel 计算，仅支持静态场景。                                                 |
+| [**`basic_matmul_bias.py`**](basic_matmul_bias.py)             | 矩阵乘 + bias 示例，支持任意 m n k 的动态场景；`mem_bias` 为必选入参，bias 经 `L1 → biasbuf` 通道加载，由每块首个 `tla.mmad(..., bias=...)` 消费。 |
 
 ## 约束说明
 

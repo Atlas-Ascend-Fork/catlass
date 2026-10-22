@@ -182,8 +182,49 @@ struct LowerTlaMmadPatternImpl : public OpRewritePattern<MmadOpTy> {
             return failure();
         }
 
+        // Optional bias: must be a VectorLayout biasbuf tile whose N matches acc's.
+        // A VectorLayout tile is rank-1 by definition, so it is a flat run of N
+        // elements -- decodeTensorTypeInfo has already normalized it to the
+        // descriptor's (1, N) slot form, which is why N is read from slot 1.
+        // Both ops carry one, and the bc wrappers have a bias twin per pairing:
+        // the MX instantiation reaches mad_mx with the bias table exactly as the
+        // plain one reaches mad.
+        Value biasValue = op.getBias();
+        if (biasValue) {
+            auto biasInfo = ::tla::decodeTensorTypeInfo(biasValue.getType());
+            if (failed(biasInfo)) {
+                op.emitError() << "tla.mmad bias requires a structured tla.tensor operand type";
+                return failure();
+            }
+            if (biasInfo->addressSpace != "biasbuf") {
+                op.emitError() << "unsupported tla.mmad bias addrspace; expected biasbuf, got "
+                               << biasInfo->addressSpace;
+                return failure();
+            }
+            if (biasInfo->elementType != accInfo->elementType) {
+                op.emitError() << "unsupported tla.mmad bias element type; expected same as acc elementType, got "
+                               << biasInfo->elementType;
+                return failure();
+            }
+            if (biasInfo->layoutTag != LayoutTag::VectorLayout) {
+                op.emitError() << "unsupported tla.mmad bias layout; expected a 1-D VectorLayout tile, got "
+                               << stringifyLayoutTag(biasInfo->layoutTag);
+                return failure();
+            }
+            int64_t accN = accInfo->originShapeDims[1];
+            int64_t biasN = biasInfo->originShapeDims[1];
+            if (accN != ShapedType::kDynamic && biasN != ShapedType::kDynamic && biasN != accN) {
+                op.emitError() << "unsupported tla.mmad bias shape; expected N matching acc (" << accN << ")";
+                return failure();
+            }
+        }
+
         // Materialize each tile operand's memref directly from its tla.tensor_desc
         // descriptor (shared with the tla.copy path).
+        // Every operand here is handed straight to a wrapper that reads the
+        // memref's start address, so a rank-1 tile's coordinate has to be baked
+        // into the memref. The copy routes do the opposite -- they ship the
+        // coordinate in the payload -- and must not be given the folded form.
         auto materializeTensorOperand = [&](Value tensor) -> FailureOr<Value> {
             auto it = tensorDescriptorByValue.find(tensor);
             if (it == tensorDescriptorByValue.end()) {
@@ -191,7 +232,8 @@ struct LowerTlaMmadPatternImpl : public OpRewritePattern<MmadOpTy> {
                 return failure();
             }
             return ::tla::materializeTileMemrefFromDescriptor(
-                rewriter, op.getLoc(), it->second, op.getOperation(), loweredMemrefByValue);
+                rewriter, op.getLoc(), it->second, op.getOperation(), loweredMemrefByValue,
+                /*foldRankOneCoord=*/true);
         };
 
         FailureOr<Value> lhsMemref = materializeTensorOperand(lhs);
@@ -200,6 +242,14 @@ struct LowerTlaMmadPatternImpl : public OpRewritePattern<MmadOpTy> {
         if (failed(lhsMemref) || failed(rhsMemref) || failed(accMemref)) {
             op.emitError() << "failed to bridge tla.mmad operands to memref values";
             return failure();
+        }
+        FailureOr<Value> biasMemref;
+        if (biasValue) {
+            biasMemref = materializeTensorOperand(biasValue);
+            if (failed(biasMemref)) {
+                op.emitError() << "failed to bridge tla.mmad bias operand to memref";
+                return failure();
+            }
         }
 
         // Match the tla.copy runtime ABI: pass dynamic strided memrefs to the C stub
@@ -218,6 +268,13 @@ struct LowerTlaMmadPatternImpl : public OpRewritePattern<MmadOpTy> {
         FailureOr<Value> accRuntime = toRuntimeMemref(*accMemref);
         if (failed(lhsRuntime) || failed(rhsRuntime) || failed(accRuntime))
             return failure();
+
+        FailureOr<Value> biasRuntime;
+        if (biasValue) {
+            biasRuntime = toRuntimeMemref(*biasMemref);
+            if (failed(biasRuntime))
+                return failure();
+        }
 
         auto materializeIndexDim = [&](Value tensor, int64_t staticOriginDim, StringRef fieldName,
                                        bool takeSecondDim) -> FailureOr<Value> {
@@ -247,7 +304,7 @@ struct LowerTlaMmadPatternImpl : public OpRewritePattern<MmadOpTy> {
         Value kI64 = castIndexToI64(*kIndex);
         Value nI64 = castIndexToI64(*nIndex);
 
-        SmallVector<Type, 8> operandTypes = {(*lhsRuntime).getType(),
+        SmallVector<Type, 9> operandTypes = {(*lhsRuntime).getType(),
                                              (*rhsRuntime).getType(),
                                              (*accRuntime).getType(),
                                              i64Type,
@@ -255,7 +312,9 @@ struct LowerTlaMmadPatternImpl : public OpRewritePattern<MmadOpTy> {
                                              i64Type,
                                              i1Type,
                                              i8Type};
-        // FP8 needs a per-operand name because the two formats can be mixed.
+        if (biasValue)
+            operandTypes.push_back((*biasRuntime).getType());
+        // FP8 needs a per-operand tag because the two formats can be mixed.
         // Two spellings, because the two families name their BC symbols
         // differently and each is forced.
         //
@@ -268,31 +327,47 @@ struct LowerTlaMmadPatternImpl : public OpRewritePattern<MmadOpTy> {
         // type lowercased (f8E4M3FN -> f8e4m3fn) with an `mx` prefix, so the MX
         // symbol is built as "mx" + this tag. fp4 uses the same rule via its own
         // element type (!tla.f4e2m1 / !tla.f4e1m2).
+        //
+        // Only the tag is built here. Both families register their wrappers as a
+        // pair -- `mmad_` / `mmad_bias_` on the plain routes, `mmadmx_` /
+        // `mmadmx_bias_` on the MX ones -- so the prefix and the trailing `_float`
+        // follow from the route and the tag is the same string either way.
         auto fp8Tag = [](Type elem) -> StringRef { return elem.isFloat8E4M3FN() ? "fp8_e4m3fn_t" : "fp8_e5m2_t"; };
         auto mxFp8Tag = [](Type elem) -> StringRef {
             return elem.isFloat8E4M3FN() ? "mx_fp8_e4m3_t" : "mx_fp8_e5m2_t";
         };
-        std::string fp8CalleeStorage;
+        const bool isMxRoute = isMxFp8 || isMxFp4;
+        std::string fp8OperandTag;
         if (isMxFp4) {
             // Per operand, not once: the two sides carry their own encodings and
             // the bc registers every pairing.
-            fp8CalleeStorage =
-                ("mmad_" + fp4CppType(lhsInfo->elementType) + "_" + fp4CppType(rhsInfo->elementType) + "_float").str();
+            fp8OperandTag = (fp4CppType(lhsInfo->elementType) + "_" + fp4CppType(rhsInfo->elementType)).str();
         } else if (isMxFp8) {
-            fp8CalleeStorage =
-                ("mmad_" + mxFp8Tag(lhsInfo->elementType) + "_" + mxFp8Tag(rhsInfo->elementType) + "_float").str();
+            fp8OperandTag = (mxFp8Tag(lhsInfo->elementType) + "_" + mxFp8Tag(rhsInfo->elementType)).str();
         } else if (supportedFp8Route) {
-            fp8CalleeStorage =
-                ("mmad_" + fp8Tag(lhsInfo->elementType) + "_" + fp8Tag(rhsInfo->elementType) + "_float").str();
+            fp8OperandTag = (fp8Tag(lhsInfo->elementType) + "_" + fp8Tag(rhsInfo->elementType)).str();
         }
-        StringRef calleeName = supportedF16Route                         ? "mmad_half_half_float" :
-                               supportedBf16Route                        ? "mmad_bf16_bf16_float" :
-                               supportedI8Route                          ? "mmad_int8_int8_int32" :
-                               (isMxFp8 || isMxFp4 || supportedFp8Route) ? StringRef(fp8CalleeStorage) :
-                                                                           "mmad_float_float_float";
+        std::string calleeName;
+        if (biasValue) {
+            calleeName = supportedF16Route  ? "mmad_bias_half_half_float" :
+                         supportedBf16Route ? "mmad_bias_bf16_bf16_float" :
+                         supportedI8Route   ? "mmad_bias_int8_int8_int32" :
+                         isMxRoute          ? "mmadmx_bias_" + fp8OperandTag + "_float" :
+                         supportedFp8Route  ? "mmad_bias_" + fp8OperandTag + "_float" :
+                                              "mmad_bias_float_float_float";
+        } else {
+            calleeName = supportedF16Route  ? "mmad_half_half_float" :
+                         supportedBf16Route ? "mmad_bf16_bf16_float" :
+                         supportedI8Route   ? "mmad_int8_int8_int32" :
+                         isMxRoute          ? "mmadmx_" + fp8OperandTag + "_float" :
+                         supportedFp8Route  ? "mmad_" + fp8OperandTag + "_float" :
+                                              "mmad_float_float_float";
+        }
         auto callee = ::tla::getOrCreateRuntimeCall(op->template getParentOfType<ModuleOp>(), calleeName, operandTypes);
-        SmallVector<Value, 8> operands = {*lhsRuntime, *rhsRuntime, *accRuntime, mI64,
+        SmallVector<Value, 9> operands = {*lhsRuntime, *rhsRuntime, *accRuntime, mI64,
                                           nI64,        kI64,        initCVal,    unitFlagVal};
+        if (biasValue)
+            operands.push_back(*biasRuntime);
         if (!funcLevelComputeOrderSet) {
             auto computeOrderAttr = op->template getAttrOfType<::tla::ComputeOrderAttr>("compute_order");
             bool isNFirst = computeOrderAttr.getValue() == ComputeOrder::N_FIRST;

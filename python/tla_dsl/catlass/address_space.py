@@ -26,6 +26,7 @@ class AddressSpace(enum.IntEnum):
     l0b = 4
     l0c = 5
     ub = 6
+    biasbuf = 12
 
     def __str__(self) -> str:
         return self.name

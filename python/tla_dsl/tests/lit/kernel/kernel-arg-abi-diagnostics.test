@@ -14,7 +14,7 @@
 // RANK: error:
 // RANK-SAME: kernel tensor argument 0 must have matching rank-1 or rank-2
 // LAYOUT: error:
-// LAYOUT-SAME: kernel tensor argument 0 must use RowMajor or ColumnMajor layout
+// LAYOUT-SAME: kernel tensor argument 0 must use the RowMajor, ColumnMajor, or VectorLayout layout
 // COORD: error:
 // COORD-SAME: kernel tensor argument 0 cannot have dynamic coordinates
 // ORIGIN: error:

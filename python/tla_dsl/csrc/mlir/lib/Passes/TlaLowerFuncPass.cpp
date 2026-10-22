@@ -21,9 +21,9 @@ static LogicalResult validateKernelTensorArg(Operation* funcOp, unsigned argInde
         return funcOp->emitError() << "kernel tensor argument " << argIndex << " has malformed tensor metadata";
     if (info->addressSpace != ::AddressSpace::gm)
         return funcOp->emitError() << "kernel tensor argument " << argIndex << " must use gm address space";
-    if (info->layoutTag != ::LayoutTag::RowMajor && info->layoutTag != ::LayoutTag::ColumnMajor)
+    if (!::tla::isLinearLayout(info->layoutTag))
         return funcOp->emitError() << "kernel tensor argument " << argIndex
-                                   << " must use RowMajor or ColumnMajor layout";
+                                   << " must use the RowMajor, ColumnMajor, or VectorLayout layout";
 
     size_t rank = info->shape.size();
     if ((rank != 1 && rank != 2) || info->strides.size() != rank || info->coord.size() != rank ||
@@ -161,13 +161,13 @@ static FailureOr<Value> materializeRootTensorDescriptor(
     }
 
     SmallVector<Value, 2> abiStrides;
-    if (rawInfo->layoutTag == ::LayoutTag::RowMajor && llvm::is_contained(rawInfo->strides, ShapedType::kDynamic)) {
+    if (::tla::isLinearLayout(rawInfo->layoutTag) && llvm::is_contained(rawInfo->strides, ShapedType::kDynamic)) {
         auto metadata = builder.create<mlir::memref::ExtractStridedMetadataOp>(loc, base);
         abiStrides.append(metadata.getStrides().begin(), metadata.getStrides().end());
     }
 
     SmallVector<Value, 2> stride;
-    if (rawInfo->layoutTag == ::LayoutTag::RowMajor) {
+    if (::tla::isLinearLayout(rawInfo->layoutTag)) {
         for (auto [axis, value] : llvm::enumerate(rawInfo->strides))
             stride.push_back(value == ShapedType::kDynamic ? abiStrides[axis] : constant(value));
     } else if (rawInfo->shape.size() == 1) {

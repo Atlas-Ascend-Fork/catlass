@@ -30,8 +30,6 @@ inline constexpr llvm::StringLiteral kAllocSizeBytesMetadataAttrName = "tla.allo
 /// Bridge a structured `!tla.tensor` type to a builtin memref type.
 mlir::FailureOr<mlir::MemRefType> bridgeTlaTensorType(mlir::Type tlaTensorType);
 
-bool isLinearLayout(::LayoutTag layoutTag);
-
 /// Static metadata decoded from a structured `!tla.tensor` type.
 struct TensorTypeInfo {
     llvm::SmallVector<int64_t, 4> shapeDims;

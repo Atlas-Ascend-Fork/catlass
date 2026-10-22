@@ -57,6 +57,12 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "`while`. Promote Python literals with `as_numeric`; change type "
         "with `Numeric.to`; reinterpret bits with `Numeric.bitcast`.\n"
         "\n"
+        "The operators `+` `-` `*` `/` `//` `**` and the comparisons are\n"
+        "evaluated on the core's own scalar unit, except inside a\n"
+        '`tla.vec.func(mode="simt")` region, where each becomes the\n'
+        "corresponding per-thread op (`tla.simt_add`, `tla.simt_cmp`, …). See\n"
+        "**SIMT Vector Compute**.\n"
+        "\n"
         "Constraints:\n"
         "\n"
         "- Prefer concrete types (`Int32`, `Float32`, …). The abstract bases "
@@ -74,39 +80,195 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
     ),
     ("Matrix Compute", "Cube-side matrix multiply-accumulate (`tla.mmad`)."),
     (
-        "Vector Compute",
-        "Compute and mask ops on the register-vector path; usually must be "
-        "called inside `tla.vec.func()`.",
+        "SIMD Vector Compute",
+        "The default vector execution mode, entered with "
+        '`tla.vec.func(mode="simd")`. The body operates on whole vector '
+        "registers: data is staged into UB, viewed as tiles, loaded into "
+        "`VectorSSA` values, and every op covers a full register under an "
+        "optional lane mask. This is the path for regular, dense work, and the "
+        "one every op below belongs to.\n"
+        "\n"
+        "Several entries here also have a per-thread form, used when the "
+        'enclosing region is `tla.vec.func(mode="simt")`; each says so under '
+        "`Constraints:`, and **SIMT Vector Compute** documents that mode.",
     ),
-    ("Vector Compute / Mask Compute", "Mask creation and tail-mask updates."),
+    ("SIMD Vector Compute / Mask Compute", "Mask creation and tail-mask updates."),
     (
-        "Vector Compute / Basic Arithmetic",
+        "SIMD Vector Compute / Basic Arithmetic",
         "Element-wise arithmetic and unary math ops. `VectorSSA` overloads "
         "`+` / `-` / `*` / `/` for `add` / `sub` / `mul` / `div` when no "
         "`mask=` is needed.",
     ),
-    ("Vector Compute / Logical Compute", "Bitwise and logical ops on Mask / Vector."),
     (
-        "Vector Compute / Compare and Select",
+        "SIMD Vector Compute / Logical Compute",
+        "Bitwise and logical ops on Mask / Vector.",
+    ),
+    (
+        "SIMD Vector Compute / Compare and Select",
         "Vector compares that produce masks, and masked select.",
     ),
     (
-        "Vector Compute / Data Fill",
+        "SIMD Vector Compute / Data Fill",
         "Constant fill and lane-index sequence construction.",
     ),
     (
-        "Vector Compute / Discrete and Aggregate",
+        "SIMD Vector Compute / Discrete and Aggregate",
         "Gather elements from a UB tensor by index, and masked reductions "
         "(`VectorSSA.reduce`).",
     ),
     (
-        "Vector Compute / Data Rearrange",
+        "SIMD Vector Compute / Data Rearrange",
         "Interleave / deinterleave and related lane reshuffles.",
     ),
-    ("Vector Compute / Data Compress", "Compress valid lanes under a mask."),
     (
-        "Vector Compute / Type Conversion",
+        "SIMD Vector Compute / Data Compress",
+        "Compress valid lanes under a mask.",
+    ),
+    (
+        "SIMD Vector Compute / Type Conversion",
         "Element-type conversion on the register-vector path.",
+    ),
+    (
+        "SIMD Vector Compute / Histogram",
+        "Histogram accumulation on register-vector data.",
+    ),
+    (
+        "SIMT Vector Compute",
+        "The per-thread vector execution mode, entered with "
+        '`tla.vec.func(mode="simt", thread_block_dim=...)`. The body is the '
+        "program of *one thread*: each thread addresses memory by index "
+        "through ordinary element access, with no tiles, no vector registers "
+        "and no UB staging.\n"
+        "\n"
+        "```python\n"
+        "with tla.vector():\n"
+        '    with tla.vec.func(mode="simt", thread_block_dim=400):\n'
+        "        tid, _, _ = tla.arch.thread_idx()\n"
+        "        nthreads, _, _ = tla.arch.thread_block_dim()\n"
+        "        for i in tla.range(tid, 400, nthreads):\n"
+        "            gm_c[i] = gm_a[i] + gm_b[i]\n"
+        "    tla.pipe_barrier(tla.pipes.ALL)\n"
+        "```\n"
+        "\n"
+        "The subsections below follow the same order as **SIMD Vector "
+        "Compute**: what the region is and what may appear in it, then how a "
+        "thread identifies itself, moves data, and computes.",
+    ),
+    (
+        "SIMT Vector Compute / Region Scope",
+        "The region is declared by `tla.vec.func` (see **Scopes and Control "
+        "Flow**), which owns the geometry rules, the 2048 threads-per-block "
+        "limit and the scalar-only capture rule. On-chip scratch is allocated "
+        "outside the region with `tla.allocate` (see **Resource "
+        "Management**), and a pipe barrier goes after it, inside "
+        "`tla.vector()`, as the example above does.\n"
+        "\n"
+        "**What a SIMT region may contain**\n"
+        "\n"
+        "The body is per-thread scalar code. These are available:\n"
+        "\n"
+        "- Element access on a `gm` or `ub` tensor (`tensor[i]`, "
+        "`tensor[i] = value`) -- see **Element Access** below.\n"
+        "- Scalar arithmetic, comparison, selection and conversion on "
+        "`Numeric` values, each emitting its per-thread op -- see **Basic "
+        "Arithmetic**, **Compare and Select** and **Type Conversion** below.\n"
+        "- `tla.range` loops and runtime `if`.\n"
+        "- `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`, and "
+        "the launch-level `tla.arch.block_idx` / `block_num` -- see **Thread "
+        "Indexing** and **Thread Synchronization** below.\n"
+        "\n"
+        "These are not, and are rejected when the kernel is compiled:\n"
+        "\n"
+        "- Register-vector and mask ops -- `VectorSSA` / `MaskSSA` values, the "
+        "arithmetic and mask APIs under **SIMD Vector Compute**, "
+        "`Tensor.load` / `Tensor.store`, `tla.full`, `tla.create_mask`. A SIMT "
+        "thread has no vector register of its own.\n"
+        "- `tla.copy`: a DMA needs the tensor itself, and a SIMT region may "
+        "capture only scalar runtime values. Stage data before the region, or "
+        "let each thread address global memory directly.\n"
+        "- `tla.local_mem_bar`, `tla.pipe_barrier` and `tla.print`.\n"
+        "- `while` loops, in any `tla.vec.func`; carry the iteration through "
+        "`tla.range` instead.\n"
+        "- A nested `tla.vec.func`.",
+    ),
+    (
+        "SIMT Vector Compute / Thread Indexing",
+        "A thread learns which elements are its own from its index within the "
+        "block and the block's extents, and typically walks a strided slice "
+        "of the data with `tla.range`, as the chapter example shows. "
+        "`thread_block_dim` is the number of threads in this block; the number "
+        "of blocks in the launch is `tla.arch.block_num` (see **System "
+        "Variable Access**).",
+    ),
+    (
+        "SIMT Vector Compute / Thread Synchronization",
+        "Barrier across the threads of one block. Cross-core and pipe "
+        "synchronization stay outside the region -- see **Sync Control**.",
+    ),
+    (
+        "SIMT Vector Compute / Element Access",
+        "A thread moves data by element access on a `gm` or `ub` tensor: "
+        "`value = tensor[i]` and `tensor[i] = value`, which emit the "
+        "per-thread `tla.simt_load` / `tla.simt_store`. The layout must be "
+        "`RowMajor` or `ColumnMajor`, the logical rank 1 or 2, and sub-byte "
+        "element types other than `Bool` are not supported. Both are "
+        "documented as `Tensor.__getitem__` / `Tensor.__setitem__` under "
+        "**Data Movement**, which is also where the SIMD staging copies "
+        "live.\n"
+        "\n"
+        "```python\n"
+        'with tla.vec.func(mode="simt", thread_block_dim=256):\n'
+        "    tid, _, _ = tla.arch.thread_idx()\n"
+        "    gm_out[tid] = gm_in[tid]\n"
+        "```",
+    ),
+    (
+        "SIMT Vector Compute / Basic Arithmetic",
+        "Arithmetic and unary math on `Numeric` values keep their SIMD "
+        "spelling inside a SIMT region but emit the per-thread op: `+` / `-` / "
+        "`*` / `/` become `tla.simt_add` / `simt_sub` / `simt_mul` / "
+        "`simt_div`, and `tla.exp` / `log` / `abs` / `sqrt` / `max` / `min` "
+        "become their `simt_` forms. The entries are shared with **SIMD "
+        "Vector Compute / Basic Arithmetic**, where each one states its SIMT "
+        "form under `Constraints:`.\n"
+        "\n"
+        "`tla.exp` and `tla.log` are available *only* in this mode: the "
+        "core's own scalar unit has neither, so the scalar form is rejected "
+        "outside a SIMT region.\n"
+        "\n"
+        "```python\n"
+        'with tla.vec.func(mode="simt", thread_block_dim=256):\n'
+        "    tid, _, _ = tla.arch.thread_idx()\n"
+        "    x = gm_in[tid]\n"
+        "    gm_out[tid] = tla.sqrt(tla.exp(x) + tla.abs(x))\n"
+        "```",
+    ),
+    (
+        "SIMT Vector Compute / Compare and Select",
+        "The comparisons emit `tla.simt_cmp` and produce a `Bool`, not a "
+        "`MaskSSA`; `tla.where` on a `Bool` condition emits the per-thread "
+        "`tla.simt_where`. The entries are shared with **SIMD Vector Compute "
+        "/ Compare and Select**.\n"
+        "\n"
+        "```python\n"
+        'with tla.vec.func(mode="simt", thread_block_dim=256):\n'
+        "    tid, _, _ = tla.arch.thread_idx()\n"
+        "    a = gm_a[tid]\n"
+        "    gm_out[tid] = tla.where(a > 0.0, a, -a)\n"
+        "```",
+    ),
+    (
+        "SIMT Vector Compute / Type Conversion",
+        "`Numeric.to` emits the per-thread `tla.simt_cast` inside a SIMT "
+        "region and the core's own scalar conversion outside one; the entry "
+        "is under **Numeric Scalars**. There is no per-thread equivalent of "
+        "the register-vector `tla.cast`.\n"
+        "\n"
+        "```python\n"
+        'with tla.vec.func(mode="simt", thread_block_dim=256):\n'
+        "    tid, _, _ = tla.arch.thread_idx()\n"
+        "    gm_f32[tid] = gm_f16[tid].to(tla.Float32)\n"
+        "```",
     ),
     (
         "Sync Control",
@@ -324,6 +486,64 @@ def _collect_arch_namespace(
     }
 
 
+# The ``arch`` helpers hang off the ``arch`` namespace object rather than being
+# exported names of their own, so ``_collect_core_functions`` skips them. Their
+# public spelling is not hand-listed here: it is read from the
+# ``arch._set("<public>", <function>)`` calls at the end of ``core_api.py``, the
+# same source of truth the runtime uses.
+_ARCH_SIMT_DIRECTORY_ROOT = "SIMT Vector Compute"
+
+
+def _arch_set_bindings(tree: ast.Module) -> dict[str, str]:
+    """Map ``arch._set("public", func)`` to ``{func_name: "arch.public"}``."""
+    bindings: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Expr):
+            continue
+        call = node.value
+        if not (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "_set"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "arch"
+            and len(call.args) == 2
+        ):
+            continue
+        public, target = call.args
+        public_name = const_str(public)
+        if public_name is None or not isinstance(target, ast.Name):
+            continue
+        bindings[target.id] = f"arch.{public_name}"
+    return bindings
+
+
+def _collect_arch_simt_functions(tree: ast.Module) -> dict[str, APIEntry]:
+    """Document the ``arch`` helpers whose ``Directory:`` is a SIMT chapter.
+
+    The other ``arch`` callables are described as bullets in the namespace's own
+    docstring rather than as entries; restricting the collector to the SIMT
+    chapters keeps that as it is.
+    """
+    bindings = _arch_set_bindings(tree)
+    entries: dict[str, APIEntry] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        public = bindings.get(node.name)
+        if public is None or not has_dsl_user_op(node.decorator_list):
+            continue
+        directory = directory_path(ast.get_docstring(node) or "") or ""
+        if not directory.startswith(_ARCH_SIMT_DIRECTORY_ROOT):
+            continue
+        entries[public] = function_entry(
+            public,
+            node,
+            qualified_name=f"{CORE_API_QUALNAME_PREFIX}{node.name}",
+        )
+    return entries
+
+
 def _collect_class_methods(
     path: Path,
     class_names: set[str],
@@ -425,6 +645,7 @@ def parse_core_api(path: Path) -> dict[str, APIEntry]:
             module="catlass.base_dsl.typing",
         )
     )
+    entries.update(_collect_arch_simt_functions(tree))
     entries.update(
         _collect_class_methods(
             TENSOR_API_PATH,
@@ -461,6 +682,16 @@ def generate(*, docs_dir: Path | None = None) -> str:
             "Interface descriptions and examples come from each op's source docstring "
             "(`Directory:` plus `Description:` / `Parameters:` / `Constraints:` / `Example:`).",
             "All APIs must be called inside a `@tla.kernel`-decorated kernel function body.",
+            "The vector unit has two execution modes, and they are separate "
+            "chapters below. **SIMD Vector Compute** is the default: whole "
+            "vector registers over data staged in UB, for regular dense work. "
+            "**SIMT Vector Compute** is one thread per element addressing "
+            "memory by index, for work too irregular or scattered for tiling "
+            "to pay off. A number of scalar APIs behave differently depending "
+            "on which mode encloses them -- element access and the scalar "
+            "arithmetic / compare / select / conversion ops all emit a "
+            "per-thread op inside a SIMT region, and each entry says so under "
+            "`Constraints:`.",
         ],
         header_sources=(
             "Do not edit manually. Update docstrings/Examples in catlass/core_api.py",

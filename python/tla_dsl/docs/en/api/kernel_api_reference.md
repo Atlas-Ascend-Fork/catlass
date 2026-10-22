@@ -12,6 +12,8 @@ Interface descriptions and examples come from each op's source docstring (`Direc
 
 All APIs must be called inside a `@tla.kernel`-decorated kernel function body.
 
+The vector unit has two execution modes, and they are separate chapters below. **SIMD Vector Compute** is the default: whole vector registers over data staged in UB, for regular dense work. **SIMT Vector Compute** is one thread per element addressing memory by index, for work too irregular or scattered for tiling to pay off. A number of scalar APIs behave differently depending on which mode encloses them -- element access and the scalar arithmetic / compare / select / conversion ops all emit a per-thread op inside a SIMT region, and each entry says so under `Constraints:`.
+
 ---
 
 ## Table of Contents
@@ -20,7 +22,7 @@ All APIs must be called inside a `@tla.kernel`-decorated kernel function body.
 - [2. Numeric Scalars](#2-numeric-scalars)
 - [3. Data Movement](#3-data-movement)
 - [4. Matrix Compute](#4-matrix-compute)
-- [5. Vector Compute](#5-vector-compute)
+- [5. SIMD Vector Compute](#5-simd-vector-compute)
   - [5.1 Mask Compute](#51-mask-compute)
   - [5.2 Basic Arithmetic](#52-basic-arithmetic)
   - [5.3 Logical Compute](#53-logical-compute)
@@ -31,12 +33,20 @@ All APIs must be called inside a `@tla.kernel`-decorated kernel function body.
   - [5.8 Data Compress](#58-data-compress)
   - [5.9 Type Conversion](#59-type-conversion)
   - [5.10 Histogram](#510-histogram)
-- [6. Sync Control](#6-sync-control)
-- [7. System Variable Access](#7-system-variable-access)
-- [8. Resource Management](#8-resource-management)
-- [9. Debug APIs](#9-debug-apis)
-- [10. Scopes and Control Flow](#10-scopes-and-control-flow)
-- [11. Data fill](#11-data-fill)
+- [6. SIMT Vector Compute](#6-simt-vector-compute)
+  - [6.1 Region Scope](#61-region-scope)
+  - [6.2 Thread Indexing](#62-thread-indexing)
+  - [6.3 Thread Synchronization](#63-thread-synchronization)
+  - [6.4 Element Access](#64-element-access)
+  - [6.5 Basic Arithmetic](#65-basic-arithmetic)
+  - [6.6 Compare and Select](#66-compare-and-select)
+  - [6.7 Type Conversion](#67-type-conversion)
+- [7. Sync Control](#7-sync-control)
+- [8. System Variable Access](#8-system-variable-access)
+- [9. Resource Management](#9-resource-management)
+- [10. Debug APIs](#10-debug-apis)
+- [11. Scopes and Control Flow](#11-scopes-and-control-flow)
+- [12. Data fill](#12-data-fill)
 
 ---
 
@@ -473,7 +483,7 @@ dst = tla.make_tensor_like(ptr, like=src_tile, layoutTag=tla.arch.RowMajor)
 
 ### `make_ptr`
 
-**Source:** [`catlass.core_api.make_ptr`](../../../catlass/core_api.py#L9562)
+**Source:** [`catlass.core_api.make_ptr`](../../../catlass/core_api.py#L9720)
 
 Description:
 
@@ -508,7 +518,7 @@ ptr = tla.make_ptr(tla.Float16, addr, mem_space=tla.AddressSpace.gm)
 
 ### `recast_ptr`
 
-**Source:** [`catlass.core_api.recast_ptr`](../../../catlass/core_api.py#L9616)
+**Source:** [`catlass.core_api.recast_ptr`](../../../catlass/core_api.py#L9774)
 
 Description:
 
@@ -543,6 +553,12 @@ ptr_f32 = tla.recast_ptr(ptr_f16, dtype=tla.Float32)
 `Numeric` is the base of TLA DSL **scalar** types and values used inside `@tla.kernel`. Concrete types include integers (`tla.Int8` / `Int16` / `Int32` / `Int64` and unsigned variants), floats (`tla.Float16` / `BFloat16` / `Float32`, plus narrower formats), and `tla.Bool`. Construct values with the type, for example `tla.Int32(0)` or `tla.Float32(1.5)`.
 
 Use `Numeric` values for loop indices, coordinates, and other single-element state updated under runtime `if` / `tla.range` / `while`. Promote Python literals with `as_numeric`; change type with `Numeric.to`; reinterpret bits with `Numeric.bitcast`.
+
+The operators `+` `-` `*` `/` `//` `**` and the comparisons are
+evaluated on the core's own scalar unit, except inside a
+`tla.vec.func(mode="simt")` region, where each becomes the
+corresponding per-thread op (`tla.simt_add`, `tla.simt_cmp`, …). See
+**SIMT Vector Compute**.
 
 Constraints:
 
@@ -589,6 +605,9 @@ Constraints:
 - Use `tla.params.ScalarRoundMode` here; do not pass
   `tla.params.RoundMode`.
 - Unsupported source/target pairs raise `TypeError`.
+- Inside a `tla.vec.func(mode="simt")` region the conversion emits
+  the per-thread `tla.simt_cast`; outside one it emits the ordinary
+  scalar conversion.
 
 Example:
 
@@ -606,7 +625,7 @@ def kernel(n: int) -> None:
 
 ### `Numeric.bitcast`
 
-**Source:** [`catlass.base_dsl.typing.Numeric.bitcast`](../../../catlass/base_dsl/typing.py#L1027)
+**Source:** [`catlass.base_dsl.typing.Numeric.bitcast`](../../../catlass/base_dsl/typing.py#L1030)
 
 Description:
 
@@ -641,7 +660,7 @@ bits = tla.Float32(1.0).bitcast(tla.Int32)
 
 ### `as_numeric`
 
-**Source:** [`catlass.base_dsl.typing.as_numeric`](../../../catlass/base_dsl/typing.py#L1201)
+**Source:** [`catlass.base_dsl.typing.as_numeric`](../../../catlass/base_dsl/typing.py#L1204)
 
 Description:
 
@@ -691,7 +710,7 @@ def kernel(limit: int) -> None:
 
 ### `Float.sqrt`
 
-**Source:** [`catlass.base_dsl.typing.Float.sqrt`](../../../catlass/base_dsl/typing.py#L1280)
+**Source:** [`catlass.base_dsl.typing.Float.sqrt`](../../../catlass/base_dsl/typing.py#L1283)
 
 Description:
 
@@ -1040,13 +1059,118 @@ with tla.vec.func(mode="simd"):
 
 ---
 
+### `Tensor.__getitem__`
+
+**Source:** [`catlass.tla.tensor._Tensor.__getitem__`](../../../catlass/tla/tensor.py#L905)
+
+Description:
+
+Load one element of a tensor as a scalar (`tensor[i]` /
+`tensor[i, j]`).
+
+This is scalar, not vector, access: it reads a single element into a
+`Numeric` rather than filling a register. Inside
+`tla.vec.func(mode="simt")` it is the per-thread `tla.simt_load`,
+lowered against the outlined vector function's buffer parameter;
+everywhere else it is `tla.scalar_load`. That makes it the usual way
+a SIMT thread reads its own data -- see **SIMT Vector Compute**.
+
+Prototype:
+
+```python
+tile.__getitem__(crd: Any) -> Any
+```
+
+Parameters:
+
+- `crd` (`int | Int32 | tuple`): Element coordinate. One index per
+  logical dimension of the tensor. Required.
+
+Returns:
+- `Numeric`: the element, typed by the tensor's element type
+  (`Bool` for an i1 tensor).
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- The tensor must live in `gm` or `ub`; a `ub` tensor must be
+  accessed inside `tla.vector()`.
+- Layout must be `RowMajor` or `ColumnMajor`.
+- Logical rank must be 1 or 2, and the number of indices must match
+  it exactly.
+- Sub-byte element types other than `Bool` are not supported.
+- `None` / `_` coordinates are rejected; use `tile_view` to take a
+  sub-tensor instead.
+
+Example:
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    value = gm_in[tid]
+```
+
+---
+
+### `Tensor.__setitem__`
+
+**Source:** [`catlass.tla.tensor._Tensor.__setitem__`](../../../catlass/tla/tensor.py#L1023)
+
+Description:
+
+Store a scalar into one element of a tensor (`tensor[i] = value`).
+
+The counterpart of `Tensor.__getitem__`. Inside
+`tla.vec.func(mode="simt")` it is the per-thread `tla.simt_store`,
+lowered against the outlined vector function's buffer parameter;
+everywhere else it is `tla.scalar_store`. That makes it the usual way
+a SIMT thread writes its own results -- see
+**SIMT Vector Compute**.
+
+Prototype:
+
+```python
+tile.__setitem__(crd: Any, data: Any) -> None
+```
+
+Parameters:
+
+- `crd` (`int | Int32 | tuple`): Element coordinate. One index per
+  logical dimension of the tensor. Required.
+- `data` (`Numeric | int | float | mlir.ir.Value`): Value to store.
+  A Python literal is converted to the tensor's element type.
+  Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- The tensor must live in `gm` or `ub`; a `ub` tensor must be
+  accessed inside `tla.vector()`.
+- Layout must be `RowMajor` or `ColumnMajor`.
+- Logical rank must be 1 or 2, and the number of indices must match
+  it exactly.
+- Sub-byte element types other than `Bool` are not supported.
+- A `Numeric` value's type must match the tensor's element type
+  exactly; there is no implicit promotion. Convert explicitly with
+  `.to(...)` first.
+
+Example:
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_out[tid] = gm_a[tid] + gm_b[tid]
+```
+
+---
+
 ## 4. Matrix Compute
 
 Cube-side matrix multiply-accumulate (`tla.mmad`).
 
 ### `mmad`
 
-**Source:** [`catlass.core_api.mmad`](../../../catlass/core_api.py#L6714)
+**Source:** [`catlass.core_api.mmad`](../../../catlass/core_api.py#L6748)
 
 Description:
 
@@ -1108,7 +1232,7 @@ Supported mmad dtypes
 
 ### `mmad_mx`
 
-**Source:** [`catlass.core_api.mmad_mx`](../../../catlass/core_api.py#L6825)
+**Source:** [`catlass.core_api.mmad_mx`](../../../catlass/core_api.py#L6859)
 
 Description:
 
@@ -1178,9 +1302,11 @@ Supported mmad_mx dtypes
 
 ---
 
-## 5. Vector Compute
+## 5. SIMD Vector Compute
 
-Compute and mask ops on the register-vector path; usually must be called inside `tla.vec.func()`.
+The default vector execution mode, entered with `tla.vec.func(mode="simd")`. The body operates on whole vector registers: data is staged into UB, viewed as tiles, loaded into `VectorSSA` values, and every op covers a full register under an optional lane mask. This is the path for regular, dense work, and the one every op below belongs to.
+
+Several entries here also have a per-thread form, used when the enclosing region is `tla.vec.func(mode="simt")`; each says so under `Constraints:`, and **SIMT Vector Compute** documents that mode.
 
 ### 5.1 Mask Compute
 
@@ -1188,7 +1314,7 @@ Mask creation and tail-mask updates.
 
 #### `create_mask`
 
-**Source:** [`catlass.core_api.create_mask`](../../../catlass/core_api.py#L9891)
+**Source:** [`catlass.core_api.create_mask`](../../../catlass/core_api.py#L10052)
 
 Description:
 
@@ -1244,7 +1370,7 @@ with tla.vec.func(mode="simd"):
 
 #### `update_mask`
 
-**Source:** [`catlass.core_api.update_mask`](../../../catlass/core_api.py#L9955)
+**Source:** [`catlass.core_api.update_mask`](../../../catlass/core_api.py#L10116)
 
 Description:
 
@@ -1281,11 +1407,11 @@ Element-wise arithmetic and unary math ops. `VectorSSA` overloads `+` / `-` / `*
 
 #### `exp`
 
-**Source:** [`catlass.core_api.exp`](../../../catlass/core_api.py#L7688)
+**Source:** [`catlass.core_api.exp`](../../../catlass/core_api.py#L7722)
 
 Description:
 
-Element-wise exponential on a vector (requires f16/f32).
+Exponential of a vector (requires f16/f32), or of a per-thread scalar.
 
 Prototype:
 
@@ -1295,13 +1421,18 @@ tla.exp(operand: VectorSSA, *, mask: MaskSSA | None = None) -> VectorSSA
 
 Parameters:
 
-- `operand` (`VectorSSA`): Source vector register. Required.
-- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+- `operand` (`VectorSSA | Numeric`): Source vector register, or a float scalar. Required.
+- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func()`; element type must be f16/f32.
+- Inside a `tla.vec.func(mode="simt")` region a scalar operand emits the
+  per-thread `tla.simt_exp`; outside one the scalar form is rejected,
+  because the core's own scalar unit has no exponential. Pass a
+  `VectorSSA` for the whole-vector form.
+- The scalar form is float-only and takes no `mask`.
 
 Example:
 
@@ -1314,11 +1445,11 @@ with tla.vec.func(mode="simd"):
 
 #### `log`
 
-**Source:** [`catlass.core_api.log`](../../../catlass/core_api.py#L7710)
+**Source:** [`catlass.core_api.log`](../../../catlass/core_api.py#L7749)
 
 Description:
 
-Element-wise logarithm on a vector (requires f16/f32).
+Logarithm of a vector (requires f16/f32), or of a per-thread scalar.
 
 Prototype:
 
@@ -1328,13 +1459,18 @@ tla.log(operand: VectorSSA, *, mask: MaskSSA | None = None) -> VectorSSA
 
 Parameters:
 
-- `operand` (`VectorSSA`): Source vector register. Required.
-- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+- `operand` (`VectorSSA | Numeric`): Source vector register, or a float scalar. Required.
+- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func()`; element type must be f16/f32.
+- Inside a `tla.vec.func(mode="simt")` region a scalar operand emits the
+  per-thread `tla.simt_log`; outside one the scalar form is rejected,
+  because the core's own scalar unit has no logarithm. Pass a `VectorSSA`
+  for the whole-vector form.
+- The scalar form is float-only and takes no `mask`.
 
 Example:
 
@@ -1347,7 +1483,7 @@ with tla.vec.func(mode="simd"):
 
 #### `sqrt`
 
-**Source:** [`catlass.core_api.sqrt`](../../../catlass/core_api.py#L7732)
+**Source:** [`catlass.core_api.sqrt`](../../../catlass/core_api.py#L7776)
 
 Description:
 
@@ -1356,9 +1492,8 @@ Square root of a vector or of a scalar.
 Given a `VectorSSA` this is the element-wise AVE op (requires f16/f32).
 Given a float `Numeric` it is a scalar square root on the core's own scalar
 unit, available anywhere a scalar is: a `tla.cube` region, a SIMD or SIMT
-`tla.vec.func`, or the kernel body. Inside a SIMT region it becomes the
-per-thread `tla.simt_sqrt`; elsewhere it is `math.sqrt`. `x.sqrt()` on a
-float `Numeric` is the same operation.
+`tla.vec.func`, or the kernel body. `x.sqrt()` on a float `Numeric` is the
+same operation.
 
 Prototype:
 
@@ -1375,6 +1510,10 @@ Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - The vector form must be called inside `tla.vec.func()`; element type must be f16/f32.
+- Inside a `tla.vec.func(mode="simt")` region a scalar operand emits the
+  per-thread `tla.simt_sqrt`, which also accepts f16; outside one it emits
+  `math.sqrt` and requires `tla.Float32` (convert first with
+  `.to(tla.Float32)`).
 - The scalar form is float-only and takes no `mask`.
 
 Example:
@@ -1391,11 +1530,11 @@ with tla.cube():
 
 #### `abs`
 
-**Source:** [`catlass.core_api.abs`](../../../catlass/core_api.py#L7765)
+**Source:** [`catlass.core_api.abs`](../../../catlass/core_api.py#L7812)
 
 Description:
 
-Element-wise absolute value on a vector.
+Absolute value of a vector, or of a per-thread scalar.
 
 Prototype:
 
@@ -1405,13 +1544,18 @@ tla.abs(operand: VectorSSA, *, mask: MaskSSA | None = None) -> VectorSSA
 
 Parameters:
 
-- `operand` (`VectorSSA`): Source vector register. Required.
-- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+- `operand` (`VectorSSA | Numeric`): Source vector register, or a float scalar. Required.
+- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func()`.
+- Inside a `tla.vec.func(mode="simt")` region a scalar operand emits the
+  per-thread `tla.simt_abs`; outside one `tla.abs` on a scalar is
+  rejected. The Python builtin `abs(x)` on a `Numeric` works in either
+  place: `tla.simt_abs` inside a SIMT region, `math.absf` elsewhere.
+- The scalar form is float-only and takes no `mask`.
 
 Example:
 
@@ -1424,7 +1568,7 @@ with tla.vec.func(mode="simd"):
 
 #### `neg`
 
-**Source:** [`catlass.core_api.neg`](../../../catlass/core_api.py#L7787)
+**Source:** [`catlass.core_api.neg`](../../../catlass/core_api.py#L7839)
 
 Description:
 
@@ -1457,7 +1601,7 @@ with tla.vec.func(mode="simd"):
 
 #### `add`
 
-**Source:** [`catlass.core_api.add`](../../../catlass/core_api.py#L8093)
+**Source:** [`catlass.core_api.add`](../../../catlass/core_api.py#L8145)
 
 Description:
 
@@ -1498,7 +1642,7 @@ with tla.vec.func(mode="simd"):
 
 #### `sub`
 
-**Source:** [`catlass.core_api.sub`](../../../catlass/core_api.py#L8139)
+**Source:** [`catlass.core_api.sub`](../../../catlass/core_api.py#L8191)
 
 Description:
 
@@ -1536,7 +1680,7 @@ with tla.vec.func(mode="simd"):
 
 #### `mul`
 
-**Source:** [`catlass.core_api.mul`](../../../catlass/core_api.py#L8176)
+**Source:** [`catlass.core_api.mul`](../../../catlass/core_api.py#L8228)
 
 Description:
 
@@ -1575,11 +1719,11 @@ with tla.vec.func(mode="simd"):
 
 #### `max`
 
-**Source:** [`catlass.core_api.max`](../../../catlass/core_api.py#L8300)
+**Source:** [`catlass.core_api.max`](../../../catlass/core_api.py#L8362)
 
 Description:
 
-Element-wise vector maximum.
+Element-wise vector maximum, or the maximum of two per-thread scalars.
 
 Prototype:
 
@@ -1591,12 +1735,17 @@ Parameters:
 
 - `lhs` (`VectorSSA | Numeric | bool | int | float`): Left-hand operand. Required.
 - `rhs` (`VectorSSA | Numeric | bool | int | float`): Right-hand operand. Required.
-- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func()`.
+- Inside a `tla.vec.func(mode="simt")` region two scalar operands emit
+  the per-thread `tla.simt_max`; outside one, scalars keep reaching the
+  scalar form of the vector op.
+- The per-thread form needs both operands of the same type, and rejects
+  unsigned integers and `Bool`; use signed integers or floats.
 
 Example:
 
@@ -1609,11 +1758,11 @@ with tla.vec.func(mode="simd"):
 
 #### `min`
 
-**Source:** [`catlass.core_api.min`](../../../catlass/core_api.py#L8301)
+**Source:** [`catlass.core_api.min`](../../../catlass/core_api.py#L8363)
 
 Description:
 
-Element-wise vector minimum.
+Element-wise vector minimum, or the minimum of two per-thread scalars.
 
 Prototype:
 
@@ -1625,12 +1774,17 @@ Parameters:
 
 - `lhs` (`VectorSSA | Numeric | bool | int | float`): Left-hand operand. Required.
 - `rhs` (`VectorSSA | Numeric | bool | int | float`): Right-hand operand. Required.
-- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+- `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func()`.
+- Inside a `tla.vec.func(mode="simt")` region two scalar operands emit
+  the per-thread `tla.simt_min`; outside one, scalars keep reaching the
+  scalar form of the vector op.
+- The per-thread form needs both operands of the same type, and rejects
+  unsigned integers and `Bool`; use signed integers or floats.
 
 Example:
 
@@ -1643,7 +1797,7 @@ with tla.vec.func(mode="simd"):
 
 #### `div`
 
-**Source:** [`catlass.core_api.div`](../../../catlass/core_api.py#L8305)
+**Source:** [`catlass.core_api.div`](../../../catlass/core_api.py#L8367)
 
 Description:
 
@@ -1685,7 +1839,7 @@ Bitwise and logical ops on Mask / Vector.
 
 #### `shift_left`
 
-**Source:** [`catlass.core_api.shift_left`](../../../catlass/core_api.py#L7985)
+**Source:** [`catlass.core_api.shift_left`](../../../catlass/core_api.py#L8037)
 
 Description:
 
@@ -1725,7 +1879,7 @@ with tla.vec.func(mode="simd"):
 
 #### `shift_right`
 
-**Source:** [`catlass.core_api.shift_right`](../../../catlass/core_api.py#L8021)
+**Source:** [`catlass.core_api.shift_right`](../../../catlass/core_api.py#L8073)
 
 Description:
 
@@ -1767,7 +1921,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_not`
 
-**Source:** [`catlass.core_api.bitwise_not`](../../../catlass/core_api.py#L8059)
+**Source:** [`catlass.core_api.bitwise_not`](../../../catlass/core_api.py#L8111)
 
 Description:
 
@@ -1800,7 +1954,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_and`
 
-**Source:** [`catlass.core_api.bitwise_and`](../../../catlass/core_api.py#L8936)
+**Source:** [`catlass.core_api.bitwise_and`](../../../catlass/core_api.py#L9000)
 
 Description:
 
@@ -1834,7 +1988,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_or`
 
-**Source:** [`catlass.core_api.bitwise_or`](../../../catlass/core_api.py#L8974)
+**Source:** [`catlass.core_api.bitwise_or`](../../../catlass/core_api.py#L9038)
 
 Description:
 
@@ -1868,7 +2022,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_xor`
 
-**Source:** [`catlass.core_api.bitwise_xor`](../../../catlass/core_api.py#L9012)
+**Source:** [`catlass.core_api.bitwise_xor`](../../../catlass/core_api.py#L9076)
 
 Description:
 
@@ -1906,7 +2060,7 @@ Vector compares that produce masks, and masked select.
 
 #### `where`
 
-**Source:** [`catlass.core_api.where`](../../../catlass/core_api.py#L8513)
+**Source:** [`catlass.core_api.where`](../../../catlass/core_api.py#L8575)
 
 Description:
 
@@ -1930,7 +2084,9 @@ Constraints:
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func()`; SIMD arms must belong to the same category.
 - MaskSSA arms and their selector must have exactly the same type.
-- The per-thread form requires `mode="simt"` and emits `tla.simt_where`.
+- Inside a `tla.vec.func(mode="simt")` region a `Bool` mask emits the
+  per-thread `tla.simt_where`; outside one, only the `MaskSSA`
+  whole-vector form is available.
 
 Example:
 
@@ -1943,7 +2099,7 @@ with tla.vec.func(mode="simd"):
 
 #### `cmp`
 
-**Source:** [`catlass.core_api.cmp`](../../../catlass/core_api.py#L8859)
+**Source:** [`catlass.core_api.cmp`](../../../catlass/core_api.py#L8923)
 
 Description:
 
@@ -1983,7 +2139,7 @@ Constant fill and lane-index sequence construction.
 
 #### `full`
 
-**Source:** [`catlass.core_api.full`](../../../catlass/core_api.py#L6913)
+**Source:** [`catlass.core_api.full`](../../../catlass/core_api.py#L6947)
 
 Description:
 
@@ -2027,7 +2183,7 @@ with tla.vec.func(mode="simd"):
 
 #### `arange`
 
-**Source:** [`catlass.core_api.arange`](../../../catlass/core_api.py#L7042)
+**Source:** [`catlass.core_api.arange`](../../../catlass/core_api.py#L7076)
 
 Description:
 
@@ -2106,7 +2262,7 @@ with tla.vec.func(mode="simd"):
 
 #### `gather`
 
-**Source:** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9125)
+**Source:** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9189)
 
 Description:
 
@@ -2156,7 +2312,7 @@ Interleave / deinterleave and related lane reshuffles.
 
 #### `interleave`
 
-**Source:** [`catlass.core_api.interleave`](../../../catlass/core_api.py#L7825)
+**Source:** [`catlass.core_api.interleave`](../../../catlass/core_api.py#L7877)
 
 Description:
 
@@ -2190,7 +2346,7 @@ with tla.vec.func(mode="simd"):
 
 #### `deinterleave`
 
-**Source:** [`catlass.core_api.deinterleave`](../../../catlass/core_api.py#L7903)
+**Source:** [`catlass.core_api.deinterleave`](../../../catlass/core_api.py#L7955)
 
 Description:
 
@@ -2230,7 +2386,7 @@ Compress valid lanes under a mask.
 
 #### `squeeze`
 
-**Source:** [`catlass.core_api.squeeze`](../../../catlass/core_api.py#L8543)
+**Source:** [`catlass.core_api.squeeze`](../../../catlass/core_api.py#L8607)
 
 Description:
 
@@ -2390,9 +2546,11 @@ with tla.vec.func(mode="simd"):
 
 ### 5.10 Histogram
 
+Histogram accumulation on register-vector data.
+
 #### `histograms`
 
-**Source:** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8621)
+**Source:** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8685)
 
 Description:
 
@@ -2453,7 +2611,234 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-## 6. Sync Control
+## 6. SIMT Vector Compute
+
+The per-thread vector execution mode, entered with `tla.vec.func(mode="simt", thread_block_dim=...)`. The body is the program of *one thread*: each thread addresses memory by index through ordinary element access, with no tiles, no vector registers and no UB staging.
+
+```python
+with tla.vector():
+    with tla.vec.func(mode="simt", thread_block_dim=400):
+        tid, _, _ = tla.arch.thread_idx()
+        nthreads, _, _ = tla.arch.thread_block_dim()
+        for i in tla.range(tid, 400, nthreads):
+            gm_c[i] = gm_a[i] + gm_b[i]
+    tla.pipe_barrier(tla.pipes.ALL)
+```
+
+The subsections below follow the same order as **SIMD Vector Compute**: what the region is and what may appear in it, then how a thread identifies itself, moves data, and computes.
+
+### 6.1 Region Scope
+
+The region is declared by `tla.vec.func` (see **Scopes and Control Flow**), which owns the geometry rules, the 2048 threads-per-block limit and the scalar-only capture rule. On-chip scratch is allocated outside the region with `tla.allocate` (see **Resource Management**), and a pipe barrier goes after it, inside `tla.vector()`, as the example above does.
+
+**What a SIMT region may contain**
+
+The body is per-thread scalar code. These are available:
+
+- Element access on a `gm` or `ub` tensor (`tensor[i]`, `tensor[i] = value`) -- see **Element Access** below.
+- Scalar arithmetic, comparison, selection and conversion on `Numeric` values, each emitting its per-thread op -- see **Basic Arithmetic**, **Compare and Select** and **Type Conversion** below.
+- `tla.range` loops and runtime `if`.
+- `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`, and the launch-level `tla.arch.block_idx` / `block_num` -- see **Thread Indexing** and **Thread Synchronization** below.
+
+These are not, and are rejected when the kernel is compiled:
+
+- Register-vector and mask ops -- `VectorSSA` / `MaskSSA` values, the arithmetic and mask APIs under **SIMD Vector Compute**, `Tensor.load` / `Tensor.store`, `tla.full`, `tla.create_mask`. A SIMT thread has no vector register of its own.
+- `tla.copy`: a DMA needs the tensor itself, and a SIMT region may capture only scalar runtime values. Stage data before the region, or let each thread address global memory directly.
+- `tla.local_mem_bar`, `tla.pipe_barrier` and `tla.print`.
+- `while` loops, in any `tla.vec.func`; carry the iteration through `tla.range` instead.
+- A nested `tla.vec.func`.
+
+### 6.2 Thread Indexing
+
+A thread learns which elements are its own from its index within the block and the block's extents, and typically walks a strided slice of the data with `tla.range`, as the chapter example shows. `thread_block_dim` is the number of threads in this block; the number of blocks in the launch is `tla.arch.block_num` (see **System Variable Access**).
+
+#### `arch.thread_idx`
+
+**Source:** [`catlass.core_api.arch_thread_idx`](../../../catlass/core_api.py#L9386)
+
+Description:
+
+Return the calling thread's index `(x, y, z)` inside its thread block.
+
+Each component is an `Int32` in `[0, thread_block_dim[i])`. Only the
+components a kernel actually uses are materialized, so unpacking the
+unused ones into `_` costs nothing. This index is what makes one
+thread's work different from another's: a thread normally derives the
+elements it owns from it, for example by walking
+`tla.range(tid, n, nthreads)`.
+
+Prototype:
+
+```python
+tla.arch.thread_idx() -> tuple[Int32, Int32, Int32]
+```
+
+Parameters:
+
+- None.
+
+Returns:
+- `tuple[Int32, Int32, Int32]`: the thread's `(x, y, z)` index.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Only available inside `tla.vec.func(mode="simt")`. For the block
+  (AI Core) index of the launch use `tla.arch.block_idx()`.
+
+Example:
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_out[tid] = gm_in[tid]
+```
+
+---
+
+#### `arch.thread_block_dim`
+
+**Source:** [`catlass.core_api.arch_thread_block_dim`](../../../catlass/core_api.py#L9487)
+
+Description:
+
+Return the enclosing thread block's `(x, y, z)` extents.
+
+These are the values the region was declared with in
+`tla.vec.func(thread_block_dim=...)`, read back as `Int32` so a thread
+can use them in index arithmetic -- most often as the stride of the loop
+over the elements it owns.
+
+This is the *thread* geometry of one block, not the grid: the number of
+blocks (AI Cores) in the launch is `tla.arch.block_num()`.
+
+Prototype:
+
+```python
+tla.arch.thread_block_dim() -> tuple[Int32, Int32, Int32]
+```
+
+Parameters:
+
+- None.
+
+Returns:
+- `tuple[Int32, Int32, Int32]`: the block's `(x, y, z)` thread extents.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Only available inside `tla.vec.func(mode="simt")`.
+
+Example:
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    nthreads, _, _ = tla.arch.thread_block_dim()
+    for i in tla.range(tid, N, nthreads):
+        gm_out[i] = gm_in[i]
+```
+
+---
+
+### 6.3 Thread Synchronization
+
+Barrier across the threads of one block. Cross-core and pipe synchronization stay outside the region -- see **Sync Control**.
+
+#### `arch.sync_threads`
+
+**Source:** [`catlass.core_api.arch_sync_threads`](../../../catlass/core_api.py#L9430)
+
+Description:
+
+Barrier across the threads of the enclosing SIMT `tla.vec.func`.
+
+Every thread of the block must reach this point before any of them
+proceeds, and writes issued before it are visible to the other threads
+of the block afterwards. It orders threads within one block only; it is
+not a cross-core barrier and not a pipe barrier -- for those see the
+flag and `tla.pipe_barrier` APIs under Sync Control.
+
+The typical use is a two-phase reduction: each thread writes its partial
+result to a shared UB tensor, all threads meet at the barrier, then one
+thread combines the partials.
+
+Prototype:
+
+```python
+tla.arch.sync_threads() -> None
+```
+
+Parameters:
+
+- None.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Only available inside `tla.vec.func(mode="simt")`.
+- Must be reached by every thread of the block; placing it under a
+  condition that only some threads take will hang the kernel.
+
+Example:
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=THREADS):
+    tid, _, _ = tla.arch.thread_idx()
+    ub_partial[tid] = my_partial
+    tla.arch.sync_threads()
+    if tid == 0:
+        ...  # thread 0 combines ub_partial[0:THREADS]
+```
+
+---
+
+### 6.4 Element Access
+
+A thread moves data by element access on a `gm` or `ub` tensor: `value = tensor[i]` and `tensor[i] = value`, which emit the per-thread `tla.simt_load` / `tla.simt_store`. The layout must be `RowMajor` or `ColumnMajor`, the logical rank 1 or 2, and sub-byte element types other than `Bool` are not supported. Both are documented as `Tensor.__getitem__` / `Tensor.__setitem__` under **Data Movement**, which is also where the SIMD staging copies live.
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_out[tid] = gm_in[tid]
+```
+
+### 6.5 Basic Arithmetic
+
+Arithmetic and unary math on `Numeric` values keep their SIMD spelling inside a SIMT region but emit the per-thread op: `+` / `-` / `*` / `/` become `tla.simt_add` / `simt_sub` / `simt_mul` / `simt_div`, and `tla.exp` / `log` / `abs` / `sqrt` / `max` / `min` become their `simt_` forms. The entries are shared with **SIMD Vector Compute / Basic Arithmetic**, where each one states its SIMT form under `Constraints:`.
+
+`tla.exp` and `tla.log` are available *only* in this mode: the core's own scalar unit has neither, so the scalar form is rejected outside a SIMT region.
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    x = gm_in[tid]
+    gm_out[tid] = tla.sqrt(tla.exp(x) + tla.abs(x))
+```
+
+### 6.6 Compare and Select
+
+The comparisons emit `tla.simt_cmp` and produce a `Bool`, not a `MaskSSA`; `tla.where` on a `Bool` condition emits the per-thread `tla.simt_where`. The entries are shared with **SIMD Vector Compute / Compare and Select**.
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    a = gm_a[tid]
+    gm_out[tid] = tla.where(a > 0.0, a, -a)
+```
+
+### 6.7 Type Conversion
+
+`Numeric.to` emits the per-thread `tla.simt_cast` inside a SIMT region and the core's own scalar conversion outside one; the entry is under **Numeric Scalars**. There is no per-thread equivalent of the register-vector `tla.cast`.
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_f32[tid] = gm_f16[tid].to(tla.Float32)
+```
+
+## 7. Sync Control
 
 In-core / cross-core flags, pipe barriers, mutexes, and local-memory barriers.
 
@@ -2853,13 +3238,13 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-## 7. System Variable Access
+## 8. System Variable Access
 
 Architecture attributes on `tla.arch` (layout tags, pipe identifiers, block helpers, etc.).
 
 ### `arch`
 
-**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L9745)
+**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L9903)
 
 Description:
 
@@ -2886,11 +3271,14 @@ Parameters:
   - `block_num()`: Number of blocks (AI cores) in the launch.
   - `sub_block_idx()`: Sub-block index within the current block.
   - `thread_idx()`: SIMT thread index `(x, y, z)` inside the thread block
-    (only inside `tla.vec.func(mode="simt")`).
+    (only inside `tla.vec.func(mode="simt")`; documented under
+    **SIMT Vector Compute / Thread Indexing**).
   - `thread_block_dim()`: SIMT thread-block extents `(x, y, z)`
-    (only inside `tla.vec.func(mode="simt")`).
+    (only inside `tla.vec.func(mode="simt")`; documented under
+    **SIMT Vector Compute / Thread Indexing**).
   - `sync_threads()`: Barrier across threads of the enclosing SIMT
-    `tla.vec.func` (only inside `mode="simt"`).
+    `tla.vec.func` (only inside `mode="simt"`; documented under
+    **SIMT Vector Compute / Thread Synchronization**).
   - `get_capacity_in_bytes(mem_scope)`: Byte capacity of an on-chip memory
     space for the compile target. Takes a `tla.AddressSpace` token
     (`tla.AddressSpace.l1` / `l0a` / `l0b` / `l0c` / `ub`). Returns a plain
@@ -2930,13 +3318,13 @@ ub_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.ub)
 
 ---
 
-## 8. Resource Management
+## 9. Resource Management
 
 On-chip scratch allocation via `allocate`.
 
 ### `allocate`
 
-**Source:** [`catlass.core_api.allocate`](../../../catlass/core_api.py#L9436)
+**Source:** [`catlass.core_api.allocate`](../../../catlass/core_api.py#L9590)
 
 Description:
 
@@ -2959,6 +3347,10 @@ Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - `mem_scope` must be an on-chip address space (l1/l0a/l0b/l0c/ub), not gm/generic; `shape` must be fully static.
+- Scratch for a `tla.vec.func(mode="simt")` region must be allocated
+  *outside* that region and viewed with `tla.make_tensor`: a SIMT region
+  establishes no UB base of its own, and outlining passes the buffer to
+  the per-thread function.
 
 Example:
 
@@ -2973,7 +3365,7 @@ ptr = tla.allocate(
 
 ---
 
-## 9. Debug APIs
+## 10. Debug APIs
 
 In-kernel scalar / tensor debug printing.
 
@@ -3018,7 +3410,7 @@ with tla.cube():
 
 ---
 
-## 10. Scopes and Control Flow
+## 11. Scopes and Control Flow
 
 Cube / Vector / `vec.func` regions and kernel-side loop ranges.
 
@@ -3165,8 +3557,28 @@ with tla.vector():
 
 Description:
 
-Enter a vector-function region for register-vector / mask compute
-(`tla.vec.func`).
+Enter a vector-function region (`tla.vec.func`), in one of two execution
+modes.
+
+With `mode="simd"` (the default) the body is register-vector / mask
+compute: it operates on whole vector registers loaded from UB, and every
+op covers a full register.
+
+With `mode="simt"` the body is the program of a single thread. The
+region declares how many threads the block runs with
+`thread_block_dim`, the body is outlined into a per-thread function that
+the enclosing core launches, and each thread addresses memory by index
+through element access (`tensor[i]`) rather than through tiles and
+vector registers. A thread identifies its own work with
+`tla.arch.thread_idx()` and `tla.arch.thread_block_dim()`, and threads
+of a block synchronize with `tla.arch.sync_threads()`. See
+**SIMT Vector Compute** for the model.
+
+A SIMT region establishes no UB base of its own, so on-chip scratch must
+be allocated with `tla.allocate` outside the region and viewed with
+`tla.make_tensor`; outlining passes the buffer to the per-thread
+function. A SIMT region may coexist with `tla.cube()` regions in the
+same kernel.
 
 Prototype:
 
@@ -3179,13 +3591,20 @@ Parameters:
 - `mode` (`str`): Execution mode; `simd` (default) or `simt`. Optional,
   default `"simd"`.
 - `thread_block_dim` (`int | tuple[int, int, int] | list[int] | None`): SIMT thread-block shape; only valid with
-  `mode="simt"`. Optional, default `None`.
+  `mode="simt"`. An `int n` means `(n, 1, 1)`. Optional, default `None`.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must nest inside `tla.vector()`.
 - Register-vector / mask APIs and `local_mem_bar` must run in this region.
+- `mode` must be `"simd"` or `"simt"`.
+- `thread_block_dim` is required with `mode="simt"` and rejected with
+  `mode="simd"`.
+- `thread_block_dim` entries must be positive, and their product must
+  not exceed 2048 threads per block.
+- A SIMT region may only capture scalar runtime values from the kernel
+  body; captures of `index`-typed values are rejected.
 
 Example:
 
@@ -3193,11 +3612,18 @@ Example:
 with tla.vector():
     with tla.vec.func(mode="simd"):
         z = tla.add(x_reg, y_reg)
+
+with tla.vector():
+    with tla.vec.func(mode="simt", thread_block_dim=400):
+        tid, _, _ = tla.arch.thread_idx()
+        nthreads, _, _ = tla.arch.thread_block_dim()
+        for i in tla.range(tid, 400, nthreads):
+            gm_c[i] = gm_a[i] + gm_b[i]
 ```
 
 ---
 
-## 11. Data fill
+## 12. Data fill
 
 ### `Tensor.fill`
 

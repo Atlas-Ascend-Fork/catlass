@@ -582,7 +582,7 @@ class VectorSSA(_RegisterSSA):
         reduction_profile: Any | None = None,
         loc: mlir_ir.Location | None = None,
     ) -> Any:
-        """Directory: Vector Compute / Discrete and Aggregate
+        """Directory: SIMD Vector Compute / Discrete and Aggregate
 
         Description:
             Reduce this register-resident vector under a mask to a one-lane
@@ -627,7 +627,7 @@ class VectorSSA(_RegisterSSA):
         *,
         loc: mlir_ir.Location | None = None,
     ) -> Any:
-        """Directory: Vector Compute / Type Conversion
+        """Directory: SIMD Vector Compute / Type Conversion
 
         Description:
             Convert a register-resident vector to another element type.
@@ -747,7 +747,7 @@ class VectorSSA(_RegisterSSA):
         *,
         loc: mlir_ir.Location | None = None,
     ) -> Any:
-        """Directory: Vector Compute / Type Conversion
+        """Directory: SIMD Vector Compute / Type Conversion
 
         Description:
             Reinterpret the bits of a register-resident vector as another
@@ -6507,25 +6507,59 @@ def _vec_func(
 ) -> TlaRegion:
     """Directory: Scopes and Control Flow
     Description:
-        Enter a vector-function region for register-vector / mask compute
-        (`tla.vec.func`).
+        Enter a vector-function region (`tla.vec.func`), in one of two execution
+        modes.
+
+        With `mode="simd"` (the default) the body is register-vector / mask
+        compute: it operates on whole vector registers loaded from UB, and every
+        op covers a full register.
+
+        With `mode="simt"` the body is the program of a single thread. The
+        region declares how many threads the block runs with
+        `thread_block_dim`, the body is outlined into a per-thread function that
+        the enclosing core launches, and each thread addresses memory by index
+        through element access (`tensor[i]`) rather than through tiles and
+        vector registers. A thread identifies its own work with
+        `tla.arch.thread_idx()` and `tla.arch.thread_block_dim()`, and threads
+        of a block synchronize with `tla.arch.sync_threads()`. See
+        **SIMT Vector Compute** for the model.
+
+        A SIMT region establishes no UB base of its own, so on-chip scratch must
+        be allocated with `tla.allocate` outside the region and viewed with
+        `tla.make_tensor`; outlining passes the buffer to the per-thread
+        function. A SIMT region may coexist with `tla.cube()` regions in the
+        same kernel.
 
         Parameters:
         - `mode` (`str`): Execution mode; `simd` (default) or `simt`. Optional,
           default `"simd"`.
         - `thread_block_dim` (`int | tuple[int, int, int] | list[int] | None`): SIMT thread-block shape; only valid with
-          `mode="simt"`. Optional, default `None`.
+          `mode="simt"`. An `int n` means `(n, 1, 1)`. Optional, default `None`.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must nest inside `tla.vector()`.
         - Register-vector / mask APIs and `local_mem_bar` must run in this region.
+        - `mode` must be `"simd"` or `"simt"`.
+        - `thread_block_dim` is required with `mode="simt"` and rejected with
+          `mode="simd"`.
+        - `thread_block_dim` entries must be positive, and their product must
+          not exceed 2048 threads per block.
+        - A SIMT region may only capture scalar runtime values from the kernel
+          body; captures of `index`-typed values are rejected.
 
         Example:
         ```python
         with tla.vector():
             with tla.vec.func(mode="simd"):
                 z = tla.add(x_reg, y_reg)
+
+        with tla.vector():
+            with tla.vec.func(mode="simt", thread_block_dim=400):
+                tid, _, _ = tla.arch.thread_idx()
+                nthreads, _, _ = tla.arch.thread_block_dim()
+                for i in tla.range(tid, 400, nthreads):
+                    gm_c[i] = gm_a[i] + gm_b[i]
         ```
     """
     del loc
@@ -6917,7 +6951,7 @@ def full(
     mask: Any | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Data Fill
+    """Directory: SIMD Vector Compute / Data Fill
     Description:
         Fill a 1-D vector SSA with a Python scalar literal, or broadcast a
         one-lane vector fragment (e.g. a `VectorSSA.reduce` result) across every lane.
@@ -7046,7 +7080,7 @@ def arange(
     dtype: type[Numeric],
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Data Fill
+    """Directory: SIMD Vector Compute / Data Fill
 
     Description:
         Create a monotonically increasing or decreasing 1-D vector SSA (`base` + `order`).
@@ -7687,18 +7721,23 @@ def _make_scalar_aware_binary_op(mnemonic: str, vector_form: Callable[..., Any])
 
 exp = _make_scalar_aware_unary_op(
     "exp",
-    doc="""Directory: Vector Compute / Basic Arithmetic
+    doc="""Directory: SIMD Vector Compute / Basic Arithmetic
 
 Description:
-    Element-wise exponential on a vector (requires f16/f32).
+    Exponential of a vector (requires f16/f32), or of a per-thread scalar.
 
     Parameters:
-    - `operand` (`VectorSSA`): Source vector register. Required.
-    - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+    - `operand` (`VectorSSA | Numeric`): Source vector register, or a float scalar. Required.
+    - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
     Constraints:
     - Must be called inside a `@tla.kernel`-decorated kernel function.
     - Must be called inside `tla.vec.func()`; element type must be f16/f32.
+    - Inside a `tla.vec.func(mode="simt")` region a scalar operand emits the
+      per-thread `tla.simt_exp`; outside one the scalar form is rejected,
+      because the core's own scalar unit has no exponential. Pass a
+      `VectorSSA` for the whole-vector form.
+    - The scalar form is float-only and takes no `mask`.
 
     Example:
     ```python
@@ -7709,18 +7748,23 @@ Description:
 )
 log = _make_scalar_aware_unary_op(
     "log",
-    doc="""Directory: Vector Compute / Basic Arithmetic
+    doc="""Directory: SIMD Vector Compute / Basic Arithmetic
 
 Description:
-    Element-wise logarithm on a vector (requires f16/f32).
+    Logarithm of a vector (requires f16/f32), or of a per-thread scalar.
 
     Parameters:
-    - `operand` (`VectorSSA`): Source vector register. Required.
-    - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+    - `operand` (`VectorSSA | Numeric`): Source vector register, or a float scalar. Required.
+    - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
     Constraints:
     - Must be called inside a `@tla.kernel`-decorated kernel function.
     - Must be called inside `tla.vec.func()`; element type must be f16/f32.
+    - Inside a `tla.vec.func(mode="simt")` region a scalar operand emits the
+      per-thread `tla.simt_log`; outside one the scalar form is rejected,
+      because the core's own scalar unit has no logarithm. Pass a `VectorSSA`
+      for the whole-vector form.
+    - The scalar form is float-only and takes no `mask`.
 
     Example:
     ```python
@@ -7731,7 +7775,7 @@ Description:
 )
 sqrt = _make_scalar_aware_unary_op(
     "sqrt",
-    doc="""Directory: Vector Compute / Basic Arithmetic
+    doc="""Directory: SIMD Vector Compute / Basic Arithmetic
 
 Description:
     Square root of a vector or of a scalar.
@@ -7739,9 +7783,8 @@ Description:
     Given a `VectorSSA` this is the element-wise AVE op (requires f16/f32).
     Given a float `Numeric` it is a scalar square root on the core's own scalar
     unit, available anywhere a scalar is: a `tla.cube` region, a SIMD or SIMT
-    `tla.vec.func`, or the kernel body. Inside a SIMT region it becomes the
-    per-thread `tla.simt_sqrt`; elsewhere it is `math.sqrt`. `x.sqrt()` on a
-    float `Numeric` is the same operation.
+    `tla.vec.func`, or the kernel body. `x.sqrt()` on a float `Numeric` is the
+    same operation.
 
     Parameters:
     - `operand` (`VectorSSA | Numeric`): Source vector register, or a float scalar. Required.
@@ -7750,6 +7793,10 @@ Description:
     Constraints:
     - Must be called inside a `@tla.kernel`-decorated kernel function.
     - The vector form must be called inside `tla.vec.func()`; element type must be f16/f32.
+    - Inside a `tla.vec.func(mode="simt")` region a scalar operand emits the
+      per-thread `tla.simt_sqrt`, which also accepts f16; outside one it emits
+      `math.sqrt` and requires `tla.Float32` (convert first with
+      `.to(tla.Float32)`).
     - The scalar form is float-only and takes no `mask`.
 
     Example:
@@ -7764,18 +7811,23 @@ Description:
 )
 abs = _make_scalar_aware_unary_op(
     "abs",
-    doc="""Directory: Vector Compute / Basic Arithmetic
+    doc="""Directory: SIMD Vector Compute / Basic Arithmetic
 
 Description:
-    Element-wise absolute value on a vector.
+    Absolute value of a vector, or of a per-thread scalar.
 
     Parameters:
-    - `operand` (`VectorSSA`): Source vector register. Required.
-    - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+    - `operand` (`VectorSSA | Numeric`): Source vector register, or a float scalar. Required.
+    - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
     Constraints:
     - Must be called inside a `@tla.kernel`-decorated kernel function.
     - Must be called inside `tla.vec.func()`.
+    - Inside a `tla.vec.func(mode="simt")` region a scalar operand emits the
+      per-thread `tla.simt_abs`; outside one `tla.abs` on a scalar is
+      rejected. The Python builtin `abs(x)` on a `Numeric` works in either
+      place: `tla.simt_abs` inside a SIMT region, `math.absf` elsewhere.
+    - The scalar form is float-only and takes no `mask`.
 
     Example:
     ```python
@@ -7786,7 +7838,7 @@ Description:
 )
 neg = _make_unary_op(
     "neg",
-    doc="""Directory: Vector Compute / Basic Arithmetic
+    doc="""Directory: SIMD Vector Compute / Basic Arithmetic
 
 Description:
     Element-wise negation on a vector.
@@ -7828,7 +7880,7 @@ def interleave(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> tuple[VectorSSA, VectorSSA] | tuple[MaskSSA, MaskSSA]:
-    """Directory: Vector Compute / Data Rearrange
+    """Directory: SIMD Vector Compute / Data Rearrange
     Description:
         Interleave two vector registers or predicate masks lane-wise.
 
@@ -7906,7 +7958,7 @@ def deinterleave(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> tuple[VectorSSA, VectorSSA] | tuple[MaskSSA, MaskSSA]:
-    """Directory: Vector Compute / Data Rearrange
+    """Directory: SIMD Vector Compute / Data Rearrange
 
     Description:
         Concatenate two vector registers or predicate masks, then return
@@ -7989,7 +8041,7 @@ def shift_left(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Logical Compute
+    """Directory: SIMD Vector Compute / Logical Compute
     Description:
         Element-wise left shift of a vector by per-lane or scalar shift amounts.
 
@@ -8025,7 +8077,7 @@ def shift_right(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Logical Compute
+    """Directory: SIMD Vector Compute / Logical Compute
     Description:
         Element-wise right shift of a vector by per-lane or scalar shift amounts.
 
@@ -8062,7 +8114,7 @@ def bitwise_not(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> MaskSSA | VectorSSA:
-    """Directory: Vector Compute / Logical Compute
+    """Directory: SIMD Vector Compute / Logical Compute
     Description:
         Element-wise bitwise/logical not (Mask or Vector).
 
@@ -8097,7 +8149,7 @@ def add(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Basic Arithmetic
+    """Directory: SIMD Vector Compute / Basic Arithmetic
     Description:
         Element-wise vector addition (supports vector–vector and vector–scalar).
         `VectorSSA` also overloads `+` / `__radd__` to this op when `mask` is not needed.
@@ -8143,7 +8195,7 @@ def sub(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Basic Arithmetic
+    """Directory: SIMD Vector Compute / Basic Arithmetic
 
     Description:
         Element-wise vector subtraction.
@@ -8180,7 +8232,7 @@ def mul(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Basic Arithmetic
+    """Directory: SIMD Vector Compute / Basic Arithmetic
 
     Description:
         Element-wise vector multiplication.
@@ -8225,19 +8277,24 @@ def _vector_max(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Basic Arithmetic
+    """Directory: SIMD Vector Compute / Basic Arithmetic
 
     Description:
-        Element-wise vector maximum.
+        Element-wise vector maximum, or the maximum of two per-thread scalars.
 
         Parameters:
         - `lhs` (`VectorSSA | Numeric | bool | int | float`): Left-hand operand. Required.
         - `rhs` (`VectorSSA | Numeric | bool | int | float`): Right-hand operand. Required.
-        - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+        - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.vec.func()`.
+        - Inside a `tla.vec.func(mode="simt")` region two scalar operands emit
+          the per-thread `tla.simt_max`; outside one, scalars keep reaching the
+          scalar form of the vector op.
+        - The per-thread form needs both operands of the same type, and rejects
+          unsigned integers and `Bool`; use signed integers or floats.
 
         Example:
         ```python
@@ -8265,19 +8322,24 @@ def _vector_min(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Basic Arithmetic
+    """Directory: SIMD Vector Compute / Basic Arithmetic
 
     Description:
-        Element-wise vector minimum.
+        Element-wise vector minimum, or the minimum of two per-thread scalars.
 
         Parameters:
         - `lhs` (`VectorSSA | Numeric | bool | int | float`): Left-hand operand. Required.
         - `rhs` (`VectorSSA | Numeric | bool | int | float`): Right-hand operand. Required.
-        - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
+        - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Vector form only. Optional, default `None`.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.vec.func()`.
+        - Inside a `tla.vec.func(mode="simt")` region two scalar operands emit
+          the per-thread `tla.simt_min`; outside one, scalars keep reaching the
+          scalar form of the vector op.
+        - The per-thread form needs both operands of the same type, and rejects
+          unsigned integers and `Bool`; use signed integers or floats.
 
         Example:
         ```python
@@ -8309,7 +8371,7 @@ def div(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Basic Arithmetic
+    """Directory: SIMD Vector Compute / Basic Arithmetic
 
     Description:
         Element-wise vector division.
@@ -8392,7 +8454,7 @@ def _vector_where(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA | MaskSSA:
-    """Directory: Vector Compute / Compare and Select
+    """Directory: SIMD Vector Compute / Compare and Select
 
     Description:
         Select between two vectors or two predicate masks under a mask.
@@ -8511,7 +8573,7 @@ def _emit_simt_where(
 
 @dsl_user_op
 def where(mask: Any, x: Any, y: Any, *, loc: mlir_ir.Location | None = None) -> Any:
-    """Directory: Vector Compute / Compare and Select
+    """Directory: SIMD Vector Compute / Compare and Select
 
     Description:
         Select between two vectors or predicate masks under a mask, or between
@@ -8526,7 +8588,9 @@ def where(mask: Any, x: Any, y: Any, *, loc: mlir_ir.Location | None = None) -> 
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.vec.func()`; SIMD arms must belong to the same category.
         - MaskSSA arms and their selector must have exactly the same type.
-        - The per-thread form requires `mode="simt"` and emits `tla.simt_where`.
+        - Inside a `tla.vec.func(mode="simt")` region a `Bool` mask emits the
+          per-thread `tla.simt_where`; outside one, only the `MaskSSA`
+          whole-vector form is available.
 
         Example:
         ```python
@@ -8546,7 +8610,7 @@ def squeeze(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Data Compress
+    """Directory: SIMD Vector Compute / Data Compress
     Description:
         Compress vector lanes kept by a mask.
 
@@ -8626,7 +8690,7 @@ def histograms(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Histogram
+    """Directory: SIMD Vector Compute / Histogram
 
     Description:
         Reg-resident FREQUENCY / ACCUMULATE histogram.
@@ -8864,7 +8928,7 @@ def cmp(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> MaskSSA:
-    """Directory: Vector Compute / Compare and Select
+    """Directory: SIMD Vector Compute / Compare and Select
     Description:
         Element-wise compare; returns a MaskSSA.
 
@@ -8940,7 +9004,7 @@ def bitwise_and(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> MaskSSA | VectorSSA:
-    """Directory: Vector Compute / Logical Compute
+    """Directory: SIMD Vector Compute / Logical Compute
 
     Description:
         Element-wise bitwise and (Mask or Vector).
@@ -8978,7 +9042,7 @@ def bitwise_or(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> MaskSSA | VectorSSA:
-    """Directory: Vector Compute / Logical Compute
+    """Directory: SIMD Vector Compute / Logical Compute
 
     Description:
         Element-wise bitwise or (Mask or Vector).
@@ -9016,7 +9080,7 @@ def bitwise_xor(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> MaskSSA | VectorSSA:
-    """Directory: Vector Compute / Logical Compute
+    """Directory: SIMD Vector Compute / Logical Compute
 
     Description:
         Element-wise bitwise xor (Mask or Vector).
@@ -9129,7 +9193,7 @@ def gather(
     mask: MaskSSA | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: Vector Compute / Discrete and Aggregate
+    """Directory: SIMD Vector Compute / Discrete and Aggregate
     Description:
         Gather vector values by indices from a UB tile or a register.
 
@@ -9322,7 +9386,35 @@ def arch_sub_block_idx(*, loc: mlir_ir.Location | None = None) -> Int32:
 def arch_thread_idx(
     *, loc: mlir_ir.Location | None = None
 ) -> tuple[Int32, Int32, Int32]:
-    """Return the SIMT thread index ``(x, y, z)`` inside the thread block."""
+    """Directory: SIMT Vector Compute / Thread Indexing
+    Description:
+        Return the calling thread's index `(x, y, z)` inside its thread block.
+
+        Each component is an `Int32` in `[0, thread_block_dim[i])`. Only the
+        components a kernel actually uses are materialized, so unpacking the
+        unused ones into `_` costs nothing. This index is what makes one
+        thread's work different from another's: a thread normally derives the
+        elements it owns from it, for example by walking
+        `tla.range(tid, n, nthreads)`.
+
+        Parameters:
+        - None.
+
+        Returns:
+        - `tuple[Int32, Int32, Int32]`: the thread's `(x, y, z)` index.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+        - Only available inside `tla.vec.func(mode="simt")`. For the block
+          (AI Core) index of the launch use `tla.arch.block_idx()`.
+
+        Example:
+        ```python
+        with tla.vec.func(mode="simt", thread_block_dim=256):
+            tid, _, _ = tla.arch.thread_idx()
+            gm_out[tid] = gm_in[tid]
+        ```
+    """
     _require_frontend_state("arch.thread_idx")
     if not _runtime._in_simt_vec_func():
         _op_error(
@@ -9336,7 +9428,39 @@ def arch_thread_idx(
 
 @dsl_user_op
 def arch_sync_threads(*, loc: mlir_ir.Location | None = None) -> None:
-    """Barrier across the threads of the enclosing SIMT ``tla.vec.func``."""
+    """Directory: SIMT Vector Compute / Thread Synchronization
+    Description:
+        Barrier across the threads of the enclosing SIMT `tla.vec.func`.
+
+        Every thread of the block must reach this point before any of them
+        proceeds, and writes issued before it are visible to the other threads
+        of the block afterwards. It orders threads within one block only; it is
+        not a cross-core barrier and not a pipe barrier -- for those see the
+        flag and `tla.pipe_barrier` APIs under Sync Control.
+
+        The typical use is a two-phase reduction: each thread writes its partial
+        result to a shared UB tensor, all threads meet at the barrier, then one
+        thread combines the partials.
+
+        Parameters:
+        - None.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+        - Only available inside `tla.vec.func(mode="simt")`.
+        - Must be reached by every thread of the block; placing it under a
+          condition that only some threads take will hang the kernel.
+
+        Example:
+        ```python
+        with tla.vec.func(mode="simt", thread_block_dim=THREADS):
+            tid, _, _ = tla.arch.thread_idx()
+            ub_partial[tid] = my_partial
+            tla.arch.sync_threads()
+            if tid == 0:
+                ...  # thread 0 combines ub_partial[0:THREADS]
+        ```
+    """
     _require_frontend_state("arch.sync_threads")
     if not _runtime._in_simt_vec_func():
         _op_error(
@@ -9363,7 +9487,37 @@ def arch_block_num(*, loc: mlir_ir.Location | None = None) -> Int32:
 def arch_thread_block_dim(
     *, loc: mlir_ir.Location | None = None
 ) -> tuple[Int32, Int32, Int32]:
-    """Return the enclosing thread block's ``(x, y, z)`` extents (SIMT only)."""
+    """Directory: SIMT Vector Compute / Thread Indexing
+    Description:
+        Return the enclosing thread block's `(x, y, z)` extents.
+
+        These are the values the region was declared with in
+        `tla.vec.func(thread_block_dim=...)`, read back as `Int32` so a thread
+        can use them in index arithmetic -- most often as the stride of the loop
+        over the elements it owns.
+
+        This is the *thread* geometry of one block, not the grid: the number of
+        blocks (AI Cores) in the launch is `tla.arch.block_num()`.
+
+        Parameters:
+        - None.
+
+        Returns:
+        - `tuple[Int32, Int32, Int32]`: the block's `(x, y, z)` thread extents.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+        - Only available inside `tla.vec.func(mode="simt")`.
+
+        Example:
+        ```python
+        with tla.vec.func(mode="simt", thread_block_dim=256):
+            tid, _, _ = tla.arch.thread_idx()
+            nthreads, _, _ = tla.arch.thread_block_dim()
+            for i in tla.range(tid, N, nthreads):
+                gm_out[i] = gm_in[i]
+        ```
+    """
     _require_frontend_state("arch.thread_block_dim")
     if not _runtime._in_simt_vec_func():
         _op_error(
@@ -9454,6 +9608,10 @@ def allocate(
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - `mem_scope` must be an on-chip address space (l1/l0a/l0b/l0c/ub), not gm/generic; `shape` must be fully static.
+        - Scratch for a `tla.vec.func(mode="simt")` region must be allocated
+          *outside* that region and viewed with `tla.make_tensor`: a SIMT region
+          establishes no UB base of its own, and outlining passes the buffer to
+          the per-thread function.
 
         Example:
         ```python
@@ -9760,11 +9918,14 @@ Parameters:
   - `block_num()`: Number of blocks (AI cores) in the launch.
   - `sub_block_idx()`: Sub-block index within the current block.
   - `thread_idx()`: SIMT thread index `(x, y, z)` inside the thread block
-    (only inside `tla.vec.func(mode="simt")`).
+    (only inside `tla.vec.func(mode="simt")`; documented under
+    **SIMT Vector Compute / Thread Indexing**).
   - `thread_block_dim()`: SIMT thread-block extents `(x, y, z)`
-    (only inside `tla.vec.func(mode="simt")`).
+    (only inside `tla.vec.func(mode="simt")`; documented under
+    **SIMT Vector Compute / Thread Indexing**).
   - `sync_threads()`: Barrier across threads of the enclosing SIMT
-    `tla.vec.func` (only inside `mode="simt"`).
+    `tla.vec.func` (only inside `mode="simt"`; documented under
+    **SIMT Vector Compute / Thread Synchronization**).
   - `get_capacity_in_bytes(mem_scope)`: Byte capacity of an on-chip memory
     space for the compile target. Takes a `tla.AddressSpace` token
     (`tla.AddressSpace.l1` / `l0a` / `l0b` / `l0c` / `ub`). Returns a plain
@@ -9894,7 +10055,7 @@ def create_mask(
     dtype: DTypeLike = Float32,
     loc: mlir_ir.Location | None = None,
 ) -> MaskSSA:
-    """Directory: Vector Compute / Mask Compute
+    """Directory: SIMD Vector Compute / Mask Compute
     Description:
         Create a vector mask from a fixed pattern (`tla.mask.*` tokens).
 
@@ -9958,7 +10119,7 @@ def update_mask(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> tuple[MaskSSA, Numeric]:
-    """Directory: Vector Compute / Mask Compute
+    """Directory: SIMD Vector Compute / Mask Compute
 
     Description:
         Create a tail mask and return the remaining element count.

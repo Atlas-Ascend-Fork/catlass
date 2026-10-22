@@ -923,6 +923,9 @@ class Numeric(metaclass=NumericMeta, is_abstract=True):
             - Use `tla.params.ScalarRoundMode` here; do not pass
               `tla.params.RoundMode`.
             - Unsupported source/target pairs raise `TypeError`.
+            - Inside a `tla.vec.func(mode="simt")` region the conversion emits
+              the per-thread `tla.simt_cast`; outside one it emits the ordinary
+              scalar conversion.
 
             Example:
             ```python

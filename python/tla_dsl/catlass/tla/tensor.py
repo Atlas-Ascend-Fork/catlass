@@ -908,7 +908,44 @@ class _Tensor(TensorABC):
         *,
         loc: mlir_ir.Location | None = None,
     ) -> Any:
-        """Load one scalar tensor element, dispatching by address space."""
+        """Directory: Data Movement
+        Description:
+            Load one element of a tensor as a scalar (`tensor[i]` /
+            `tensor[i, j]`).
+
+            This is scalar, not vector, access: it reads a single element into a
+            `Numeric` rather than filling a register. Inside
+            `tla.vec.func(mode="simt")` it is the per-thread `tla.simt_load`,
+            lowered against the outlined vector function's buffer parameter;
+            everywhere else it is `tla.scalar_load`. That makes it the usual way
+            a SIMT thread reads its own data -- see **SIMT Vector Compute**.
+
+            Parameters:
+            - `crd` (`int | Int32 | tuple`): Element coordinate. One index per
+              logical dimension of the tensor. Required.
+
+            Returns:
+            - `Numeric`: the element, typed by the tensor's element type
+              (`Bool` for an i1 tensor).
+
+            Constraints:
+            - Must be called inside a `@tla.kernel`-decorated kernel function.
+            - The tensor must live in `gm` or `ub`; a `ub` tensor must be
+              accessed inside `tla.vector()`.
+            - Layout must be `RowMajor` or `ColumnMajor`.
+            - Logical rank must be 1 or 2, and the number of indices must match
+              it exactly.
+            - Sub-byte element types other than `Bool` are not supported.
+            - `None` / `_` coordinates are rejected; use `tile_view` to take a
+              sub-tensor instead.
+
+            Example:
+            ```python
+            with tla.vec.func(mode="simt", thread_block_dim=256):
+                tid, _, _ = tla.arch.thread_idx()
+                value = gm_in[tid]
+            ```
+        """
         from ..core_api import (
             _as_value,
             _op_error,
@@ -990,11 +1027,42 @@ class _Tensor(TensorABC):
         *,
         loc: mlir_ir.Location | None = None,
     ) -> None:
-        """Set tensor elements at scalar coordinates.
+        """Directory: Data Movement
+        Description:
+            Store a scalar into one element of a tensor (`tensor[i] = value`).
 
-        ``data`` may be a ``Numeric`` (e.g. from ``tensor[j]``), a bare Python
-        ``int``/``float`` literal (converted to the tensor element type), or an
-        ``mlir.ir.Value`` that ``as_numeric`` can wrap (``__setitem__``).
+            The counterpart of `Tensor.__getitem__`. Inside
+            `tla.vec.func(mode="simt")` it is the per-thread `tla.simt_store`,
+            lowered against the outlined vector function's buffer parameter;
+            everywhere else it is `tla.scalar_store`. That makes it the usual way
+            a SIMT thread writes its own results -- see
+            **SIMT Vector Compute**.
+
+            Parameters:
+            - `crd` (`int | Int32 | tuple`): Element coordinate. One index per
+              logical dimension of the tensor. Required.
+            - `data` (`Numeric | int | float | mlir.ir.Value`): Value to store.
+              A Python literal is converted to the tensor's element type.
+              Required.
+
+            Constraints:
+            - Must be called inside a `@tla.kernel`-decorated kernel function.
+            - The tensor must live in `gm` or `ub`; a `ub` tensor must be
+              accessed inside `tla.vector()`.
+            - Layout must be `RowMajor` or `ColumnMajor`.
+            - Logical rank must be 1 or 2, and the number of indices must match
+              it exactly.
+            - Sub-byte element types other than `Bool` are not supported.
+            - A `Numeric` value's type must match the tensor's element type
+              exactly; there is no implicit promotion. Convert explicitly with
+              `.to(...)` first.
+
+            Example:
+            ```python
+            with tla.vec.func(mode="simt", thread_block_dim=256):
+                tid, _, _ = tla.arch.thread_idx()
+                gm_out[tid] = gm_a[tid] + gm_b[tid]
+            ```
         """
         from ..base_dsl.typing import as_numeric
         from ..core_api import (

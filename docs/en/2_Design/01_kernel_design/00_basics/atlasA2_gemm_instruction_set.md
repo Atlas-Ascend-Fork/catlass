@@ -521,7 +521,7 @@ There are 8 parallel instruction pipelines inside AIC/AIV.
 | PIPE\_FIX  | Fixpipe-related pipeline, including L0C->GM, L0C->L1, and L1->FP buffer |
 | PIPE\_ALL  | all pipelines                                                 |
 
-![](https://raw.gitcode.com/user-images/assets/9091846/718dc2fa-e681-453f-9b6f-0a6da9313fd6/AscendC-basic-knowledge-image-9.png)
+![AscendC-basic-knowledge-image-9](https://raw.gitcode.com/user-images/assets/9091846/718dc2fa-e681-453f-9b6f-0a6da9313fd6/AscendC-basic-knowledge-image-9.png)
 
 ### Inter-Core Synchronization
 
@@ -538,4 +538,4 @@ The synchronization control implemented by `CrossCoreSetFlag` together with `Cro
 - `Mode 1`: synchronization control between AIV cores inside an AI Core. The instructions after CrossCoreWaitFlag are executed only after both AIV cores have run CrossCoreSetFlag.
 - `Mode 2`: synchronization control between AIC and AIV inside an AI Core. After the AIC core executes CrossCoreSetFlag, the instructions after CrossCoreWaitFlag on both AIV cores continue to execute; after both AIV cores execute CrossCoreSetFlag, the instructions after CrossCoreWaitFlag on the AIC core can execute.
 
-![](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/900/API/ascendcopapi/figure/zh-cn_image_0000002562462709.png)
+![zh-cn_image_0000002562462709](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/900/API/ascendcopapi/figure/zh-cn_image_0000002562462709.png)

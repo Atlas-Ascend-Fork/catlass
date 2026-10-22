@@ -8,13 +8,13 @@ CATLASS算子模板库采用分层抽象的设计理念，通过分析硬件架�
 
 ## 算子实现分层模块化设计
 
-![](../../assets/images/api_level.png)
+![api_level](../../assets/images/api_level.png)
 
 ## 算子流水自定义灵活配置
 
 模板库提供了灵活的开发方式，开发者可以复用预置的范式来快速实现基础功能，也能够针对特定需求修改模块进行定制开发，还可以通过更换组件来实现自定义的流水组合。这种设计在保证计算性能的同时，为开发者提供了充分的灵活性和拓展空间。
 
-![](../../assets/images/api_custom.png)
+![api_custom](../../assets/images/api_custom.png)
 
 ## 项目目录
 

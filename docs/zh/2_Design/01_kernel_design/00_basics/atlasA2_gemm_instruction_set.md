@@ -521,7 +521,7 @@ AIC/AIV内并行的指令流水一共有8条
 | PIPE\_FIX  | Fixpipe相关的流水线，包括L0C->GM，L0C->L1，L1->FP buffer |
 | PIPE\_ALL  | 所有流水                                                 |
 
-![](https://raw.gitcode.com/user-images/assets/9091846/718dc2fa-e681-453f-9b6f-0a6da9313fd6/AscendC-basic-knowledge-image-9.png)
+![AscendC-basic-knowledge-image-9](https://raw.gitcode.com/user-images/assets/9091846/718dc2fa-e681-453f-9b6f-0a6da9313fd6/AscendC-basic-knowledge-image-9.png)
 
 ### 核间同步
 
@@ -538,4 +538,4 @@ AIC/AIV内并行的指令流水一共有8条
 - `模式1`：AI Core内部，AIV核之间的同步控制。如果两个AIV核都运行了CrossCoreSetFlag，CrossCoreWaitFlag后续的指令才会执行。
 - `模式2`：AI Core内部，AIC与AIV之间的同步控制。在AIC核执行CrossCoreSetFlag之后， 两个AIV上CrossCoreWaitFlag后续的指令才会继续执行；两个AIV都执行CrossCoreSetFlag后，AIC上CrossCoreWaitFlag后续的指令才能执行。
 
-![](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/900/API/ascendcopapi/figure/zh-cn_image_0000002562462709.png)
+![zh-cn_image_0000002562462709](https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/900/API/ascendcopapi/figure/zh-cn_image_0000002562462709.png)

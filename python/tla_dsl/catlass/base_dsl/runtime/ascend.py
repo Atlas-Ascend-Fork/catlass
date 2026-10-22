@@ -58,13 +58,6 @@ def check_acl_errors(
     raise error
 
 
-def _acl_status(result: object) -> int:
-    """Normalize PyACL return value to a status code (``ret`` or ``(value, ret)``)."""
-    if isinstance(result, tuple):
-        return int(result[-1])
-    return int(result)
-
-
 def _binary_load_options_for_mode(kernel_mode: str) -> list[dict[str, int]]:
     """Build PyACL ``binary_load_from_data`` options for ``kernel_mode``.
 
@@ -175,44 +168,33 @@ def launch_kernel(
     print_tensor_position: str | None = None,
     device_id: int | None = None,
 ) -> None:
-    """Launch via PyACL ``kernel_args_*`` + ``launch_kernel_with_config`` (Host args)."""
+    """Launch via PyACL ``acl.rt.launch_kernel_with_host_args`` (Host args blob).
+
+    ``cfg`` / ``placeHolderArray`` must be lists (``None`` fails PyACL parse).
+    """
     import acl
 
     block_num = int(block_num)
     cfg = _launch_config(dyn_ubuf_bytes)
 
     def _acl_launch(launch_payload: bytes) -> None:
+        # Empty payload still needs a non-null host buffer (8-byte pad).
         launch_payload = launch_payload or (b"\x00" * ctypes.sizeof(ctypes.c_uint64))
         host_buf = (ctypes.c_uint8 * len(launch_payload)).from_buffer_copy(
             launch_payload
         )
-        args_handle, init_ret = acl.rt.kernel_args_init(int(function_handle))
-        check_acl_errors(init_ret, "acl.rt.kernel_args_init")
         check_acl_errors(
-            _acl_status(
-                acl.rt.kernel_args_append(
-                    args_handle, ctypes.addressof(host_buf), len(launch_payload)
-                )
+            acl.rt.launch_kernel_with_host_args(
+                int(function_handle),
+                int(block_num),
+                int(stream),
+                cfg,
+                ctypes.addressof(host_buf),
+                len(launch_payload),
+                [],
+                0,
             ),
-            "acl.rt.kernel_args_append",
-        )
-        check_acl_errors(
-            _acl_status(acl.rt.kernel_args_finalize(args_handle)),
-            "acl.rt.kernel_args_finalize",
-        )
-        # PyACL: cfg must be a list (``None`` fails parse); reserve as ``0``.
-        check_acl_errors(
-            _acl_status(
-                acl.rt.launch_kernel_with_config(
-                    int(function_handle),
-                    int(block_num),
-                    int(stream),
-                    cfg,
-                    args_handle,
-                    0,
-                )
-            ),
-            "acl.rt.launch_kernel_with_config",
+            "acl.rt.launch_kernel_with_host_args",
         )
 
     uses_print_fifo = uses_scalar_print or uses_tensor_print

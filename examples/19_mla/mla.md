@@ -54,7 +54,7 @@ using KType = Gemm::GemmType<ElementK, LayoutK>;
 using SType = Gemm::GemmType<ElementS, LayoutS>;
 using BlockMmadQK = Gemm::Block::BlockMmad<DispatchPolicyQK, L1TileShape, L0TileShape, QType, KType, SType>;
 
-// Epilogue Block模块, 实现Flash MLA中当前S基块的softmax
+// Epilogue Block模块，实现Flash MLA中当前S基块的softmax
 using PType = Gemm::GemmType<ElementP, LayoutP>;
 using MaskType = Gemm::GemmType<ElementMask, LayoutMask>;
 using EpilogueMLASoftmax =
@@ -66,13 +66,13 @@ using VType = Gemm::GemmType<ElementV, LayoutV>;
 using OTmpType = Gemm::GemmType<ElementOTmp, LayoutOTmp>;
 using BlockMmadPV = Gemm::Block::BlockMmad<DispatchPolicyPV, L1TileShape, L0TileShape, PType, VType, OTmpType>;
 
-// Epilogue Block模块, 实现Flash MLA中当前O基块的更新
+// Epilogue Block模块，实现Flash MLA中当前O基块的更新
 using OType = Gemm::GemmType<ElementO, LayoutO>;
 using OUpdateType = Gemm::GemmType<ElementUpdate, LayoutUpdate>;
 using EpilogueMLARescaleO =
         Epilogue::Block::BlockEpilogue<Epilogue::EpilogueAtlasA2MLARescaleO, OType, OUpdateType, OTmpType>;
 
-// Epilogue Block模块, 实现Flash MLA中flash decoding
+// Epilogue Block模块，实现Flash MLA中flash decoding
 using OType = Gemm::GemmType<ElementO, LayoutO>;
 using lType = Gemm::GemmType<ElementUpdate, LayoutUpdate>;
 constexpr uint32_t ComputeEleNum = 6144;

@@ -18,9 +18,9 @@ SplitRow 系列服务于**共享式（Shared）FA 推理 kernel**：QK GEMM 与 
 ```mermaid
 graph TB
     Q[Q from GM] --> QK[BlockMmad FAIQKSplitRow<br/>核0: QK^T]
-    QK -->|S fp32 写 GM| OS[BlockEpilogue OnlineSoftmaxCopySumMax<br/>Vector核: 在线softmax]
+    QK -->|S fp32 写 GM| OS[BlockEpilogue OnlineSoftmaxCopySumMax<br/>Vector核：在线softmax]
     OS -->|P fp16 写 GM<br/>max/sum 写 GM| PV[BlockMmad FAIPVSplitRow<br/>核1: PV]
-    PV -->|OTmp fp32 写 GM| RO[BlockEpilogue RescaleOWithoutDivSum<br/>Vector核: 重标度累加]
+    PV -->|OTmp fp32 写 GM| RO[BlockEpilogue RescaleOWithoutDivSum<br/>Vector核：重标度累加]
     RO -->|lastStackTile: O fp32| CS[后续 CombineScale<br/>除 rowSum + cast]
 ```
 

@@ -81,8 +81,8 @@ SvdQuant更多细节参考[SvdQuant论文](https://arxiv.org/abs/2411.05007)
 | W           | float4_e2m1x2_t | (k, n)    | ColumnMajor | 公式中的残差R量化后的fp4                                 |
 | MxScaleW    | float8_e8m0_t   | (k/32, n) | ColumnMajor | 公式中的残差R量化后的scale                               |
 | qmax        | float           | (1,)      |             | scalar, 在kernel内部转换为fp16/bf16，和 X 相同           |
-| SmoothScale | fp16/bf16       | (k,)      | RowMajor    | 可选输入, 类型和 X 相同，传入算子的实际是(1/smoothScale) |
-| Bias        | float           | (n,)      | RowMajor    | 可选输入, 取决于量化前网络层是否有bias                   |
+| SmoothScale | fp16/bf16       | (k,)      | RowMajor    | 可选输入，类型和 X 相同，传入算子的实际是(1/smoothScale) |
+| Bias        | float           | (n,)      | RowMajor    | 可选输入，取决于量化前网络层是否有bias                   |
 
 有些场景下量化前的网络层无法计算得到SmoothScale，因此设置为可选输入，当传入SmoothScale时，由于无法做bf16的除法，因此host侧这里传入1/SmoothScale， 然后在UB上乘上(1/SmoothScale)。
 
@@ -244,7 +244,7 @@ struct TilingTag2Config<SvdQuantTilingTag::Small> {
 };
 ```
 
-选用策略是用 `m1=256, n1=256` 估计任务数, 当划分的任务数大于核数的时候用Common配置，否则用Small配置，主要区别是Small减小了Mmad2和Mmad3的m1，可以使用更多核数。
+选用策略是用 `m1=256, n1=256` 估计任务数，当划分的任务数大于核数的时候用Common配置，否则用Small配置，主要区别是Small减小了Mmad2和Mmad3的m1，可以使用更多核数。
 
 ### SmoothQuant+Mmad1 部分的负载均衡优化
 

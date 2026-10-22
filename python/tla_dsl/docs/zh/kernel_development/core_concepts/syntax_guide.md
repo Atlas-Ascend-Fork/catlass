@@ -437,14 +437,14 @@ artifact(tiling, out)
 
 **实例使用范围**:
 
-- 在host侧创建实例，作为kernel入参, 字段类型支持标量和tensor
+- 在host侧创建实例，作为kernel入参，字段类型支持标量和tensor
 - 在kernel侧创建实例
 
 **dataclass 允许自定义的选项**：仅 `frozen/kw_only`，其他参数不支持修改为非默认值。`frozen=True`实例化后不支持修改字段值，`kw_only=True`时实例化时必须显式指定key，例如`tiling=Tiling(TILE_M=128, tiling_int16=128, ...)`，不支持`tiling=TilingData(128, 128, ...)`
 
 **`tla.Constexpr[...]` 字段**：
 
-- 视作编译期常量：kernel内只读, 可用于`tla.allocate`、`tla.range_constexpr`等。
+- 视作编译期常量：kernel内只读，可用于`tla.allocate`、`tla.range_constexpr`等。
 - 不进入 kernel ABI / IR：`tla.func` 无对应块参数。
 
 **入参支持的类型**：

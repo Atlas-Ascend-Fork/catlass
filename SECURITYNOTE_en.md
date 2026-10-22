@@ -16,9 +16,9 @@
 ## File Permission Control
 
 - You are advised to set the `umask` value of the running system to `0027` or higher on the host (including the host) and container, to ensure that the default highest permission of new folders is `750` and that of new files is `640`.
-- You are advised to take security measures such as permission control on sensitive content, including personal privacy data, business assets, source files, and various files saved during operator development. For example, control the permissions of the installation directory related to the CATLASS repository and the public data files input to operators. The recommended permissions can be set with reference to [Appendix A Recommended Maximum Permission Control Value for Files (Folders) in Each Scenario](#a-Recommended Maximum Permission Control Value for Folders in Each Scenario).
+- You are advised to take security measures such as permission control on sensitive content, including personal privacy data, business assets, source files, and various files saved during operator development. For example, control the permissions of the installation directory related to the CATLASS repository and the public data files input to operators. The recommended permissions can be set with reference to [Appendix A Recommended Maximum Permission Control Value for Files (Folders) in Each Scenario](#a-recommended-maximum-permissions-for-files-and-folders).
 - During operator runtime, compiled operator files may be cached in the `kernel_meta_*` folder under the running directory to accelerate subsequent operator calls. You can independently control the permissions of the generated files as needed.
-- You must implement proper permission control during the installation and usage process, with reference to the file permission guidelines in [Appendix A Recommended Maximum Permission Control Value for Files (Folders) in Each Scenario](#a-Recommended Maximum Permission Control Value for Folders in Each Scenario).
+- You must implement proper permission control during the installation and usage process, with reference to the file permission guidelines in [Appendix A Recommended Maximum Permission Control Value for Files (Folders) in Each Scenario](#a-recommended-maximum-permissions-for-files-and-folders).
 
 ## Build Security Statement
 

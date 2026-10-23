@@ -54,6 +54,7 @@ public:
     static constexpr uint32_t L1_TILE_M = tla::get<0>(L1TileShape{});
     static constexpr uint32_t L1_TILE_N = tla::get<1>(L1TileShape{});
     static constexpr uint32_t L1_TILE_K = tla::get<2>(L1TileShape{});
+    static constexpr uint32_t L1B_STAGES = BlockMmad::L1B_STAGES;
 
     /**
      * @struct BlockMmadArguments
@@ -92,8 +93,8 @@ public:
 
     static bool CanImplement(const Arguments& args)
     {
-        uint32_t L1UsedSpace =
-            L1_TILE_M * args.problemShape.k() * sizeof(ElementA) + L1_TILE_K * L1_TILE_N * 2 * sizeof(ElementB);
+        uint32_t L1UsedSpace = L1_TILE_M * args.problemShape.k() * sizeof(ElementA) +
+                               L1_TILE_K * L1_TILE_N * L1B_STAGES * sizeof(ElementB);
         if (L1UsedSpace > ArchTag::L1_SIZE) {
             return false;
         }

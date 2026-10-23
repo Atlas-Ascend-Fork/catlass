@@ -56,9 +56,22 @@ static void Run(const Options& options)
     using ElementA = int8_t;
     using ElementB = int8_t;
     using ElementC = int32_t;
+
+    /* per_token  / per_channel -> output support:
+        fp32 / fp32 -> bf16 (current)
+        fp32 / fp32 -> fp16
+        bf16 / bf16 -> bf16
+        fp16 / fp16 -> fp16
+        device side uses kernel Element types (float / bfloat16_t / half),
+        host side uses Host types (float / bfloat16 / fp16_t), they come in pairs.
+    */
     using ElementScale = float;
     using ElementPerTokenScale = float;
     using ElementD = bfloat16_t;
+    using HostScale = float;
+    using HostPerTokenScale = float;
+    using HostD = bfloat16;
+
     using ArchTag = Arch::AtlasA2;
     // TODO: support bias
     // if no bias, set ElementBias to void
@@ -99,13 +112,13 @@ static void Run(const Options& options)
 
     std::vector<ElementA> hostA(lenA);
     std::vector<ElementB> hostB(lenB);
-    std::vector<ElementScale> hostScale(lenScale);
-    std::vector<ElementPerTokenScale> hostPerTokenScale(lenPerTokenScale);
+    std::vector<HostScale> hostScale(lenScale);
+    std::vector<HostPerTokenScale> hostPerTokenScale(lenPerTokenScale);
     std::vector<ElementBiasType> hostBias(lenBias);
     golden::FillRandomData<ElementA>(hostA, -16, 16);
     golden::FillRandomData<ElementB>(hostB, -16, 16);
-    golden::FillRandomData<ElementScale>(hostScale, 0.0, 1.0);
-    golden::FillRandomData<ElementPerTokenScale>(hostPerTokenScale, 0.0, 1.0);
+    golden::FillRandomData<HostScale>(hostScale, 0.0, 1.0);
+    golden::FillRandomData<HostPerTokenScale>(hostPerTokenScale, 0.0, 1.0);
     if constexpr (!std::is_void_v<ElementBias>) {
         golden::FillRandomData<ElementBiasType>(hostBias, -5.0f, 5.0f);
     }
@@ -271,7 +284,7 @@ static void Run(const Options& options)
     }
     ACL_CHECK(aclrtSynchronizeStream(stream));
 
-    std::vector<bfloat16> hostD(lenD);
+    std::vector<HostD> hostD(lenD);
     ACL_CHECK(aclrtMemcpy(hostD.data(), sizeD, deviceD, sizeD, ACL_MEMCPY_DEVICE_TO_HOST));
 
     std::vector<float> hostGolden(lenC);

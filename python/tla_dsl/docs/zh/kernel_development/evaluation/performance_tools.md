@@ -24,9 +24,9 @@ nav_order: 20
 
 ## 环境配置
 
-### 基础依赖使能
+### 基础依赖启用
 
-在进行 DSL 开发与测试前，请先行确认基础环境已准备完毕。详细步骤请参考 [快速上手](../../../../../../docs/zh/1_Practice/01_quick_start.md)，完成 CANN 的下载安装与环境变量使能。
+在进行 DSL 开发与测试前，请先行确认基础环境已准备完毕。详细步骤请参考 [快速上手](../../../../../../docs/zh/1_Practice/01_quick_start.md)，完成 CANN 的下载安装与环境变量启用。
 DSL 的底层编译依赖于 AscendNPU-IR。在执行后续编译操作前，请参阅 [环境准备](../../dsl_development/build_guide/environment.md) 并按该文档指引完成至 [运行测试用例](../../dsl_development/build_guide/testing.md) 相关内容。
 
 ## 用msProf进行单算子性能分析
@@ -80,7 +80,7 @@ msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py"
 * `MTE2 bandwidth utilization lower than 80% when active.`：提示内存搬运通道利用率偏低。
 * `aicore compute usage lower than 20%.`：提示矩阵计算核心算力未充分释放。
 
-获取更多数据解析相关内容，请参考 [用msProf进行单算子性能分析](../../../../../../docs/zh/1_Practice/evaluation/performance_tools.md#用msprof进行单算子性能分析--msprof-single-operator-analysis-)。
+获取更多数据解析相关内容，请参考 [用msProf进行单算子性能分析](../../../../../../docs/zh/1_Practice/evaluation/performance_tools.md#msprof-single-operator-analysis)。
 
 ### 性能流水仿真
 
@@ -88,7 +88,7 @@ msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py"
 
 ### msprof op simulator使用示例
 
-首先将 CANN 工具包中的仿真器 `lib` 目录加载到 `LD_LIBRARY_PATH` 中。请确保在执行时所处的相对路径正确，或根据实际情况将其替换为您的用户目录与对应的版本。
+首先将 CANN 工具包中的仿真器 `lib` 目录加载到 `LD_LIBRARY_PATH` 中。请确保在执行时所处的相对路径正确，或根据实际情况将其替换为用户目录与对应的版本。
 
 ```bash
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/tools/simulator/Ascendxxxyy/lib:$LD_LIBRARY_PATH
@@ -144,7 +144,7 @@ msprof op simulator --soc-version=Ascendxxxyy --core-id=0 --kernel-name=basic_mi
 ```
 
 获取仿真输出文件夹simulator下的visualize_data.bin，通过[MindStudio Insight](https://www.hiascend.com/document/detail/zh/mindstudio/latest/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/user_guide/overview.md)工具加载bin文件查看代码热点图。
-关于如何对仿真数据进行深度解析，请参考 [性能流水仿真](../../../../../../docs/zh/1_Practice/evaluation/performance_tools.md#性能流水仿真--performance-pipeline-simulation-)；
+关于如何对仿真数据进行深度解析，请参考 [性能流水仿真](../../../../../../docs/zh/1_Practice/evaluation/performance_tools.md#performance-pipeline-simulation)；
 关于如何将数据导出并进行图形化深度解析，请参考 [MindStudio Insight](https://www.hiascend.com/document/detail/zh/mindstudio/latest/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/user_guide/overview.md)。
 
 ## 用Profiling进行整网性能分析

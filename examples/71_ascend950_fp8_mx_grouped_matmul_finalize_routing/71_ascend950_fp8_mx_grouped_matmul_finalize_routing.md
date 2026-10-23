@@ -173,10 +173,10 @@ $$\mathbb{1}_{\text{shared}}(r) = \begin{cases} 1, & \text{SharedInput} \neq \te
 
 ### Tile参数
 
-| 层级   | Shape (M×N×K)   |
+| 层级   | Shape (M*N*K)   |
 | ------ | --------------- |
-| L1Tile | 256 × 256 × 256 |
-| L0Tile | 256 × 256 × 128 |
+| L1Tile | 256*256*256 |
+| L0Tile | 256*256*128 |
 
 ### 非确定性版（no_deter）设计差异
 

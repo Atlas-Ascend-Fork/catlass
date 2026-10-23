@@ -12,7 +12,7 @@ The `TileCastInt4ToInt8` template converts INT4-quantized data (stored as `int8_
 
 The conversion is completed by the vector engine using two `AscendC::Cast` operations: INT4 → half → INT8.
 
-> **Restriction**: Only the Atlas A2 architecture (`CATLASS_ARCH == 2201`) is supported. `COMPUTE_LEN` must not exceed 24 × 1024.
+> **Restriction**: Only the Atlas A2 architecture (`CATLASS_ARCH == 2201`) is supported. `COMPUTE_LEN` must not exceed 24*1024.
 
 ## Template Prototype
 
@@ -32,7 +32,7 @@ struct TileCastInt4ToInt8 {
 };
 ```
 
-- `COMPUTE_LEN_`: the length of a single Cast computation, with an upper limit of 24 × 1024
+- `COMPUTE_LEN_`: the length of a single Cast computation, with an upper limit of 24*1024
 - `SrcType_::Element` and `DstType_::Element`: The `sizeof` values must be the same (both are `int8_t` and `sizeof == 1`).
 - `LayoutSrc`/`LayoutDst`: ColumnMajor and RowMajor are supported.
 
@@ -45,10 +45,9 @@ TileCastInt4ToInt8(Arch::Resource<ArchTag> const &resource, Params const &params
 ```
 
 Allocate double buffering from the Resource Unified Buffer.
-
-- `ubInTensor[2]` × `COMPUTE_LEN / 2` bytes (INT4 compact storage input)
-- `ubOutTensor[2]` × `COMPUTE_LEN` bytes (INT8 output)
-- `ubWorkspace[2]` × `COMPUTE_LEN * sizeof(half)` bytes (half workspace for intermediate conversion)
+- `ubInTensor[2]`*`COMPUTE_LEN / 2` bytes (INT4 compact storage input)
+- `ubOutTensor[2]`*`COMPUTE_LEN` bytes (INT8 output)
+- `ubWorkspace[2]`*`COMPUTE_LEN * sizeof(half)` bytes (half workspace for intermediate conversion)
 
 Initialize the event flag to ensure pipeline security.
 

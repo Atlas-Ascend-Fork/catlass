@@ -356,7 +356,7 @@ until a later unchanged proof passes.
 Optimization defaults on, but the rewrite is considered only after migration proof. SCREEN reads the
 built target, records a profiler baseline, and answers whether all of these are true:
 
-1. the target is a Gemm-family stack with an M×N C tile;
+1. the target is a Gemm-family stack with an M*N C tile;
 2. it has an epilogue;
 3. the active C-producing and C-consuming path is non-TLA;
 4. the active BlockMmad still copies L0C to GM;

@@ -19,7 +19,7 @@
 
 ## 使用示例
 
-- 获取代码之后编译相应的算子可执行文件，可参考[quickstart](../../docs/zh/1_Practice/01_quick_start.md#编译执行)，本用例为 Ascend 950（3510）算子，编译时需加 `-DCATLASS_ARCH=3510`。L1 分块为 256×256×448、L0 为 256×256×128，以满足 512KiB L1 与 L0 容量约束（勿随意增大 L1 的 K，否则 `L1TileShape exceeding the L1 space`）。
+- 获取代码之后编译相应的算子可执行文件，可参考[quickstart](../../docs/zh/1_Practice/01_quick_start.md#编译执行)，本用例为 Ascend 950（3510）算子，编译时需加 `-DCATLASS_ARCH=3510`。L1 分块为 256*256*448、L0 为 256*256*128，以满足 512KiB L1 与 L0 容量约束（勿随意增大 L1 的 K，否则 `L1TileShape exceeding the L1 space`）。
 - 执行算子
 
 ```bash
@@ -79,8 +79,8 @@ MxScaleA、MxScaleB支持数据类型为float8_e8m0
 | `ArchTag`            | 无      | 架构标签，例如 `Arch::Ascend950`                                                                                    |
 | `ENABLE_UNIT_FLAG`   | `false` | 是否开启 UnitFlag；当 `L0C_STAGES > 1`（L0C 多缓冲）时必须为 `false`                                                |
 | `L1_SCALE_FACTOR_K`  | `16`    | GM→L1 的 MX scale 一次驻留所覆盖的 **L1 K 方向条带个数**；为 `1` 时表示每个 L1 K 条带各搬一次 scale（见类型内注释） |
-| `L0C_STAGES`         | `1`     | L0C 缓冲段数；设为 `2` 可开启 L0C 双缓冲（需与 `ENABLE_UNIT_FLAG` 约束一致）                                        |
 | `ENABLE_L1_RESIDENT` | `false` | 是否开启 L1 常驻                                                                                                    |
+| `ENABLE_L1_RESIDENT` | `false` | 是否启用 L1 常驻                                                                                                    |
 | `L1A_STAGES`         | `2`     | L1 上加载矩阵 A 的 buffer 数量                                                                                      |
 | `L1B_STAGES`         | `2`     | L1 上加载矩阵 B 的 buffer 数量                                                                                      |
 | `L0A_STAGES`         | `2`     | L0 上加载矩阵 A 的 buffer 数量                                                                                      |

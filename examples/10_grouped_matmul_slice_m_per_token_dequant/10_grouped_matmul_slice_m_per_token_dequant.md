@@ -41,7 +41,7 @@ CATLASS GMM_sliceM_perToken_Dequant样例算子是基于CATLASS Gemm API实现�
 - [设置DispatchPolicy](../10_grouped_matmul_slice_m_per_token_dequant/grouped_matmul_slice_m_per_token_dequant.cpp#L152)为[MmadAtlasA2PreloadAsyncWithCallback](../../docs/zh/2_Design/01_kernel_design/03_dispatch_policies.md)，即选取BlockMmad组件
 - 设置[L1TileShape和L0TileShape](../../docs/zh/2_Design/01_kernel_design/03_dispatch_policies.md)，用于基本块分核和L1/L0切块。需要注意TileShape和DispatchPolicy的设置有约束关系，例如当前L1::M=128、L1::K=128时，l0AStages不能超过4，以免超出L0A大小、在样例编译时被BlockMmad侧静态校验拦截。TileShape计算可参考[TileShape约束](../../docs/zh/1_Practice/11_matmul_optimization.md)
 - [设置blockMmad输入输出Type](../../docs/zh/2_Design/01_kernel_design/03_dispatch_policies.md)
-- 为了专门使用CopyGmToL1GMMPTD来做CopyGmToL1A的动作，重新[定义](../10_grouped_matmul_slice_m_per_token_dequant/grouped_matmul_slice_m_per_token_dequant.cpp#L49)并[组装](../10_grouped_matmul_slice_m_per_token_dequant/grouped_matmul_slice_m_per_token_dequant.cpp#L161)了新的TileCopyMmad，若不使能CopyGmToL1GMMPTD可以跳过此步骤，BlockMmad会使用默认TileCopyMmad。
+- 为了专门使用CopyGmToL1GMMPTD来做CopyGmToL1A的动作，重新[定义](../10_grouped_matmul_slice_m_per_token_dequant/grouped_matmul_slice_m_per_token_dequant.cpp#L49)并[组装](../10_grouped_matmul_slice_m_per_token_dequant/grouped_matmul_slice_m_per_token_dequant.cpp#L161)了新的TileCopyMmad，若不启用CopyGmToL1GMMPTD可以跳过此步骤，BlockMmad会使用默认TileCopyMmad。
 - 使用上述模板入参[组装BlockMmad](../10_grouped_matmul_slice_m_per_token_dequant/grouped_matmul_slice_m_per_token_dequant.cpp#L162)
 
 ### 组装blockEpilogue
@@ -107,7 +107,7 @@ CATLASS GMM_sliceM_perToken_Dequant样例算子是基于CATLASS Gemm API实现�
 - 初始化计算参数：A矩阵在GM上地址偏移gmGroupOffsetA、B矩阵在GM上地址偏移gmGroupOffsetB、workspace上的输出数据排布layoutC、WORKSPACE_STAGES操作对应stageId和stageUsed、当前group起始AIC序号startCoreIdx，[代码](../../include/catlass/gemm/kernel/grouped_matmul_slice_m_per_token_dequant_multistage_workspace.hpp#L181)
 - group循环，[代码](../../include/catlass/gemm/kernel/grouped_matmul_slice_m_per_token_dequant_multistage_workspace.hpp#L191)
   - 计算当前group的M，[代码](../../include/catlass/gemm/kernel/grouped_matmul_slice_m_per_token_dequant_multistage_workspace.hpp#L192)
-  - 判断是否使能A矩阵L2Cache绕过，[代码](../../include/catlass/gemm/kernel/grouped_matmul_slice_m_per_token_dequant_multistage_workspace.hpp#L204)
+  - 判断是否启用A矩阵L2Cache绕过，[代码](../../include/catlass/gemm/kernel/grouped_matmul_slice_m_per_token_dequant_multistage_workspace.hpp#L204)
   - 计算当前核在当前group基本块中的起始idx，[代码](../../include/catlass/gemm/kernel/grouped_matmul_slice_m_per_token_dequant_multistage_workspace.hpp#L209)
   - 当前group中、当前核的基本块循环，[代码](../../include/catlass/gemm/kernel/grouped_matmul_slice_m_per_token_dequant_multistage_workspace.hpp#L211)
     - blockMmad所需入参计算，[代码](../../include/catlass/gemm/kernel/grouped_matmul_slice_m_per_token_dequant_multistage_workspace.hpp#L213)

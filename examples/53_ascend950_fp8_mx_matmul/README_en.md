@@ -86,7 +86,7 @@ The DispatchPolicy MxMmad used by default in MxMatmul supports the following tem
 | l0AStages          | 2             | Number of buffers for loading matrix A to L0.                                                           |
 | l0BStages          | 2             | Number of buffers for loading matrix B to L0.                                                           |
 
-Assume that the matrix shape is `M N K`, the tile size on L1 is `m1 n1 k1`, the number of blocks in the M direction is `mTiles = CeilDiv(M, m1)`, the number of blocks in the N direction is `nTiles = CeilDiv(N, n1)`, and the total number of tasks is `taskBlocks = mTiles × nTiles`. In the following two cases, `enableL1Resident` can be enabled:
+Assume that the matrix shape is `M N K`, the tile size on L1 is `m1 n1 k1`, the number of blocks in the M direction is `mTiles = CeilDiv(M, m1)`, the number of blocks in the N direction is `nTiles = CeilDiv(N, n1)`, and the total number of tasks is `taskBlocks = mTiles*nTiles`. In the following two cases, `enableL1Resident` can be enabled:
 
 1. `mTiles = 1`, `nTiles > CoreNum`, and `K < 2 * k1`. In this case, you can also set `l0CStages=2` (`enableUnitFlag` must be disabled). If there is insufficient space to set `l0CStages=2`, set `n1` to half of its original value.
 

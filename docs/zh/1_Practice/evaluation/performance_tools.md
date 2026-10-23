@@ -107,9 +107,19 @@ msprof op ./00_basic_matmul 256 512 1024 0
     ```
 
 - ⚠ 注意事项
-  - 若需要查看**代码热点图**，需要在`examples/CMakeLists.txt`中增加`add_compile_options("SHELL:$<$<COMPILE_LANGUAGE:ASCEND>:-Xaicore-start -g -Xaicore-end")`。
-  - 性能结果中有大量明显`Vector`操作（如`Add`、`Div`）映射为`Scalar`操作导致性能结果明显异常(`vector_ratio<10%`，`scalar>90%`)，这是编译优化等级造成的，可在`examples/CMakeLists.txt`中增加`add_compile_options($<$<COMPILE_LANGUAGE:ASCEND>:"-Xaicore-start -O3 -Xaicore-end">)`。
-  - 仿真只能在0卡运行，不能指定NPU卡号。
+    - 若需要查看**代码热点图**，需要在`examples/CMakeLists.txt`的开始位置增加以下代码：
+
+      ```cmake
+      add_compile_options("SHELL:$<$<COMPILE_LANGUAGE:ASC>:-Xaicore-start -g -Xaicore-end>")
+      ```
+
+    - 性能结果中有大量明显`Vector`操作（如`Add`、`Div`）映射为`Scalar`操作导致性能结果明显异常(`vector_ratio<10%`，`scalar>90%`)，这是编译优化等级造成的，可在`examples/CMakeLists.txt`的开始位置增加以下代码，用于提升优化等级：
+
+      ```cmake
+      add_compile_options($<$<COMPILE_LANGUAGE:ASC>:"-Xaicore-start -O3 -Xaicore-end">)
+      ```
+
+    - 仿真只能在0卡运行，不能指定NPU卡号。
 
 #### 仿真数据说明
 
@@ -144,7 +154,7 @@ msprof op ./00_basic_matmul 256 512 1024 0
 - Chrome浏览器使用工具Chrome Trace Viewer：url输入`chrome://tracing`
 - 通用工具Perfetto：url输入`https://ui.perfetto.dev/`
 
-导入`trace.json`即可查看仿真指令流水图。
+导入`trace.json`即可查看仿真指令流水图。三种工具功能均一致，选择任一可用的即可。
 
 ###### 使用MindStudio Insight呈现
 

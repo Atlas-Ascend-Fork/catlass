@@ -386,7 +386,7 @@ set(EXAMPLE_ATLASA2
 )
 ```
 
-完成CANN包安装和CANN环境使能后，执行编译命令（若为 Ascend 950PR&950DT系列产品，需要添加`-DCATLASS_ARCH=3510`）：
+完成CANN包安装和CANN环境启用后，执行编译命令（若为 Ascend 950PR&950DT系列产品，需要添加`-DCATLASS_ARCH=3510`）：
 
 ```bash
 bash scripts/build.sh basic_matmul

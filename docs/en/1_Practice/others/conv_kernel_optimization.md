@@ -111,8 +111,8 @@ A rough estimate of the L1 space budget:
 
 | Buffer     | Size per stage                              | Total size for 3 stages  |
 | ---------- | ------------------------------------------- | ------------------------ |
-| L1A Fmap   | `Ho × Wo × Cin1 × C0 × sizeof(fp16)`        | 3x a single stage        |
-| L1B Filter | `Cin1 × Kh × Kw × Cout × C0 × sizeof(fp16)` | 3x a single stage        |
+| L1A Fmap   | `Ho*Wo*Cin1*C0*sizeof(fp16)`        | 3x a single stage        |
+| L1B Filter | `Cin1*Kh*Kw*Cout*C0*sizeof(fp16)` | 3x a single stage        |
 | Total      | —                                           | Must be < 512KB (L1 capacity) |
 
 **Empirical Judgement**
@@ -130,7 +130,7 @@ The three Tile Shapes of Conv2D each control the blocking granularity at a diffe
 
 | Tile Shape                      | Controlled Granularity                    | Impact                                         |
 | ------------------------------- | ----------------------------------------- | ---------------------------------------------- |
-| `FmapL1TileShape<Ho, Wo, Cin1>` | Tile size of Fmap loaded into L1 each time | Number of Ho×Wo loop iterations, L1 usage     |
+| `FmapL1TileShape<Ho, Wo, Cin1>` | Tile size of Fmap loaded into L1 each time | Number of Ho*Wo loop iterations, L1 usage     |
 | `FilterL1TileShape<Cout, Cin1>` | Tile size of Filter loaded into L1 each time | Number of Cout loop iterations, L1 usage     |
 | `L0TileShape<M, N, K>`          | Computation granularity of a single Cube Mmad | Cube utilization                          |
 
@@ -141,15 +141,15 @@ The three are related through `K_FMAP_PER_FILTER = FilterL1TileShape::Cin1 / Fma
 **Increase Ho/Wo of Fmap L1TileShape to reduce outer loop iterations.** When MTE2 bound, increasing Ho/Wo can reduce the amount of repeated Fmap data transfer from GM to L1:
 
 ```text
-Fmap repeated read count ≈ batch × coTiles × cin1Tiles × (reduction ratio of hoTiles × woTiles)
+Fmap repeated read count ≈ batch*coTiles*cin1Tiles*(reduction ratio of hoTiles*woTiles)
 ```
 
-The default `<8, 12>` has Ho×Wo=96. You can try increasing it to `<16, 16>` (Ho×Wo=256), reducing the number of iterations by about 2.7x; or `<32, 12>` (Ho×Wo=384).
+The default `<8, 12>` has Ho*Wo=96. You can try increasing it to `<16, 16>` (Ho*Wo=256), reducing the number of iterations by about 2.7x; or `<32, 12>` (Ho*Wo=384).
 
 **Increase Cout of FilterL1TileShape.** Increasing Cout can reduce the number of iterations in the Cout direction and lower repeated Filter reads:
 
 ```text
-Filter repeated read count ≈ batch × hoTiles × woTiles × cin1Tiles × (reduction ratio of coTiles)
+Filter repeated read count ≈ batch*hoTiles*woTiles*cin1Tiles*(reduction ratio of coTiles)
 ```
 
 The default `<96>` yields only 1 tile when Cout=80. If Cout is large (e.g. 512), you can gradually increase it from 96 to 128, 192, up to the L1 space limit.
@@ -158,9 +158,9 @@ The default `<96>` yields only 1 tile when Cout=80. If Cout is large (e.g. 512),
 
 | L0Shape         | Mmad computation count per call | L0A size   | Typical Scenario              |
 | --------------- | ------------------------------- | ---------- | ----------------------------- |
-| `<16, 96, 16>`  | 24K                             | 16×16 fp16 | Current default               |
-| `<32, 96, 32>`  | 96K                             | 32×32 fp16 | Cube bound, ample space       |
-| `<16, 128, 16>` | 32K                             | 16×16 fp16 | Cube bound, larger N axis     |
+| `<16, 96, 16>`  | 24K                             | 16*16 fp16 | Current default               |
+| `<32, 96, 32>`  | 96K                             | 32*32 fp16 | Cube bound, ample space       |
+| `<16, 128, 16>` | 32K                             | 16*16 fp16 | Cube bound, larger N axis     |
 
 **Empirical Judgement**
 

@@ -131,10 +131,10 @@ offset = row * stride[0] + col
 
 That is, `offset = row * ldm + col`.
 
-**Visualization**: The following uses a 3×4 matrix as an example to show the RowMajor memory layout.
+**Visualization**: The following uses a 3*4 matrix as an example to show the RowMajor memory layout.
 
 ```cpp
-Logical matrix (3 rows × 4 cols):
+Logical matrix (3 rows*4 cols):
         col0  col1  col2  col3
 row0:   a00   a01   a02   a03
 row1:   a10   a11   a12   a13
@@ -146,8 +146,8 @@ Address:  +0    +1    +2    +3    +4    +5    +6    +7    +8    +9   +10   +11
 Data:  a00   a01   a02   a03   a10   a11   a12   a13   a20   a21   a22   a23
       └────── row0 ──────┘ └────── row1 ──────┘ └────── row2 ──────┘
 
-offset(row, col) = row × 4 + col
-For example, a12 is at row=1, col=2 → offset = 1 × 4 + 2 = 6.
+offset(row, col) = row*4 + col
+For example, a12 is at row=1, col=2 → offset = 1*4 + 2 = 6.
 ```
 
 ### ColumnMajor
@@ -176,10 +176,10 @@ auto tag = ColumnMajor::MakeLayout<Element>(rows, cols);
 offset = row + col * stride[1]
 ```
 
-**Visualization**: The following uses a 3×4 matrix as an example to show the ColumnMajor memory layout.
+**Visualization**: The following uses a 3*4 matrix as an example to show the ColumnMajor memory layout.
 
 ```cpp
-Logical matrix (3 rows × 4 cols):
+Logical matrix (3 rows*4 cols):
         col0  col1  col2  col3
 row0:   a00   a01   a02   a03
 row1:   a10   a11   a12   a13
@@ -191,8 +191,8 @@ Address:  +0    +1    +2    +3    +4    +5    +6    +7    +8    +9   +10   +11
 Data:  a00   a10   a20   a01   a11   a21   a02   a12   a22   a03   a13   a23
       └─── col0 ───┘ └─── col1 ───┘ └─── col2 ───┘ └─── col3 ───┘
 
-offset(row, col) = row + col × 3
-For example, a12 is at row=1, col=2 → offset = 1 + 2 × 3 = 7.
+offset(row, col) = row + col*3
+For example, a12 is at row=1, col=2 → offset = 1 + 2*3 = 7.
 ```
 
 ### VectorLayout — One-Dimensional Vector
@@ -241,17 +241,17 @@ offset = (row / rowsInFractal) * strideRowsByFractal
        + (col % colsInFractal) * strideColsInFractal
 ```
 
-**Visualization:** For ease of understanding, simplified parameters are used for demonstration (C0_NUM_PER_FRACTAL=2, ELE_NUM_PER_C0=2), with an original matrix of size 4 × 6:
+**Visualization:** For ease of understanding, simplified parameters are used for demonstration (C0_NUM_PER_FRACTAL=2, ELE_NUM_PER_C0=2), with an original matrix of size 4*6:
 
 ```cpp
-Original logical matrix (4 rows × 6 cols):
+Original logical matrix (4 rows*6 cols):
         col0  col1  col2  col3  col4  col5
 row0:   a00   a01   a02   a03   a04   a05
 row1:   a10   a11   a12   a13   a14   a15
 row2:   a20   a21   a22   a23   a24   a25
 row3:   a30   a31   a32   a33   a34   a35
 
-Step 1 — Divide into 2 × 2 fractals.
+Step 1 — Divide into 2*2 fractals.
          [col0,col1]  [col2,col3]  [col4,col5]
 [r0,r1]  ┌─────────┐  ┌─────────┐  ┌─────────┐
          │  F00    │  │  F01    │  │  F02    │
@@ -290,14 +290,14 @@ The shape structure is `(ELE_NUM_PER_C0, rowsRound / ELE_NUM_PER_C0, C0_NUM_PER_
 **Visualization**: The following uses the same original matrix and fractal division as zN to compare the layout differences of nZ.
 
 ```cpp
-Original logical matrix (4 rows × 6 cols):
+Original logical matrix (4 rows*6 cols):
         col0  col1  col2  col3  col4  col5
 row0:   a00   a01   a02   a03   a04   a05
 row1:   a10   a11   a12   a13   a14   a15
 row2:   a20   a21   a22   a23   a24   a25
 row3:   a30   a31   a32   a33   a34   a35
 
-Step 1 — Divide into 2 × 2 fractals (same as zN):
+Step 1 — Divide into 2*2 fractals (same as zN):
          [col0,col1]  [col2,col3]  [col4,col5]
 [r0,r1]  ┌─────────┐  ┌─────────┐  ┌─────────┐
          │  F00    │  │  F01    │  │  F02    │

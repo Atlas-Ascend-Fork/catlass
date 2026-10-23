@@ -123,7 +123,7 @@ static_assert：`M * K <= 32768`（L1A 双缓冲容量限制）。
    └─ 循环将全部 V 按 block 分页搬入 L1B（分页时查 blockTable），事件 EVENT_ID2
 2. Arch::CrossCoreWaitFlag(softmaxFlag)
    └─ 跨核等待：softmax 核已产出可用的 P（GM 中转）
-3. mL1Loop × kL1Loop × kL0Loop
+3. mL1Loop*kL1Loop*kL0Loop
    └─ 搬 P 进 L1A（乒乓）→ MMAD 累加（initMmad = (kL1Idx==0 && kL0Idx==0)）
 4. 输出 OTmp（fp32）写 GM
 5. SetFlag(MTE1_MTE2, EVENT_ID2)
@@ -216,7 +216,7 @@ class BlockEpilogue<EpilogueAtlasA2RescaleOWithoutDivSum, OutputType_, InputType
 | tmp | `10 * block` |
 | hm / gl / dm | `10 * block + 9/12/13 * vec` |
 
-注意 hm/gl/dm 偏移与 OnlineSoftmax epilogue 的布局**完全一致**——两者在同一 kernel 的不同阶段运行，复用同一份 UB 规划，避免跨 epilogue 的布局冲突。`MAX_UB_O_ELEM_NUM = 4096` 限制单块行数 × 列数。
+注意 hm/gl/dm 偏移与 OnlineSoftmax epilogue 的布局**完全一致**——两者在同一 kernel 的不同阶段运行，复用同一份 UB 规划，避免跨 epilogue 的布局冲突。`MAX_UB_O_ELEM_NUM = 4096` 限制单块行数*列数。
 
 ### 核心算法
 

@@ -6,7 +6,7 @@
 
 ## Function
 
-`TileVmad` is a template that implements the vector-matrix multiply-accumulate operation (`Y += A * X`) for GEMV scenarios on Atlas A2. It computes the dot product of each row of matrix A (of size m × n) with vector X (of size n), and accumulates the result into vector Y (of size m).
+`TileVmad` is a template that implements the vector-matrix multiply-accumulate operation (`Y += A * X`) for GEMV scenarios on Atlas A2. It computes the dot product of each row of matrix A (of size m*n) with vector X (of size n), and accumulates the result into vector Y (of size m).
 
 - Applicability: Atlas A2
 - Two implementations: RowMajor (MulAddDst + WholeReduceSum) and ColumnMajor (per-column Axpy approach)

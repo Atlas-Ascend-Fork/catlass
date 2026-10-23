@@ -272,7 +272,7 @@ ACL_CHECK(aclFinalize());
 [GM] Fmap ──GM→L1──→ [L1] Fmap Tile ──L1→L0A──→ [L0A] zN format
 [GM] Filter ──GM→L1──→ [L1] Filter Tile ──L1→L0B──→ [L0B] nZ format
                                                      ↓
-                                              [Cube] Mmad (L0A × L0B → L0C)
+                                              [Cube] Mmad (L0A*L0B → L0C)
                                                      ↓
 [GM] Output ←──L0C→GM── [L0C] Accumulator
 ```
@@ -281,7 +281,7 @@ ACL_CHECK(aclFinalize());
 
 1. **GM → L1**：Fmap和Filter按tile从Global Memory搬运到L1，搬运过程中完成格式转换（随路NZ）
 2. **L1 → L0A/L0B**：从L1到L0A/L0B的再搬运，进一步调整为Cube计算所需格式
-3. **Cube Mmad**：L0A × L0B 矩阵乘，结果累加到L0C
+3. **Cube Mmad**：L0A*L0B 矩阵乘，结果累加到L0C
 4. **L0C → GM**：将L0C结果写回Global Memory
 5. **K循环**：在`Cin1`维度上循环，累加多个K分块的结果
 

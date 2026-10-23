@@ -31,7 +31,7 @@ struct TileCopyTlaExt<Arch::AtlasA2,
 | :------ | :------ | :------- | :----------- | :-------------- | :--------------------- |
 | AtlasA2 | VECCALC | GM       | RowMajor     | PaddingRowMajor | `AscendC::DataCopyPad` |
 
-与普通 RowMajor 目标版的关键区别：维度计算使用 `tla::get<1, 1>(dstTensor.shape())`（逻辑行数）× `tla::get<1, 0>(dstTensor.shape())`（逻辑列数），并基于 PaddingRowMajor 的 stride 计算偏移。
+与普通 RowMajor 目标版的关键区别：维度计算使用 `tla::get<1, 1>(dstTensor.shape())`（逻辑行数）*`tla::get<1, 0>(dstTensor.shape())`（逻辑列数），并基于 PaddingRowMajor 的 stride 计算偏移。
 
 ## 调用接口
 

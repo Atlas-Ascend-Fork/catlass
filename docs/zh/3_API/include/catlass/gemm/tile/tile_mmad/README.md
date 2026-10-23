@@ -6,7 +6,7 @@
 
 ## 概述
 
-Tile 层 Mmad 模块完成 L0A × L0B → L0C 的矩阵乘加 `C += A * B`，直接调用 `AscendC::Mmad` 硬件指令。L0A/L0B/L0C 数据排布固定为 zZ / nZ / zN。
+Tile 层 Mmad 模块完成 L0A*L0B → L0C 的矩阵乘加 `C += A * B`，直接调用 `AscendC::Mmad` 硬件指令。L0A/L0B/L0C 数据排布固定为 zZ / nZ / zN。
 
 提供非 TLA（`TileMmad`）和 TLA（`TileMmadTla`）两套风格。
 

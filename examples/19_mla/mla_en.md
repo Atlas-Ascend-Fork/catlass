@@ -47,7 +47,7 @@ The operator leverages Block and Tile-level components to construct the final Ke
 This composition hierarchy is reflected in the Kernel entry-point definition (using [mla_kernel.cpp](./mla_kernel.cpp) as a reference):
 
 ```c++
-// GEMM Block module, implementing Q × K^T for Flash MLA
+// GEMM Block module, implementing Q*K^T for Flash MLA
 using DispatchPolicyQK = Gemm::MmadAtlasA2MLAQK;
 using QType = Gemm::GemmType<ElementQ, LayoutQ>;
 using KType = Gemm::GemmType<ElementK, LayoutK>;
@@ -60,7 +60,7 @@ using MaskType = Gemm::GemmType<ElementMask, LayoutMask>;
 using EpilogueMLASoftmax =
     Epilogue::Block::BlockEpilogue<Epilogue::EpilogueAtlasA2MLASoftmax, PType, SType, MaskType>;
 
-// GEMM Block module, implementing P × V for Flash MLA
+// GEMM Block module, implementing P*V for Flash MLA
 using DispatchPolicyPV = Gemm::MmadAtlasA2MLAPV;
 using VType = Gemm::GemmType<ElementV, LayoutV>;
 using OTmpType = Gemm::GemmType<ElementOTmp, LayoutOTmp>;
@@ -87,8 +87,8 @@ using MLAKernel = MLAKernel<BlockMmadQK, BlockMmadPV, EpilogueMLASoftmax,
 
 The operator uses two variations of the `BlockMmad` component:
 
-- `BlockMmadQK`: A template specialization designed to handle the $Q × K^T$ matrix multiplication within the Flash-MLA pipeline. The implementation in [block_mmad_mla_qk.hpp](../../include/catlass/gemm/block/block_mmad_mla_qk.hpp) targets the generic [mla_kernel.cpp](./mla_kernel.cpp), while [block_mmad_mla_qk_tp1_spec.hpp](../../include/catlass/gemm/block/block_mmad_mla_qk_tp1_spec.hpp) is tailored for the specialized [mla_kernel_tp1_spec.cpp](./mla_kernel_tp1_spec.cpp).
-- `BlockMmadPV`: A template specialization designed to execute the $P × V$ matrix multiplication. The logic in [block_mmad_mla_pv.hpp](../../include/catlass/gemm/block/block_mmad_mla_pv.hpp) maps to the generic [mla_kernel.cpp](./mla_kernel.cpp), whereas [block_mmad_mla_pv_tp1_spec.hpp](../../include/catlass/gemm/block/block_mmad_mla_pv_tp1_spec.hpp) corresponds to the specialized [mla_kernel_tp1_spec.cpp](./mla_kernel_tp1_spec.cpp).
+- `BlockMmadQK`: A template specialization designed to handle the $Q*K^T$ matrix multiplication within the Flash-MLA pipeline. The implementation in [block_mmad_mla_qk.hpp](../../include/catlass/gemm/block/block_mmad_mla_qk.hpp) targets the generic [mla_kernel.cpp](./mla_kernel.cpp), while [block_mmad_mla_qk_tp1_spec.hpp](../../include/catlass/gemm/block/block_mmad_mla_qk_tp1_spec.hpp) is tailored for the specialized [mla_kernel_tp1_spec.cpp](./mla_kernel_tp1_spec.cpp).
+- `BlockMmadPV`: A template specialization designed to execute the $P*V$ matrix multiplication. The logic in [block_mmad_mla_pv.hpp](../../include/catlass/gemm/block/block_mmad_mla_pv.hpp) maps to the generic [mla_kernel.cpp](./mla_kernel.cpp), whereas [block_mmad_mla_pv_tp1_spec.hpp](../../include/catlass/gemm/block/block_mmad_mla_pv_tp1_spec.hpp) corresponds to the specialized [mla_kernel_tp1_spec.cpp](./mla_kernel_tp1_spec.cpp).
 
 ## Block Epilogue
 

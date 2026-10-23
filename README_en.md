@@ -43,7 +43,7 @@ See [CHANGELOG](CHANGELOG_en.md) for detailed updates in current and historical 
 
 ## 📌 Introduction
 
-CATLASS (**CA**NN **T**emplates for **L**inear **A**lgebra **S**ubroutine**s**), known in Chinese as the Ascend Operator Template Library, is a code repository focused on providing base templates for high-performance matrix multiplication operators.  
+CATLASS (**CA**NN **T**emplates for **L**inear **A**lgebra **S**ubroutine**s**) is a code repository focused on providing base templates for high-performance matrix multiplication operators.  
 
 CATLASS templates matrix operator code through layered abstraction. Therefore, it enables white-box assembly of operator compute logic and makes operator code reusable, replaceable, and partially modifiable. It is designed for Ascend hardware characteristics and supports complex pipeline layouts for operators such as `Flash Attention`. In addition, it shares upper-layer code logic while supporting specialization for differences in underlying hardware.
 

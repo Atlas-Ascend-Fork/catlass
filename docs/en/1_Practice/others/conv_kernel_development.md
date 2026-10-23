@@ -272,7 +272,7 @@ The Kernel implementation of `BasicConv2d` is located in `include/catlass/conv/k
 [GM] Fmap ──GM→L1──→ [L1] Fmap Tile ──L1→L0A──→ [L0A] zN format
 [GM] Filter ──GM→L1──→ [L1] Filter Tile ──L1→L0B──→ [L0B] nZ format
                                                      ↓
-                                              [Cube] Mmad (L0A × L0B → L0C)
+                                              [Cube] Mmad (L0A*L0B → L0C)
                                                      ↓
 [GM] Output ←──L0C→GM── [L0C] Accumulator
 ```
@@ -281,7 +281,7 @@ Workflow description:
 
 1. **GM → L1**: Fmap and Filter are moved from Global Memory to L1 tile by tile; format conversion is completed during the move (in-line NZ)
 2. **L1 → L0A/L0B**: Re-movement from L1 to L0A/L0B, further adjusted to the format required by the Cube computation
-3. **Cube Mmad**: L0A × L0B matrix multiplication, with the result accumulated into L0C
+3. **Cube Mmad**: L0A*L0B matrix multiplication, with the result accumulated into L0C
 4. **L0C → GM**: Write the L0C result back to Global Memory
 5. **K loop**: Loop along the `Cin1` dimension, accumulating the results of multiple K blocks
 

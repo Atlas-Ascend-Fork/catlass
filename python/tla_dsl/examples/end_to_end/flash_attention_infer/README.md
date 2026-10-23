@@ -80,7 +80,7 @@ shape 中各简写含义：
 | `D` | 头维度，固定 128 | — |
 | `ΣSq` / `ΣSk` | 各 batch Q/KV 序列长度之和（TND 变长打包） | — |
 | `bs` | 分页块大小（= `KV_BLOCK` = 128） | — |
-| `numBlocks` | KV cache 物理页总数（= `B × ceil(Sk / bs)`） | — |
+| `numBlocks` | KV cache 物理页总数（= `B*ceil(Sk / bs)`） | — |
 
 中间计算（S/PV/acc）恒为 FP32。
 

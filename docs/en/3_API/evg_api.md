@@ -233,7 +233,7 @@ In the current implementation, the commonly used EVG nodes are as follows.
 | `VisitorCompute<ComputeFn, ElementCompute, Scalars...>` | `visitor_compute.hpp`       | Performs element-wise computation.                         |
 | `VisitorCast<ElementTo, ElementFrom, RoundStyle>`       | `visitor_cast.hpp`          | Performs type conversion.                                  |
 | `VisitorAuxStore<Element, Layout>`                      | `visitor_aux_store.hpp`     | Write the result back to the GM.                           |
-| `VisitorRowBroadcast<Element, Layout>`                  | `visitor_row_broadcast.hpp` | Read the `1 × N` row vector and broadcast it to the tiles. |
+| `VisitorRowBroadcast<Element, Layout>`                  | `visitor_row_broadcast.hpp` | Read the `1*N` row vector and broadcast it to the tiles. |
 
 ## Phases and Placement Rules
 
@@ -453,7 +453,7 @@ VisitorRowBroadcast<Element, Layout>
 ```
 
 - `Element`: element type of the row vector
-- `Layout`: layout type of the `1 × N` input
+- `Layout`: layout type of the `1*N` input
 
 Note that the current implementation processes this input as a 2D tensor. Therefore, `Layout` must use a layout type that describes a `(1, n)` matrix, rather than a vector layout type that only describes `(n)`.
 
@@ -461,8 +461,8 @@ Position and usage requirements:
 
 - Generally used as a leaf node.
 - Does not receive input from child nodes.
-- During the `LOAD` phase, it reads the `1 × tile_n` slice corresponding to the current column range.
-- During the `COMPUTE` phase, it replicates this row to match the current `tile_m × tile_n shape`.
+- During the `LOAD` phase, it reads the `1*tile_n` slice corresponding to the current column range.
+- During the `COMPUTE` phase, it replicates this row to match the current `tile_m*tile_n shape`.
 - Ideal for inputs like bias that are shared across columns and broadcasted across rows.
 - Currently, the implementation uses a 2D layout of `(1, n)`, not a 1D vector layout of `(n)`.
 - The `layout` passed must be a concrete layout object, not a layout tag.

@@ -46,7 +46,7 @@ $Q_i = quantize\_to\_element\_format(S_i/Qscale), \space i\space from\space 1\sp
 ### AIC/AIV双核协作
 
 - **AIC**：执行MX矩阵乘，对每个Block分别加载B的Act列（`[0, N/2)`）和Gate列（`[N/2, N)`）执行matmul计算，共两次matmul计算。结果写入UB上，之后进行AIV操作。写入UB时，按M分到当前AIC核对应的两个AIV核上。
-- **AIV**：接收AIC计算结果，在同一UB上执行 `Swish(Act) × Gate → MXQuant`，将量化结果Q和QScale写回GM，继续下一Block计算。
+- **AIV**：接收AIC计算结果，在同一UB上执行 `Swish(Act)*Gate → MXQuant`，将量化结果Q和QScale写回GM，继续下一Block计算。
 
 ### MX Quant详细设计
 
@@ -87,11 +87,11 @@ Q (FP8), QScale (E8M0)
 | 计算HalfScale     | `half_scale_val = BF16_EXP_BIAS(0x7F00) - shared_exp`           | 构造一个BF16数，其指数域表示 `2^(-shared_exp)`，即 `1/QScale`      |
 | HalfScale特殊修正 | Inf/NaN → `0x7F81`；零 → `0`；`shared_exp == 0x7F00` → `0x0040` | 处理边界情况                                                       |
 
-**关键设计**：`half_scale_val` 是一个合法的BF16位模式，其指数域为 `0x7F00 - shared_exp`。当用它乘以原数据时，硬件BF16乘法器自动完成 `S_i × 2^(-shared_exp)` = `S_i / QScale` 的效果，无需显式计算 `2^x` 或做浮点除法。
+**关键设计**：`half_scale_val` 是一个合法的BF16位模式，其指数域为 `0x7F00 - shared_exp`。当用它乘以原数据时，硬件BF16乘法器自动完成 `S_i*2^(-shared_exp)` = `S_i / QScale` 的效果，无需显式计算 `2^x` 或做浮点除法。
 
 #### 阶段三：QuantToFp8 — 缩放并Cast到FP8
 
-1. **缩放**：将SwiGLU输出的BF16数据与对应block的 `half_scale`（BF16格式）做向量乘法 `data_bf16 × half_scale_bf16`。由于 `half_scale` 的指数域编码了 `-shared_exp`，此乘法等价于 `S_i / QScale`。
+1. **缩放**：将SwiGLU输出的BF16数据与对应block的 `half_scale`（BF16格式）做向量乘法 `data_bf16*half_scale_bf16`。由于 `half_scale` 的指数域编码了 `-shared_exp`，此乘法等价于 `S_i / QScale`。
 2. **类型转换**：将缩放后的BF16结果先Cast到FP32，再通过硬件Cast指令以饱和模式（`SatMode::SAT`，`RoundMode::CAST_RINT`）转换到目标FP8类型（`float8_e4m3fn` 或 `float8_e5m2`），自动完成clamp和舍入。
 
 此步骤等价于公式中的 `quantize_to_element_format(S_i / QScale)`。
@@ -110,7 +110,7 @@ Q (FP8), QScale (E8M0)
 
 ### Tile参数
 
-| 层级   | Shape (M×N×K)   |
+| 层级   | Shape (M*N*K)   |
 | ------ | --------------- |
-| L1Tile | 128 × 256 × 256 |
-| L0Tile | 128 × 256 × 128 |
+| L1Tile | 128*256*256 |
+| L0Tile | 128*256*128 |

@@ -31,7 +31,7 @@ Compare success.
 
 ## Usage Scenarios
 
-Assume that the matrix shape is `M N K`, the tile size on L1 is `m1 n1 k1`, and the number of AI Cores is `C`. The number of basic blocks that can be partitioned is `B = CeilDiv(M, m1) × CeilDiv(N, n1)`, and the number of computation rounds is `B / C`. If `B % C > 0`, a tail round needs to be calculated.
-When `B/C > 1` and `B % C ≤ C × 0.8·, this template can be used to obtain better performance.
+Assume that the matrix shape is `M N K`, the tile size on L1 is `m1 n1 k1`, and the number of AI Cores is `C`. The number of basic blocks that can be partitioned is `B = CeilDiv(M, m1)*CeilDiv(N, n1)`, and the number of computation rounds is `B / C`. If `B % C > 0`, a tail round needs to be calculated.
+When `B/C > 1` and `B % C ≤ C*0.8·, this template can be used to obtain better performance.
 
 **To test the performance, you are advised to comment out the accuracy comparison code.**

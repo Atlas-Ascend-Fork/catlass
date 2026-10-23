@@ -18,13 +18,13 @@
 
 | 可执行文件 | 计算公式 |
 | --- | --- |
-| `64_ascend950_matmul_evg_add` | D = A×B + X |
-| `64_ascend950_matmul_evg_leaky_relu` | D = LeakyRelu(A×B) |
-| `64_ascend950_matmul_evg_sigmoid` | D = Sigmoid(A×B) |
-| `64_ascend950_matmul_evg_silu` | D = Silu(A×B) |
-| `64_ascend950_matmul_evg_tanh` | D = Tanh(A×B) |
-| `64_ascend950_matmul_evg_bias` | D = A×B + bias |
-| `64_ascend950_matmul_evg_add_ub` | D = A×B + X |
+| `64_ascend950_matmul_evg_add` | D = A*B + X |
+| `64_ascend950_matmul_evg_leaky_relu` | D = LeakyRelu(A*B) |
+| `64_ascend950_matmul_evg_sigmoid` | D = Sigmoid(A*B) |
+| `64_ascend950_matmul_evg_silu` | D = Silu(A*B) |
+| `64_ascend950_matmul_evg_tanh` | D = Tanh(A*B) |
+| `64_ascend950_matmul_evg_bias` | D = A*B + bias |
+| `64_ascend950_matmul_evg_add_ub` | D = A*B + X |
 
 ## 样例参数说明
 

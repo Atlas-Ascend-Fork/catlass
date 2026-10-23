@@ -6,7 +6,7 @@ In generalized Matmul, there are two CommonMatmul templates. One is the pure CUB
 
 ![image-20251209154303323](https://raw.gitcode.com/weixin_42818618/picture0/raw/main/image-20251209154303323.png)
 
-The typical feature of CommonMatmul is that the basic blocks on L1 are directly used to split matrices A, B, and C. Matrix C is first divided into several basic task blocks with a size of `L1TileM × L1TileN`. Then, matrix A is read to L1 at a granularity of `L1TileM × L1TileK`, and matrix B is read to L1 at a granularity of `L1TileK × L1TileN`. The complete computation result of each task block is generated on one AI Core. To avoid unnecessary repeated data movement from L1 to L0, in CommonMatmul, L0TileM = L1TileM, L0TileN = L1TileN, and L0TileK is set to the maximum value under the space constraint of L0.
+The typical feature of CommonMatmul is that the basic blocks on L1 are directly used to split matrices A, B, and C. Matrix C is first divided into several basic task blocks with a size of `L1TileM*L1TileN`. Then, matrix A is read to L1 at a granularity of `L1TileM*L1TileK`, and matrix B is read to L1 at a granularity of `L1TileK*L1TileN`. The complete computation result of each task block is generated on one AI Core. To avoid unnecessary repeated data movement from L1 to L0, in CommonMatmul, L0TileM = L1TileM, L0TileN = L1TileN, and L0TileK is set to the maximum value under the space constraint of L0.
 
 ## 2 Optimization
 
@@ -102,7 +102,7 @@ The preceding padding operations are global operations. That is, for the entire 
 
   ![image-20251209193549117](https://raw.gitcode.com/weixin_42818618/picture0/raw/main/image-20251209193549117.png)
 
-  PADDING_ND simply aligns the stride direction to 512 bytes. For example, in the figure, the shape is 512 × 511, and the stride is 511. After PADDING_ND, the stride changes to 512, which is aligned to 512 bytes. (For the half precision data type, this requires the stride to be a multiple of 256.)
+  PADDING_ND simply aligns the stride direction to 512 bytes. For example, in the figure, the shape is 512*511, and the stride is 511. After PADDING_ND, the stride changes to 512, which is aligned to 512 bytes. (For the half precision data type, this requires the stride to be a multiple of 256.)
 
 - PADDING_BLOCK_ND
 
@@ -177,11 +177,11 @@ The maximum number of computing rounds per core is:
 <center>R_max = RoundUp(CeilDiv(M, m1) * CeilDiv(N, n1) / C)</center>
 
 The maximum data read volume of matrices A and B per AIC core is:
-<center>CRead_a = R_max × (m1 × K), CRead_b = R_max × (n1 × K)</center>
+<center>CRead_a = R_max*(m1*K), CRead_b = R_max*(n1*K)</center>
 
 If both matrices A and B are padded, the data read volume of the AIV per core is:
 
-<center>VRead_a = M × K / V, VRead_b = K × N / V</center>
+<center>VRead_a = M*K / V, VRead_b = K*N / V</center>
 
 The total time consumed by the AIC and AIV to read data when both matrices A and B are padded is:
 
@@ -236,8 +236,8 @@ As illustrated above, when `K = 16`, the structural layout of matrix data on the
 
 #### Scenario 3
 
-When matrix A is in Column-Major order and `M = 1`, a naive GM2L1 read accesses exactly one element per row, crippling memory reading efficiency. To mitigate this, matrix A is handled as a `1 × K` Row-Major matrix during computation. Since matrix A represents a vector at this scale, Row-Major and Column-Major representations are functionally equivalent, but treating it as a row vector allows a contiguous layout that vastly increases read efficiency.
+When matrix A is in Column-Major order and `M = 1`, a naive GM2L1 read accesses exactly one element per row, crippling memory reading efficiency. To mitigate this, matrix A is handled as a `1*K` Row-Major matrix during computation. Since matrix A represents a vector at this scale, Row-Major and Column-Major representations are functionally equivalent, but treating it as a row vector allows a contiguous layout that vastly increases read efficiency.
 
-Similarly, when matrix B is Row-Major and `N = 1`, the logic modifies it to be processed as a `K ×` 1 Column-Major matrix. For details about the logic, see [select_kernel_bf16.h](../../include/select_kernel_b16.h).
+Similarly, when matrix B is Row-Major and `N = 1`, the logic modifies it to be processed as a `K*` 1 Column-Major matrix. For details about the logic, see [select_kernel_bf16.h](../../include/select_kernel_b16.h).
 
 For edge cases where `K = 1`, execution is handed over to specialized compute templates tailored for the AIV pipeline.

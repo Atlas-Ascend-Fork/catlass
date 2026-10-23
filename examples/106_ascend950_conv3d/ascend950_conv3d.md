@@ -145,9 +145,9 @@ CANN基线aclnnConvolution的Tiling如下：
 
 ## 7.Basic / split-K 分核调度
 
-**Basic 路径**：任务空间 = `ceil(m/M_TILE) × ceil(n/N_TILE)` 的 M×N 网格。每个任务是一个 (mTile, nTile) 块，核认领后在块内部把整个 K 循环走完。适合 M×N 分块数已经足够多的 shape——并行度高，且没有跨任务归约。
+**Basic 路径**：任务空间 = `ceil(m/M_TILE)*ceil(n/N_TILE)` 的 M*N 网格。每个任务是一个 (mTile, nTile) 块，核认领后在块内部把整个 K 循环走完。适合 M*N 分块数已经足够多的 shape——并行度高，且没有跨任务归约。
 
-**split-K 路径**：任务空间 = `ceil(m/M_TILE) × ceil(n/N_TILE) × splitkFactor`，K 被切成 `splitkFactor` 份。每个任务是一个 (mTile, nTile, kSlice)，各算一个 K 片段的 partial sum，然后原子加累加进 C。适合 M×N 分块数少的 shape（例如 cout 小、cin 小的点），用 K 方向切片把核填满。
+**split-K 路径**：任务空间 = `ceil(m/M_TILE)*ceil(n/N_TILE)*splitkFactor`，K 被切成 `splitkFactor` 份。每个任务是一个 (mTile, nTile, kSlice)，各算一个 K 片段的 partial sum，然后原子加累加进 C。适合 M*N 分块数少的 shape（例如 cout 小、cin 小的点），用 K 方向切片把核填满。
 
 ## 8.Conv3d DGrad的dY 和 W 的数据格式处理
 

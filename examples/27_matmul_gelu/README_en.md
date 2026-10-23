@@ -16,14 +16,14 @@ Performs the computation of the following functions:
 Gelu:
 
 $$
-out = Gelu(a × b)
+out = Gelu(a*b)
 
 $$
 
 Where the formula for Gelu is:
 
 $$
-Gelu(x) =0.5 × x × (1 + Tanh(\sqrt {2/π} × (x + 0.044715 × x^3 )))
+Gelu(x) =0.5*x*(1 + Tanh(\sqrt {2/π}*(x + 0.044715*x^3 )))
 $$
 
 Sigmoid:
@@ -54,25 +54,25 @@ $$
 Based on the derivation above, reviewing the initial Gelu formulation:
 
 $$
-Gelu(x) =0.5 × x × (1 + Tanh(\sqrt {2/π} × (x + 0.044715 × x^3 )))
+Gelu(x) =0.5*x*(1 + Tanh(\sqrt {2/π}*(x + 0.044715*x^3 )))
 $$
 
-Let $Z = \sqrt{2/\pi} × (x + 0.044715 \times x^3)$. Substituting $Z$ into the expression yields the simplified form:
+Let $Z = \sqrt{2/\pi}*(x + 0.044715 \times x^3)$. Substituting $Z$ into the expression yields the simplified form:
 
 $$
-Gelu(x) = x × Sigmoid(2Z)
+Gelu(x) = x*Sigmoid(2Z)
 $$
 
 Expanding the formula again and applying the constant approximation $\sqrt{8/\pi} \approx 1.595769$ yields:
 
 $$
-Gelu(x) \approx x × Sigmoid (1.595769 × (x + 0.044715 × x^3))
+Gelu(x) \approx x*Sigmoid (1.595769*(x + 0.044715*x^3))
 $$
 
 Expanding the $\text{Sigmoid}$ function in the expression above results in the final execution form for Gelu:
 
 $$
-\text{Gelu}(x) = \frac{x}{1 + e^{-1.595769 × (x + 0.044715 × x^3)}}
+\text{Gelu}(x) = \frac{x}{1 + e^{-1.595769*(x + 0.044715*x^3)}}
 $$
 
 ## Example

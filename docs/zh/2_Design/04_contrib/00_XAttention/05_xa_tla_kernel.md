@@ -114,7 +114,7 @@ class BlockMmadTla<MmadXASharedQK<ArchTag_>, L1TileShape_, L0TileShape_,
 | B 矩阵供给 | GM→L1 | GM→L1 | GM→L1 | GM→L1 |
 | TileShape 约束 | 三轴可不同 | M/K 轴相同；L1_N 是 L0_N 整数倍 | L1/L0 三轴必须相同 | M/N 轴相同；L1_K 是 L0_K 整数倍 |
 | 内循环切分 | 单次 mmad（L1 粒度） | nLoops：按 L0_TILE_N 切 N 轴 | 单次 mmad | kLoops：按 L0_TILE_K 切 K 轴（kIdx==0 时 init） |
-| L0C 空间 | 常规 | 按 L1_TILE_N 计 L0C 大小 | 常规 | **复用 QK 的 128×256 L0C 前 128×128 区域** |
+| L0C 空间 | 常规 | 按 L1_TILE_N 计 L0C 大小 | 常规 | **复用 QK 的 128*256 L0C 前 128*128 区域** |
 | 跨核 flag | QK_UB_RELEASE_FLAG（uint64_t） | QK_UB_RELEASE_FLAG（uint16_t） | PV_UB_RELEASE_FLAG（uint16_t） | 无 |
 | operator() 附加参数 | isFirstKv / isLastKv / releaseFlag | releaseFlag / taskIdL0C | releaseFlag | 无（三 taskId） |
 
@@ -131,7 +131,7 @@ class BlockMmadTla<MmadXASharedQK<ArchTag_>, L1TileShape_, L0TileShape_,
 - L1 一次装载 `L1_TILE_N` 列，L0 仅 `L0_TILE_N` 列，`nLoops = L1_TILE_N / L0_TILE_N` 次内循环：
   - 每轮 `CopyL12L0` 搬 B 的 L0 列块 → `MmadTla` 累加至同一 L0C 槽；
   - `nLoops` 结束后 L0C → UB；
-- 适配 unshared 路径 `blockKvLen = groupCountPerLoop × maxDecodeStep` 大 N 块（如 128×256）场景；
+- 适配 unshared 路径 `blockKvLen = groupCountPerLoop*maxDecodeStep` 大 N 块（如 128*256）场景；
 - `operator()` 为 `(tensorA, tensorB, tensorC, actualShape, releaseFlag, taskIdL0A, taskIdL0B, taskIdL0C)` 三 taskId 形式。
 
 ### MmadXASharedPV：P 常驻 L1
@@ -145,7 +145,7 @@ class BlockMmadTla<MmadXASharedQK<ArchTag_>, L1TileShape_, L0TileShape_,
 
 - P（A）从传入的 L1 tensor 获取（epilogue 直写），V（B）GM→L1→L0；
 - `kLoops = L1_TILE_K / L0_TILE_K` 次 K 轴内循环切分，`kIdx == 0` 时 `init=false`（首矩阵），其后 `init=true` 累加；
-- **L0C 复用**：`SHARED_L0C_STAGE_SIZE = L1_TILE_M × L1_TILE_K × sizeof(acc)`，直接复用 QK GEMM 已申请的 128×256 L0C 区域的前 128×128 子区，PV 构造时 L0C 指针指向该区域，节省 L0C 总量（L0C 有限，QK 与 PV 分时复用是 950 上常见手法）；
+- **L0C 复用**：`SHARED_L0C_STAGE_SIZE = L1_TILE_M*L1_TILE_K*sizeof(acc)`，直接复用 QK GEMM 已申请的 128*256 L0C 区域的前 128*128 子区，PV 构造时 L0C 指针指向该区域，节省 L0C 总量（L0C 有限，QK 与 PV 分时复用是 950 上常见手法）；
 - 无跨核 release flag：O_tmp 结果由 AIC 直接经 FIX 通道写 GM（unshared 路 partial O 直写）。
 
 ## Epilogue 模板设计
@@ -165,12 +165,12 @@ class BlockEpilogue<EpilogueXASharedSoftmax<...>, ...> {
 - **operator() 关键参数**：五组 softmax 标量（`lastExpSum/nowExpSum/nowExpMax/lastMax/nowMax`，三缓冲随 taskIdMod3 轮转）、三组 flag（`SYNC_QK_READY / SYNC_SOFTMAX_READY / QK_UB_RELEASE`）、`isUpdate / isLastKv`；
 - **执行流程**：
   1. `CrossCoreWaitFlag(SYNC_QK_READY)` 等 AIC 完成 QK；
-  2. `ComputeScaleandMax`：S×scale 后行 ReduceMax，`UpdateMax` 融合历史 max（`nowMax = max(lastMax, rowMax)`）；
+  2. `ComputeScaleandMax`：S*scale 后行 ReduceMax，`UpdateMax` 融合历史 max（`nowMax = max(lastMax, rowMax)`）；
   3. `ComputeExpSubSum`：S 经 `exp(nowMax - S)` 得 P，以 **NZ 格式**（Half 非 16 对齐的奇偶分离布局）经 `DATA_BLOCK_COPY` 写 UB，再求行 exp 部分和；
   4. `CrossCoreSetFlag(QK_UB_RELEASE)` 释放 QK 的 UB 双缓冲；
   5. `CopyUb2L1Tla`：P 直接从 UB 写入 L1 的 PV A 矩阵区域；
   6. `CrossCoreSetFlag(SYNC_SOFTMAX_READY)` 通知 AIC 启动 PV；
-  7. `UpdateExpSumAndExpMax`：`nowExpSum = lastExpSum×exp(lastMax-nowMax) + curSum`；
+  7. `UpdateExpSumAndExpMax`：`nowExpSum = lastExpSum*exp(lastMax-nowMax) + curSum`；
   8. `isLastKv` 时 `CopyOutMaxAndSum`：Brcb + `DataCopyPad` 按 `qHeads` stride 把每行 max/sum 写 GM（供 CombineScale 消费）。
 
 ### EpilogueXAUnsharedSoftmax：mask + 独立 softmax
@@ -182,7 +182,7 @@ BlockEpilogue(Resource *resource, uint32_t &ubBufAddrStart, float scaleValue,
 ```
 
 - **mask 机制（核心差异）**：unshared 路 KV 为变长解码步，构造时 `InitUnsharedMask` 按 `groupCountPerLoop / groupSize / maxDecodeStep` 用 `Duplicate` 预生成 uint8 mask（0/1），加载到 `maskUbTensor`（HALF_MASK_BLOCK_SIZE）；有效 KV 长度内为 1，超出为 0；支持双 SubBlock 分工（`UINT8_BLOCK_SIZE=256` 对齐 + floorSub 处理奇数行拆分）；
-- **ComputeMaskandScale**：`Select(mask, S×scale, MIN_VALUE=-3e38)` 后行 ReduceMax，实现变长 KV 屏蔽；N 轴分档 `N128 / N0_64 / N65_127` 三种分支处理；mask 本身经 `LoadAlign<MASK>` 的 `pregCompare` 加载；
+- **ComputeMaskandScale**：`Select(mask, S*scale, MIN_VALUE=-3e38)` 后行 ReduceMax，实现变长 KV 屏蔽；N 轴分档 `N128 / N0_64 / N65_127` 三种分支处理；mask 本身经 `LoadAlign<MASK>` 的 `pregCompare` 加载；
 - **每步独立**：无 `isUpdate/isLastKv` 流式逻辑，每个任务一次完整 softmax（exp/max/sum 均为本步独立值），`CopyOutMaxAndSum` **每次调用都执行**（`DataCopyPad` 写 GM，V_MTE3 EVENT_ID7 同步）；
 - `QK_UB_RELEASE_FLAG` 为 uint16_t（与 Shared 路的 uint64_t 区分）。
 
@@ -193,10 +193,10 @@ BlockEpilogue(Resource *resource, uint32_t &ubBufAddrStart);  // 仅 2 参数
 // operator()(attenOutGm, expMaxUb, pvRes, isFirstKv, isLastKv, PV_RELEASE_FLAG)
 ```
 
-- **UB 资源**：仅 `attnTmpBuf`（`VEC2_UB_SIZE = HALF_S1 × D × sizeof`，O 的累积缓冲）；
+- **UB 资源**：仅 `attnTmpBuf`（`VEC2_UB_SIZE = HALF_S1*D*sizeof`，O 的累积缓冲）；
 - **执行流程**：
   1. `isFirstKv`：`DataCopy(attnTmp ← pvRes)` 初始化；
-  2. 否则 `FlashUpdateNew`：`O_new = expMax × O_old + PV_cur`，expMax 逐行 Brcb 广播加载，nLoops 按 vlSize 切 D 轴；
+  2. 否则 `FlashUpdateNew`：`O_new = expMax*O_old + PV_cur`，expMax 逐行 Brcb 广播加载，nLoops 按 vlSize 切 D 轴；
   3. `isLastKv`：`CopyUbToGmO` 写出最终 partial O；
   4. **`CrossCoreSetFlag(PV_RELEASE_FLAG)`**：消费完 `pvRes` 后释放 PV GEMM 的 UB 双缓冲——这是 `MmadXASharedPV` 中 `PV_UB_RELEASE_FLAG` 的消费者，形成完整生产者-消费者闭环。
 
@@ -214,8 +214,8 @@ BlockEpilogue(Resource *resource, uint32_t &ubBufAddrStart,
 
 ```
 finalMax  = max(sharedMax, unsharedMax)
-finalGl   = sharedSum × exp(sharedMax − finalMax) + unsharedSum × exp(unsharedMax − finalMax)
-O_final   = (O_shared × exp(sharedMax − finalMax) + O_unshared × exp(unsharedMax − finalMax)) / finalGl
+finalGl   = sharedSum*exp(sharedMax − finalMax) + unsharedSum*exp(unsharedMax − finalMax)
+O_final   = (O_shared*exp(sharedMax − finalMax) + O_unshared*exp(unsharedMax − finalMax)) / finalGl
 ```
 
 - **执行流程**：DataCopy 搬入双路 O/max/sum → `ComputeExpSumAndExpMax` → `ComputeFinalAttn`（nLoops 按 vlSize 切 headDim）→ Cast 到 ElementOutput → DataCopy 写 `gFinalOutput` → `taskId = 1 - taskId` 翻转乒乓。
@@ -285,7 +285,7 @@ UnSharedInferKernel<BlockMmadQK, BlockMmadPV, EpilogueSoftmax, KVLEN_T, TABLE_T>
 | 级 2 | AIC | 滞后 2 拍的 PV GEMM | **O 直写 GM（tensorOTile）**，无 rescale 级、无 PV flag |
 
 - **Paged KV Cache 寻址**：`blockTableGm.GetValue(batchId)` 得 `cacheBlockId`，再以 `gK[cacheBlockId * kvBatchStride]` 定位物理页基地址——K/V 的 GM tensor 在任务循环内动态计算；
-- **任务切分**：`groupTaskId` 切 batch，`groupCountBlockId` 切组；`blockQLen = groupCountPerLoop × groupSize`，`blockKvLen = groupCountPerLoop × maxDecodeStep`；
+- **任务切分**：`groupTaskId` 切 batch，`groupCountBlockId` 切组；`blockQLen = groupCountPerLoop*groupSize`，`blockKvLen = groupCountPerLoop*maxDecodeStep`；
 - **AIV 双 SubBlock 分工**：`halfVecGroupCount` 切组数，`halfVecRowCount / halfVecRowOffset` 切行；
 - **核偏移**：`coreIdx` 减去 `sharedInfo.usedCoreNum`——与 shared kernel 在同一物理核域内错峰启动；
 - UB 仅 `qkTensorList[2]`，L1 为 `pL1TensorList[3]`。
@@ -364,11 +364,11 @@ Kernel::Invoke(sharedMax, sharedSum, sharedAttn, unsharedMax, unsharedSum,
 
 1. **架构约束**：仅支持 Ascend 950（`CATLASS_ARCH == 3510`），注册头需置于 catlass 聚合头之后；
 2. **TileShape 约束**：
-   - SharedQK：L1/L0 无耦合约束（典型均为 128×128×128）；
+   - SharedQK：L1/L0 无耦合约束（典型均为 128*128*128）；
    - UnsharedQK：M/K 轴 L1 与 L0 相同，`L1_TILE_N` 必须是 `L0_TILE_N` 整数倍；
    - SharedPV：L1/L0 三轴必须相同；
    - UnsharedPV：M/N 轴相同，`L1_TILE_K` 必须是 `L0_TILE_K` 整数倍；
-3. **L0C 复用依赖**：UnsharedPV 复用 QK 的 L0C 区域，两个 GEMM 必须在同一 kernel 内按 QK→PV 顺序构造，且 `L1_TILE_M × L1_TILE_K` 需落在 QK L0C 预算内；
+3. **L0C 复用依赖**：UnsharedPV 复用 QK 的 L0C 区域，两个 GEMM 必须在同一 kernel 内按 QK→PV 顺序构造，且 `L1_TILE_M*L1_TILE_K` 需落在 QK L0C 预算内；
 4. **元素类型**：典型组合为 Q/K/V/P = `INPUT_T`（half/bf16），S/OTmp = `float`，K 布局为 `ColumnMajor`；
 5. **flag 类型**：Shared 路 `QK_UB_RELEASE_FLAG` 为 uint64_t，Unshared 路为 uint16_t，跨核事件号规划时不可混用；
 6. **流水深度即缓冲深度**：Shared 路 softmax 标量三缓冲、P 的 L1 三缓冲与 4 级流水（滞后最多 3 拍）严格对应，修改流水结构时需同步调整缓冲数量。

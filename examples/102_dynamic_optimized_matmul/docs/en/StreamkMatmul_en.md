@@ -14,7 +14,7 @@ As shown in the figure, for a shape where M = 512, N = 2048, and K = 1280, there
 
 ![image-20260121102302163](https://raw.gitcode.com/weixin_42818618/picture0/raw/main/image-20260121102302163.png)
 
-There are 12 task blocks in total. Each core computes a full task block. Since K = 1280 and k1 = 256, each block is partitioned into five tiles along the K-dimension, accumulating in L0C to produce the final result for that block. If Stream-K logic is applied to the 12 remaining blocks in the second round, the 12 × 5 = 60 K-tiles are distributed across 20 cores, with each core processing 3 tiles:
+There are 12 task blocks in total. Each core computes a full task block. Since K = 1280 and k1 = 256, each block is partitioned into five tiles along the K-dimension, accumulating in L0C to produce the final result for that block. If Stream-K logic is applied to the 12 remaining blocks in the second round, the 12*5 = 60 K-tiles are distributed across 20 cores, with each core processing 3 tiles:
 
 ![image-20260121103528628](https://raw.gitcode.com/weixin_42818618/picture0/raw/main/image-20260121103528628.png)
 
@@ -22,7 +22,7 @@ This ensures the second-round load is perfectly balanced. Some cores will proces
 
 ![image-20260121114730452](https://raw.gitcode.com/weixin_42818618/picture0/raw/main/image-20260121114730452.png)
 
-Each core is allocated two workspace slots. Total workspace size is 2 × m1 × n1 × sizeof(ElementAccumulator) × CoreNum. The workspace size is fixed and independent of the input shape. Upon completion of the Matmul kernel, the AIV units accumulate partial sums to produce the final result. For instance, if task block 20 consists of two partial sums computed by core 0 and core 1, the two AIVs associated with core 0 perform the reduction. If task block 21 is split across core 1, core 2, and core 3, the four AIVs for core 1 and core 2 handle the reduction.
+Each core is allocated two workspace slots. Total workspace size is 2*m1*n1*sizeof(ElementAccumulator)*CoreNum. The workspace size is fixed and independent of the input shape. Upon completion of the Matmul kernel, the AIV units accumulate partial sums to produce the final result. For instance, if task block 20 consists of two partial sums computed by core 0 and core 1, the two AIVs associated with core 0 perform the reduction. If task block 21 is split across core 1, core 2, and core 3, the four AIVs for core 1 and core 2 handle the reduction.
 
 ### Key Optimization: Tail-Round Splitting
 

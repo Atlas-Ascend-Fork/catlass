@@ -47,11 +47,11 @@
 
 ## 📌 简介
 
-CATLASS(**CA**NN **T**emplates for **L**inear **A**lgebra **S**ubroutine**s**)，中文名为昇腾算子模板库，是一个聚焦于提供高性能矩阵乘类算子基础模板的代码库。  
+CATLASS(**CA**NN **T**emplates for **L**inear **A**lgebra **S**ubroutine**s**)，即昇腾算子模板库，是一个聚焦于提供高性能矩阵乘类算子基础模板的代码库。  
 
 通过抽象分层的方式将矩阵类算子代码模板化，从而实现算子计算逻辑的白盒化组装，让算子代码可复用，可替换，可局部修改。针对昇腾硬件特点进行设计，可以支持复杂场景流水排布，如`Flash Attention`等算子。在上层代码逻辑共享的同时，支持底层硬件差异特化。
 
-模板库针对定制场景使能快速开发能力，提供不同场景下的性能优化模块供开发者组装定制，在定制shape下的性能能达到相应算子标杆性能的0.98~1.2倍。
+模板库针对定制场景启用快速开发能力，提供不同场景下的性能优化模块供开发者组装定制，在定制shape下的性能能达到相应算子标杆性能的0.98~1.2倍。
 
 <p align="center">
   <img src="docs/assets/images/homepage_perf_mm.png" alt="Matmul性能对比" width="70%">
@@ -77,7 +77,7 @@ CATLASS(**CA**NN **T**emplates for **L**inear **A**lgebra **S**ubroutine**s**)�
 
 ## 📚 进阶参考
 
-下述资料可助力您深入开展CATLASS算子的开发与调优，实现更优性能的GEMM类算子。
+下述资料可助力深入开展CATLASS算子的开发与调优，实现更优性能的GEMM类算子。
 
 - [创新样例开发流程指南](./docs/zh/1_Practice/10_innovative_example_development_guide.md)：从需求分析、方案设计到组件开发、测试合入的完整流程，帮助开发者快速掌握创新样例的开发方法；
 
@@ -131,7 +131,7 @@ CATLASS所需的软硬件环境依赖如下：
 | [v1.4.0](https://gitcode.com/cann/catlass/releases/v1.4.0)~[v1.2.2](https://gitcode.com/cann/catlass/releases/v1.2.2) | [8.2.RC1](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.2.RC1)                                                                                                                              | [Atlas A2/A3系列产品](https://www.hiascend.com/document/detail/zh/AscendFAQ/ProduTech/productform/hardwaredesc_0001.html)                              |
 | [v1.2.1](https://gitcode.com/cann/catlass/releases/v1.2.1)~[v1.0.0](https://gitcode.com/cann/catlass/releases/v1.0.0) | [8.2.RC1.alpha002](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.2.RC1.alpha002)                                                                                                            | [Atlas A2/A3系列产品](https://www.hiascend.com/document/detail/zh/AscendFAQ/ProduTech/productform/hardwaredesc_0001.html)                              |
 
-- 若您需要使用`TorchNPU`进行精度测试等辅助开发，需要安装`cann-ops`包（如`cann-910b-ops`/`cann-a3-ops`/`cann-950-ops`）以调用其中的算子实现。在Ascend 950PR&950DT系列产品中，`cann-950-ops`仅在[CANN 9.0.0](https://www.hiascend.com/zh/cann/download?versionId=734)正式版及以上的版本提供。
+- 若需使用`TorchNPU`进行精度测试等辅助开发，需要安装`cann-ops`包（如`cann-910b-ops`/`cann-a3-ops`/`cann-950-ops`）以调用其中的算子实现。在Ascend 950PR&950DT系列产品中，`cann-950-ops`仅在[CANN 9.0.0](https://www.hiascend.com/zh/cann/download?versionId=734)正式版及以上的版本提供。
 - 为保证使用体验，请优先使用[CANN正式版](https://www.hiascend.com/zh/cann/download)，beta版本可能存在兼容性问题。
 
 下述环境经测试支持[当前CATLASS](https://gitcode.com/cann/catlass)构建：

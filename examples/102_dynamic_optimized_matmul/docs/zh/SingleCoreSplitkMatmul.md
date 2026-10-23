@@ -52,7 +52,7 @@ for gmTileN1 in N:
 
 - 关闭unitflag，在L0C上采用double buffer
 
-  减小L0TileM或者L0TileN，在L0C上开辟双buffer空间，以实现Mmad计算和Fixpipe写出的高度掩盖，双buffer的掩盖效果要好于使能unitflag。
+  减小L0TileM或者L0TileN，在L0C上开辟双buffer空间，以实现Mmad计算和Fixpipe写出的高度掩盖，双buffer的掩盖效果要好于启用unitflag。
 
 - 对齐写出
 

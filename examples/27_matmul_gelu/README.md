@@ -16,7 +16,7 @@
 Gelu:
 
 $$
-out = Gelu(a × b)
+out = Gelu(a*b)
 
 $$
 

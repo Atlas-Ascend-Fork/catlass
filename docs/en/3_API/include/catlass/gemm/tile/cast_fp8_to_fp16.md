@@ -43,10 +43,9 @@ TileCastFp8ToFp16Dequant(Arch::Resource<ArchTag> &resource, Params const &params
 ```
 
 Allocate double buffering from the Unified Buffer of `Arch::Resource`.
-
-- `inputBuffer[2]` × `COMPUTE_LENGTH` × 1 byte (FP8 input)
-- `outputBuffer[2]` × `COMPUTE_LENGTH` × 2 bytes (FP16 output)
-- `workspace[2]` × `COMPUTE_LENGTH` × 2 bytes (Workspace computation)
+- `inputBuffer[2]`*`COMPUTE_LENGTH`*1 byte (FP8 input)
+- `outputBuffer[2]`*`COMPUTE_LENGTH`*2 bytes (FP16 output)
+- `workspace[2]`*`COMPUTE_LENGTH`*2 bytes (Workspace computation)
 
 ### Params
 

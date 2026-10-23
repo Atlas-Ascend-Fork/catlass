@@ -8,7 +8,7 @@
 
 下面以`00_basic_matmul`为例，进行msDebug调试的使用说明。
 
-### 使能驱动的调试功能
+### 启用驱动的调试功能
 
 参考[msDebug工具概述](https://www.hiascend.com/document/redirect/CannCommunityToolMsdebug)，以`debug`模式安装驱动，或在`full`模式下安装驱动，执行`echo 1 > /proc/debug_switch`打开调试通道。
 

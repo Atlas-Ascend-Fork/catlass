@@ -14,7 +14,7 @@
 Performs the following mathematical calculation:
 
 $$
-out = ReLU(a × b)
+out = ReLU(a*b)
 $$
 
 ## Example

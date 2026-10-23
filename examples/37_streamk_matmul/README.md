@@ -38,4 +38,4 @@ Compare success.
 
 ## 模板推荐场景
 
-推荐 MNK 范围：设 `blocks = ceil(M/128)×ceil(N/256)`，推荐 `24 < blocks < 192 且 blocks % 24 ∈ [1, 19] 且 K > 3072`。具体以 `102_dynamic_optimized_matmul` 泛化工程的路由结论为准。
+推荐 MNK 范围：设 `blocks = ceil(M/128)*ceil(N/256)`，推荐 `24 < blocks < 192 且 blocks % 24 ∈ [1, 19] 且 K > 3072`。具体以 `102_dynamic_optimized_matmul` 泛化工程的路由结论为准。

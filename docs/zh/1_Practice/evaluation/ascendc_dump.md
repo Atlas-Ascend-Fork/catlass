@@ -53,7 +53,7 @@ void operator()<AscendC::AIC>(Params const &params) {
 
 ### 编译运行
 
-1. 参考[快速上手](../01_quick_start.md)，编译算子样例。当前版本无需传入额外编译选项，若代码中调用调试接口，编译器将自动使能。
+1. 参考[快速上手](../01_quick_start.md)，编译算子样例。当前版本无需传入额外编译选项，若代码中调用调试接口，编译器将自动启用。
 
     ```bash
     bash scripts/build.sh 00_basic_matmul

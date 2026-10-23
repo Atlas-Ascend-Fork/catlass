@@ -137,8 +137,16 @@ bash scripts/build.sh 00_basic_matmul
 If the following prompt appears, the build succeeded.
 
 ```text
-"[INFO] Target "{target}" built successfully."
+[INFO] Target '00_basic_matmul' built successfully
 ```
+
+When the build fails, `build.sh` exits with a non-zero status and prints error messages. Common outputs include:
+
+- `[ERROR]No target specified`: no sample name was specified.
+- `[ERROR]ASCEND_HOME_PATH environment variable is not set!`: the CANN environment script has not been sourced (see [Environment Variable Configuration](#environment-variable-configuration)).
+- `[ERROR]Multiple targets specified`: more than one sample name was specified.
+
+Other failures come from CMake configuration or the compiler. The output contains the file and line number of the error, which can be used to locate issues such as missing headers or mismatched architecture tags.
 
 ### Executing Operators
 
@@ -160,5 +168,7 @@ After executing the operator sample, the following result indicates that the com
 ```text
 Compare success.
 ```
+
+When the precision comparison fails, the program prints `Compare failed. Error count: <N>`, where `N` is the number of elements outside the error tolerance. In that case, first verify that the input data generation matches the golden computation, then check the data copy ranges and the accumulation process.
 
 To start complete development of your first innovative operator, see the [Innovative Example Development Guide](./10_innovative_example_development_guide.md). To try host-side operator template assembly, see the [Host-Side Code Assembly Guide](./02_host_example_assembly.md).

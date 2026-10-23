@@ -108,7 +108,7 @@ KV 偏移按 `PAGED_CACHE_FLAG_` 走双路径：
 
 ### 主循环：三层乒乓
 
-`operator()` 内部为 nL1×mL0×kL0 三层循环：nL1 层按 `stackSeqTile` 以 `l1NDynamic` 切分 KV split 块；`l1KvPingPongFlag`（L1 B 区）、`l0ABPingPongFlag`（L0A/L0B）、`l0CPingPongFlag`（L0C）三组乒乓独立翻转，使"加载 K / 计算 QK / 回写 S"三段充分重叠。S 写 GM 后由调用方置 `qkReady` 跨核 flag 通知 AIV。
+`operator()` 内部为 nL1*mL0*kL0 三层循环：nL1 层按 `stackSeqTile` 以 `l1NDynamic` 切分 KV split 块；`l1KvPingPongFlag`（L1 B 区）、`l0ABPingPongFlag`（L0A/L0B）、`l0CPingPongFlag`（L0C）三组乒乓独立翻转，使"加载 K / 计算 QK / 回写 S"三段充分重叠。S 写 GM 后由调用方置 `qkReady` 跨核 flag 通知 AIV。
 
 ## BlockMmadXFAIPV —— PV GEMM 设计
 
@@ -135,7 +135,7 @@ blockMmadPV(gP, gV, gOTmp, ..., blockStackNum, /* Arch::CrossCoreFlag */ softmax
 
 1. **批量加载 V**：一次将 `blockStackNum` 个 KV 块的 V 预取入 L1（`EVENT_ID4` + `EVENT_ID0` 同步），为后续多个 stackTile 的 PV 复用；
 2. **跨核等待**：`CrossCoreWaitFlag(softmaxFlag)` —— 阻塞直到 AIV 侧 Online Softmax 把当前块的 P 写入 GM。这是"QK → softmax → PV"流水衔接的关键门控；
-3. **P 流式乒乓**：主循环 nL1×mL1×kL1×kL0 中，P 从 GM 按 `l1PPingPongFlag` 乒乓流入 L1A，`LOAB_BLOCK = 1`；
+3. **P 流式乒乓**：主循环 nL1*mL1*kL1*kL0 中，P 从 GM 按 `l1PPingPongFlag` 乒乓流入 L1A，`LOAB_BLOCK = 1`；
 4. **PV 直写 GM**：结果 O 中间量（OTmp）从 L0C 直写 GM，尾部 `SetFlag`（MTE1_MTE2，`EVENT_ID4`）供 AIV 侧 RescaleO 对齐。
 
 ## BlockEpilogueXFAIOnlineSoftmax 设计

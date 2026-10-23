@@ -131,10 +131,10 @@ offset = row * stride[0] + col
 
 即 `offset = row * ldm + col`。
 
-**可视化示例：** 以 3×4 矩阵为例，展示 RowMajor 的内存排布：
+**可视化示例：** 以 3*4 矩阵为例，展示 RowMajor 的内存排布：
 
 ```cpp
-逻辑矩阵 (3 rows × 4 cols):
+逻辑矩阵 (3 rows*4 cols):
         col0  col1  col2  col3
 row0:   a00   a01   a02   a03
 row1:   a10   a11   a12   a13
@@ -146,8 +146,8 @@ row2:   a20   a21   a22   a23
 数据:  a00   a01   a02   a03   a10   a11   a12   a13   a20   a21   a22   a23
       └────── row0 ──────┘ └────── row1 ──────┘ └────── row2 ──────┘
 
-offset(row, col) = row × 4 + col
-例如：a12 位于 row=1, col=2 → offset = 1×4 + 2 = 6
+offset(row, col) = row*4 + col
+例如：a12 位于 row=1, col=2 → offset = 1*4 + 2 = 6
 ```
 
 ### ColumnMajor — 列优先矩阵
@@ -176,10 +176,10 @@ auto tag = ColumnMajor::MakeLayout<Element>(rows, cols);
 offset = row + col * stride[1]
 ```
 
-**可视化示例：** 以 3×4 矩阵为例，展示 ColumnMajor 的内存排布：
+**可视化示例：** 以 3*4 矩阵为例，展示 ColumnMajor 的内存排布：
 
 ```cpp
-逻辑矩阵 (3 rows × 4 cols):
+逻辑矩阵 (3 rows*4 cols):
         col0  col1  col2  col3
 row0:   a00   a01   a02   a03
 row1:   a10   a11   a12   a13
@@ -191,8 +191,8 @@ row2:   a20   a21   a22   a23
 数据:  a00   a10   a20   a01   a11   a21   a02   a12   a22   a03   a13   a23
       └─── col0 ───┘ └─── col1 ───┘ └─── col2 ───┘ └─── col3 ───┘
 
-offset(row, col) = row + col × 3
-例如：a12 位于 row=1, col=2 → offset = 1 + 2×3 = 7
+offset(row, col) = row + col*3
+例如：a12 位于 row=1, col=2 → offset = 1 + 2*3 = 7
 ```
 
 ### VectorLayout — 一维向量
@@ -241,17 +241,17 @@ offset = (row / rowsInFractal) * strideRowsByFractal
        + (col % colsInFractal) * strideColsInFractal
 ```
 
-**可视化示例：** 为便于理解，以简化参数演示（C0_NUM_PER_FRACTAL=2, ELE_NUM_PER_C0=2），原始矩阵 4×6：
+**可视化示例：** 为便于理解，以简化参数演示（C0_NUM_PER_FRACTAL=2, ELE_NUM_PER_C0=2），原始矩阵 4*6：
 
 ```cpp
-原始逻辑矩阵 (4 rows × 6 cols):
+原始逻辑矩阵 (4 rows*6 cols):
         col0  col1  col2  col3  col4  col5
 row0:   a00   a01   a02   a03   a04   a05
 row1:   a10   a11   a12   a13   a14   a15
 row2:   a20   a21   a22   a23   a24   a25
 row3:   a30   a31   a32   a33   a34   a35
 
-Step 1 — 划分为 2×2 的分形块（Fractal）:
+Step 1 — 划分为 2*2 的分形块（Fractal）:
          [col0,col1]  [col2,col3]  [col4,col5]
 [r0,r1]  ┌─────────┐  ┌─────────┐  ┌─────────┐
          │  F00    │  │  F01    │  │  F02    │
@@ -290,14 +290,14 @@ Shape 结构为 `(ELE_NUM_PER_C0, rowsRound / ELE_NUM_PER_C0, C0_NUM_PER_FRACTAL
 **可视化示例：** 使用与 zN 相同的原始矩阵和分形划分，对比展示 nZ 的排布差异：
 
 ```cpp
-原始逻辑矩阵 (4 rows × 6 cols):
+原始逻辑矩阵 (4 rows*6 cols):
         col0  col1  col2  col3  col4  col5
 row0:   a00   a01   a02   a03   a04   a05
 row1:   a10   a11   a12   a13   a14   a15
 row2:   a20   a21   a22   a23   a24   a25
 row3:   a30   a31   a32   a33   a34   a35
 
-Step 1 — 划分为 2×2 的分形块（与 zN 相同）:
+Step 1 — 划分为 2*2 的分形块（与 zN 相同）:
          [col0,col1]  [col2,col3]  [col4,col5]
 [r0,r1]  ┌─────────┐  ┌─────────┐  ┌─────────┐
          │  F00    │  │  F01    │  │  F02    │

@@ -34,8 +34,8 @@ struct CopyPerTokenScale2Ub;
 
 ```cpp
 void operator()(
-    AscendC::LocalTensor<Element> const &dstTensor,     // Destination Unified Buffer LocalTensor (RowMajor, m×n)
-    AscendC::GlobalTensor<Element> const &srcTensor,    // Source global memory GlobalTensor (ColumnMajor, m×1)
+    AscendC::LocalTensor<Element> const &dstTensor,     // Destination Unified Buffer LocalTensor (RowMajor, m*n)
+    AscendC::GlobalTensor<Element> const &srcTensor,    // Source global memory GlobalTensor (ColumnMajor, m*1)
     LayoutDst const &layoutDst,                         // Destination Unified Buffer RowMajor layout
     LayoutSrc const &layoutSrc                          // Source global memory ColumnMajor layout
 )

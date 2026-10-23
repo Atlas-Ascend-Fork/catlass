@@ -16,7 +16,7 @@
 
 ## 使用示例
 
-- 获取代码之后编译相应的算子可执行文件，可参考[quickstart](../../docs/zh/1_Practice/01_quick_start.md#样例编译)，本用例为Ascend 950算子，编译时需加-DCATLASS_ARCH=3510
+- 获取代码之后编译相应的算子可执行文件，可参考[quickstart](../../docs/zh/1_Practice/01_quick_start.md#编译样例)，本用例为Ascend 950算子，编译时需加-DCATLASS_ARCH=3510
 - 执行算子
 
 ```bash

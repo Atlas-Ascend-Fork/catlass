@@ -12,7 +12,7 @@
 
 转换通过 Vector 引擎的 `AscendC::Cast` 两次中转完成：INT4 → half → INT8。
 
-> **限制**：仅支持 AtlasA2 架构（`CATLASS_ARCH == 2201`）。COMPUTE_LEN 不允许超过 24×1024。
+> **限制**：仅支持 AtlasA2 架构（`CATLASS_ARCH == 2201`）。COMPUTE_LEN 不允许超过 24*1024。
 
 ## 模板原型
 
@@ -32,7 +32,7 @@ struct TileCastInt4ToInt8 {
 };
 ```
 
-- `COMPUTE_LEN_`：单次 Cast 计算长度，上限 24×1024
+- `COMPUTE_LEN_`：单次 Cast 计算长度，上限 24*1024
 - `SrcType_::Element` 和 `DstType_::Element` 的 sizeof 必须相同（均为 `int8_t`，`sizeof == 1`）
 - `LayoutSrc` / `LayoutDst`：支持 RowMajor 或 ColumnMajor
 
@@ -46,9 +46,9 @@ TileCastInt4ToInt8(Arch::Resource<ArchTag> const &resource, Params const &params
 
 从 Resource UB buffer 分配双缓冲：
 
-- `ubInTensor[2]` × `COMPUTE_LEN / 2` bytes（INT4 紧凑存储输入）
-- `ubOutTensor[2]` × `COMPUTE_LEN` bytes（INT8 输出）
-- `ubWorkspace[2]` × `COMPUTE_LEN * sizeof(half)` bytes（中间转换用 half workspace）
+- `ubInTensor[2]`*`COMPUTE_LEN / 2` bytes（INT4 紧凑存储输入）
+- `ubOutTensor[2]`*`COMPUTE_LEN` bytes（INT8 输出）
+- `ubWorkspace[2]`*`COMPUTE_LEN * sizeof(half)` bytes（中间转换用 half workspace）
 
 初始化事件标志位，确保流水线安全。
 

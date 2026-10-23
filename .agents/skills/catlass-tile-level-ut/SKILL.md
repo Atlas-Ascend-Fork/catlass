@@ -194,7 +194,7 @@ LayoutSrc layoutSrc(_row, _col, C0_NUM_PER_FRACTAL, _row_round / C0_NUM_PER_FRAC
 **收尾清单**：
 
 - [ ] 架构守卫宏已包裹整个文件
-- [ ] 待测特化在对应 `referrence/` 族谱表中均有覆盖（Struct × Arch × Layout × Element × 分支）
+- [ ] 待测特化在对应 `referrence/` 族谱表中均有覆盖（Struct*Arch*Layout*Element*分支）
 - [ ] 每个用例断言了 API 名称、`args.size()`、params 各字段、tensor 地址/偏移、`Element` 类型
 - [ ] 变量命名符合 4.1，复用 fixture 成员，无重复计算
 - [ ] `cmake --build` 通过，`gtest` 全部通过

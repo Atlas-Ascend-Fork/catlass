@@ -236,24 +236,24 @@ ASSERT_EQ(nd2nzArg->dstNzNStride, layoutDst.stride(2) / ELE_NUM_PER_C0);
 
 | # | 测试场景 | 关键 shape/stride | 预期 API |
 |---|---------|------------------|---------|
-| 1 | 正常 Nd2Nz | row=128, col=256, contiguous | 1× DataCopy + Nd2NzParams |
-| 2 | 长stride逐行 | stride(0) >= 65536 | row× DataCopy + Nd2NzParams(nValue=1) |
+| 1 | 正常 Nd2Nz | row=128, col=256, contiguous | 1*DataCopy + Nd2NzParams |
+| 2 | 长stride逐行 | stride(0) >= 65536 | row*DataCopy + Nd2NzParams(nValue=1) |
 | 3 | int4b_t 修正 | Element=int4b_t | dValue/srcDValue = CeilDiv(orig, 2) |
 | 4 | 多参数重载 | 传入 5个额外参数 | Nd2NzParams 直接使用传入值 |
-| 5 | 多参数重载-长stride | srcNdMatrixStride >= 65536 | ndNum× 逐行 |
+| 5 | 多参数重载-长stride | srcNdMatrixStride >= 65536 | ndNum*逐行 |
 
 ### CopyGmToL1<AtlasA2, ColumnMajor>
 
 | # | 测试场景 | 预期 |
 |---|---------|------|
-| 6 | 正常 Nd2Nz | 1× DataCopy + Nd2NzParams (dValue=rows, nValue=cols) |
-| 7 | 长stride逐列 | stride(1)>=65536 → col× DataCopy |
+| 6 | 正常 Nd2Nz | 1*DataCopy + Nd2NzParams (dValue=rows, nValue=cols) |
+| 7 | 长stride逐列 | stride(1)>=65536 → col*DataCopy |
 
 ### CopyGmToL1GMMPTD<AtlasA2, RowMajor>
 
 | # | 测试场景 | 预期 |
 |---|---------|------|
-| 8 | 1-row DataCopyParams | shape(0)==1 → 1× DataCopyParams |
+| 8 | 1-row DataCopyParams | shape(0)==1 → 1*DataCopyParams |
 | 9 | 正常多行 Nd2Nz | shape(0)>1, stride<LIMIT → Nd2Nz |
 | 10 | 长stride | stride(0)>=LIMIT → 逐行 |
 | 11 | 多参数重载 | 传入额外参数 |
@@ -264,7 +264,7 @@ ASSERT_EQ(nd2nzArg->dstNzNStride, layoutDst.stride(2) / ELE_NUM_PER_C0);
 |---|---------|------|
 | 12 | rows<=16 | 逐行 DataCopyParams |
 | 13 | rows>16, 非C0对齐 | Nd2Nz |
-| 14 | rows>16, C0精确对齐 | 1× Contiguous DataCopy |
+| 14 | rows>16, C0精确对齐 | 1*Contiguous DataCopy |
 
 ### CopyGmToL1IntervalDataCopy (half only)
 

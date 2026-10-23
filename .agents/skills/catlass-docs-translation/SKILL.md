@@ -1,11 +1,32 @@
 ---
 name: catlass-docs-translation
-description: Update CATLASS Markdown translations with a Git-only incremental workflow.
+description: Update CATLASS Markdown translations with a Git-only incremental workflow. Run it after any source Markdown change to list the paired English documents and line ranges that must be synced.
 ---
 
 # CATLASS Docs Translation
 
 Follow the root [`AGENTS.md`](../../../AGENTS.md) for repository terminology and writing conventions. This skill owns the translation workflow.
+
+## Sync target discovery
+
+Run this before translating, for every source Markdown change (uncommitted working tree or committed).
+
+1. Get the changed hunks with source line numbers:
+
+   ```bash
+   git diff --unified=0 HEAD -- 'docs/zh/**/*.md'                    # working tree
+   git diff --unified=0 upstream/master...HEAD -- 'docs/zh/**/*.md'  # committed
+   ```
+
+2. Map each changed file to its paired target with the pair rules in step 6 of the workflow below.
+3. Expand each hunk to the aligned block of the same kind in the target (heading section, paragraph, continuous list, table, or fenced code block) and report its line range. When no aligned block exists, report `unaligned, needs human review` and change nothing.
+4. Report the list as a table, one row per hunk: source lines, target lines, and what changed.
+
+   | Source change                  | Target to sync                | Summary                       |
+   | ------------------------------ | ----------------------------- | ----------------------------- |
+   | `docs/zh/...:109-122`          | `docs/en/...:109-122`         | fenced `cmake` blocks, `ASC`  |
+
+An empty list means no translation work. A non-empty list is the exact edit scope: touch only those target lines, then report the same table with the synced rows marked done.
 
 ## Git-only incremental workflow
 

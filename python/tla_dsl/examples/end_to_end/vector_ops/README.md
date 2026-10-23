@@ -118,14 +118,14 @@ def vector_op(mem_in: tla.Tensor, mem_out: tla.Tensor) -> None:
 | [**`interleave_op.py`**](interleave_op.py) | 交错运算示例，基于两路输入分别产出交错后的两路输出。 |
 | [**`load_dintlv_op.py`**](load_dintlv_op.py) |双目的交织加载示例，单次加载拆出偶数/奇数两路寄存器。 |
 | [**`load_us_b8_op.py`**](load_us_b8_op.py) | 上采样加载示例，将 i8 元素上采样至 VL 寄存器（仅 i8）。 |
-| [**`load_mask_dist.py`**](load_mask_dist.py) | `MaskLoadParams`：`ds`/`us` × `--mask-dtype i8\|i16\|i32` → `tla.where`. |
+| [**`load_mask_dist.py`**](load_mask_dist.py) | `MaskLoadParams`：`ds`/`us` * `--mask-dtype i8\|i16\|i32` → `tla.where`. |
 | [**`load_store_mask.py`**](load_store_mask.py) | 掩码搬运往返示例，掩码 UB 与伴随向量同 dtype；另含 u8 GM↔UB（含 128..255）。 |
 | [**`pack_op.py`**](pack_op.py) | `tla.pack` 示例，覆盖 MaskSSA 宽度扩展，并验证低半/高半结果。 |
 | [**`mask_select_op.py`**](mask_select_op.py) | MaskSSA 选择示例，使用 `H` 在 `Q` 和 `M4` 两个 predicate 之间逐 bit 选择。 |
 | [**`load_store_update.py`**](load_store_update.py) | 对齐 `PostMode.UPDATE`：`tile.load` / `tile.store`（`add`，可选 `--dynamic-extent`）。 |
 | [**`store_pack.py`**](store_pack.py) | 压缩存储示例，取得低半有效数位做紧凑存储。 |
 | [**`reduction_ops.py`**](reduction_ops.py) | `tla.reduce` 归约示例，支持 `add`/`max`/`min` 三种模式，覆盖对齐与非对齐场景。 |
-| [**`histograms_op.py`**](histograms_op.py) | `tla.histograms` 独立上板样例：FREQUENCY/ACCUMULATE × BIN0/BIN1（`full(0)` 清零 / 跨调用累加 / 全零 CDF）。 |
+| [**`histograms_op.py`**](histograms_op.py) | `tla.histograms` 独立上板样例：FREQUENCY/ACCUMULATE*BIN0/BIN1（`full(0)` 清零 / 跨调用累加 / 全零 CDF）。 |
 | [**`squeeze_op.py`**](squeeze_op.py) | `tla.squeeze` 示例，按掩码（M4）压缩有效 lane 并紧凑写回。 |
 | [**`register_control_flow.py`**](register_control_flow.py) | 控制流示例，演示 for-loop 控制流及 `VectorSSA` 与 `MaskSSA` 跨循环边界存活。 |
 | [**`load_and_store_scalar_after_reduction.py`**](load_and_store_scalar_after_reduction.py) | UB 标量访问示例，对归约结果做标量 `load` / `store` 操作。 |
@@ -420,7 +420,7 @@ first mismatch=None
   - `mask_select_op.py`：shape 必须是完整向量寄存器 lane 数的整数倍；分别覆盖 `mask<64/128/256>`。
   - `load_store_mask.py`：shape 随 dtype 变化（f32→64、f16→128、i8/u8→256），输出仅前 `ELE/2` lane 有效；掩码与伴随向量 dtype 一致。
   - `load_mask_dist.py`：必须显式传 `op` 与 `--run`；默认 `--mask-dtype i8`。
-  - **字节偏移对齐**（作用于 UB 字节地址 `base + offset×sizeof(T)`；DSL **不**做静态校验，
+  - **字节偏移对齐**（作用于 UB 字节地址 `base + offset*sizeof(T)`；DSL **不**做静态校验，
     不对齐可编译但运行可能 fault）：
 
     | `MaskLoadDist` | 对齐约束（Byte） | VL=256 时 |
@@ -716,7 +716,7 @@ first mismatch=None
 - 功能说明：
   - **`gather_op.py`**（f32，独立脚本）——`tla.gather` 依据 int32 索引向量从源向量收集元素并写回目标向量；源向量、索引向量与目标向量均为 64 lane。
   - **`gather_reg_op.py`**（f16，独立脚本）——`tla.gather` Reg→Reg 置换，128-lane f16 + i16 索引位型。
-  - **`histograms_op.py`**（i8→i16，独立脚本）——`tla.histograms` 全组合：FREQUENCY/ACCUMULATE × BIN0/BIN1；`dst` 必传（`tla.full(0)` 清零）；另测 FREQUENCY 跨调用累加与 ACCUMULATE 全零（BIN1=256）。
+  - **`histograms_op.py`**（i8→i16，独立脚本）——`tla.histograms` 全组合：FREQUENCY/ACCUMULATE*BIN0/BIN1；`dst` 必传（`tla.full(0)` 清零）；另测 FREQUENCY 跨调用累加与 ACCUMULATE 全零（BIN1=256）。
 
 - 约束说明：
   - 支持的数据类型：

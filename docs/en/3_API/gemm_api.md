@@ -204,7 +204,7 @@ class BasicMatmul;
 
 Note: "Stateless" indicates that the caller manages the state of the kernel, for example, through the Device API described below. The kernel itself only accepts input and output configuration parameters (`Params`).
 
-Within this structure, Block MMAD represents the matrix multiply-accumulate operation performed on local data Blocks, while the Block Epilogue handles operations following the MMAD phase, such as the `beta × C` adjustment in the equation `$C := \beta \cdot C + \alpha \cdot A \cdot B$`.
+Within this structure, Block MMAD represents the matrix multiply-accumulate operation performed on local data Blocks, while the Block Epilogue handles operations following the MMAD phase, such as the `beta*C` adjustment in the equation `$C := \beta \cdot C + \alpha \cdot A \cdot B$`.
 
 ## Device API
 

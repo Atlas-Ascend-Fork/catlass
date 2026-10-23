@@ -172,9 +172,9 @@ options:
 | 模板参数             | 默认值  | 参数说明                                                                     |
 | -------------------- | ------- | ---------------------------------------------------------------------------- |
 | `ArchTag`            | 无      | 架构标签，例如 `Arch::Ascend950`                                             |
-| `ENABLE_UNIT_FLAG`   | `false` | 是否开启 UnitFlag；当 `L0C_STAGES > 1`（L0C 多缓冲）时必须为 `false`         |
-| `L0C_STAGES`         | `1`     | L0C 缓冲段数；设为 `2` 可开启 L0C 双缓冲（需与 `ENABLE_UNIT_FLAG` 约束一致） |
 | `ENABLE_L1_RESIDENT` | `false` | 是否开启 L1 常驻                                                             |
+| `L0C_STAGES`         | `1`     | L0C 缓冲段数；设为 `2` 可启用 L0C 双缓冲（需与 `ENABLE_UNIT_FLAG` 约束一致） |
+| `ENABLE_L1_RESIDENT` | `false` | 是否启用 L1 常驻                                                             |
 | `L1A_STAGES`         | `2`     | L1 上加载矩阵 A 的 buffer 数量                                               |
 | `L1B_STAGES`         | `2`     | L1 上加载矩阵 B 的 buffer 数量                                               |
 | `L0A_STAGES`         | `2`     | L0 上加载矩阵 A 的 buffer 数量                                               |
@@ -185,8 +185,8 @@ options:
 | 模板参数           | 默认值  | 参数说明                                                                     |
 | ------------------ | ------- | ---------------------------------------------------------------------------- |
 | `ArchTag`          | 无      | 架构标签，例如 `Arch::Ascend950`                                             |
-| `ENABLE_UNIT_FLAG` | `false` | 是否开启 UnitFlag；当 `L0C_STAGES > 1`（L0C 多缓冲）时必须为 `false`         |
 | `L0C_STAGES`       | `1`     | L0C 缓冲段数；设为 `2` 可开启 L0C 双缓冲（需与 `ENABLE_UNIT_FLAG` 约束一致） |
+| `L0C_STAGES`       | `1`     | L0C 缓冲段数；设为 `2` 可启用 L0C 双缓冲（需与 `ENABLE_UNIT_FLAG` 约束一致） |
 | `L1A_STAGES`       | `2`     | L1 上加载矩阵 A 的 buffer 数量                                               |
 | `L1B_STAGES`       | `2`     | L1 上加载矩阵 B 的 buffer 数量                                               |
 | `L0A_STAGES`       | `2`     | L0 上加载矩阵 A 的 buffer 数量                                               |

@@ -8,7 +8,7 @@
 
 | 项 | 说明 |
 |------|------|
-| 功能 | 计算 N×N 矩阵 A 的逆，A ← A⁻¹ |
+| 功能 | 计算 N*N 矩阵 A 的逆，A ← A⁻¹ |
 | 布局 | 固定行主序（`layout::RowMajor`） |
 | 数据类型 | 由模板参数 `Element` 决定（当前实例化为 `float`） |
 | 输入 | 矩阵 A（GM）、主元数组 `ipiv`（int32） |
@@ -84,7 +84,7 @@ class MatrixInverse
 
 | 字段 | 类型（Params / Arguments） | 含义 |
 | ------ | -------------------------- | ---- |
-| `N` | `uint32_t` | 矩阵维度 N（N×N） |
+| `N` | `uint32_t` | 矩阵维度 N（N*N） |
 | `ptrA` | `GM_ADDR` / `uint8_t*` | 矩阵 A 全局内存地址（输入兼输出） |
 | `layoutA` | `LayoutA` | 矩阵布局描述 |
 | `ptrIpiv` | `GM_ADDR` / `uint8_t*` | 主元索引数组地址（int32） |
@@ -209,20 +209,20 @@ AIC 负责：
 | 常量 | 取值 | 含义 |
 |------|-----|------|
 | NB | 64 | 面板分块大小，GETRF/GETRI 外层步进单位 |
-| L1TileShape | 128×128×256 | L1 层 GEMM 分块（M×N×K） |
-| L0TileShape | 128×128×64 | L0/Cube 层 GEMM 分块（M×N×K） |
+| L1TileShape | 128*128*256 | L1 层 GEMM 分块（M*N*K） |
+| L0TileShape | 128*128*64 | L0/Cube 层 GEMM 分块（M*N*K） |
 
 Tile Shape 由 BlockMmad 模板参数决定，在示例代码中实例化指定。
 
 ### Workspace 布局
 
-工作空间在 GM 上连续划分，总大小为 `2×N×N + 2×N×NB` 个元素字节：
+工作空间在 GM 上连续划分，总大小为 `2*N*N + 2*N*NB` 个元素字节：
 
 | 区域 | 大小 | 用途 |
 |------|-----|------|
-| gmInvLDense | N×N | GETRF Schur GEMM / L 因子（ApplyLInverse 用） |
-| gmInvUDense | N×N | U 因子 / invU（TRTRI 用） |
-| gmGemmTemp | N×NB | 各阶段 GEMM 临时输出 |
+| gmInvLDense | N*N | GETRF Schur GEMM / L 因子（ApplyLInverse 用） |
+| gmInvUDense | N*N | U 因子 / invU（TRTRI 用） |
+| gmGemmTemp | N*NB | 各阶段 GEMM 临时输出 |
 
 ## 同步与 Cache 一致性
 
@@ -251,13 +251,13 @@ bash scripts/build.sh 78_matrix_inverse
 
 ### 运行
 
-计算 128×128 矩阵的逆：
+计算 128*128 矩阵的逆：
 
 ```bash
 ./78_matrix_inverse 128 0
 ```
 
-计算 512×512 矩阵的逆：
+计算 512*512 矩阵的逆：
 
 ```bash
 ./78_matrix_inverse 512 0

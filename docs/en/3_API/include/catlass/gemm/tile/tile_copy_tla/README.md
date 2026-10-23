@@ -35,15 +35,15 @@ The distribution of partial specialization implementations is as follows.
 
 | Implementation File| Included Partial Specialization|
 | :------ | :------ |
-| `atlasa2/copy_gm_to_l1.hpp` | TileCopyTla×3, TileCopyTlaExt×2, TileCopySparseTla×2, TileCopyFAQTla×1 |
-| `atlasa2/copy_gm_to_ub.hpp` | TileCopyTla×1 |
-| `atlasa2/copy_l1_to_l0a.hpp` | TileCopyTla×2, TileCopySparseTla×1 |
-| `atlasa2/copy_l1_to_l0b.hpp` | TileCopyTla×2, CopyL1ToL0BSparseTla×1 |
-| `atlasa2/copy_ub_to_gm.hpp` | TileCopyTla×1, TileCopyTlaExt×1 |
-| `ascend950/copy_gm_to_l1.hpp` | TileCopyTla×2 |
-| `ascend950/copy_l1_to_l0a.hpp` | TileCopyTla×2 |
-| `ascend950/copy_l1_to_l0b.hpp` | TileCopyTla×1 |
-| `ascend950/copy_l1_to_bt.hpp` | TileCopyTla×1 |
+| `atlasa2/copy_gm_to_l1.hpp` | TileCopyTla*3, TileCopyTlaExt*2, TileCopySparseTla*2, TileCopyFAQTla*1 |
+| `atlasa2/copy_gm_to_ub.hpp` | TileCopyTla*1 |
+| `atlasa2/copy_l1_to_l0a.hpp` | TileCopyTla*2, TileCopySparseTla*1 |
+| `atlasa2/copy_l1_to_l0b.hpp` | TileCopyTla*2, CopyL1ToL0BSparseTla*1 |
+| `atlasa2/copy_ub_to_gm.hpp` | TileCopyTla*1, TileCopyTlaExt*1 |
+| `ascend950/copy_gm_to_l1.hpp` | TileCopyTla*2 |
+| `ascend950/copy_l1_to_l0a.hpp` | TileCopyTla*2 |
+| `ascend950/copy_l1_to_l0b.hpp` | TileCopyTla*1 |
+| `ascend950/copy_l1_to_bt.hpp` | TileCopyTla*1 |
 
 ## Template Selection Guide
 

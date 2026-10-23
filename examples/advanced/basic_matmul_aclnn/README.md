@@ -1,6 +1,6 @@
 # basic_matmul_aclnn example
 
-aclnn接口是CANN软件栈一直沿用的接口，msOpGen工具是CANN提供可以生成该接口工程框架的工具，便于用户编写一个具有aclnn接口的算子，并使能CANN软件栈上的各种功能。该样例提供CATLASS算子模板接入msOpGen工程的示例代码与注意事项，并提供CATLASS example风格的调用示例。
+aclnn接口是CANN软件栈一直沿用的接口，msOpGen工具是CANN提供可以生成该接口工程框架的工具，便于用户编写一个具有aclnn接口的算子，并启用CANN软件栈上的各种功能。该样例提供CATLASS算子模板接入msOpGen工程的示例代码与注意事项，并提供CATLASS example风格的调用示例。
 
 下面以basic_matmul接入为例进行示例，利用msOpGen工具接入该算子模板。
 
@@ -28,7 +28,7 @@ msopgen gen -i catlass_basic_matmul.json -c ai_core-<soc_version> -lan cpp -out 
 
 参考[Host侧Tiling实现-基本流程](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/opdevg/Ascendcopdevg/atlas_ascendc_10_00021.html)实现`TilingFunc`。
 
-若需要使能**算子入图**，请参考[算子入图（GE）图开发](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/opdevg/Ascendcopdevg/atlas_ascendc_10_0078.html)实现`InferShape`和`InferDataType`。
+若需要启用**算子入图**，请参考[算子入图（GE）图开发](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/opdevg/Ascendcopdevg/atlas_ascendc_10_0078.html)实现`InferShape`和`InferDataType`。
 
 相关示例代码：
 [op_host/catlass_basic_matmul.cpp](./op_host/catlass_basic_matmul.cpp)

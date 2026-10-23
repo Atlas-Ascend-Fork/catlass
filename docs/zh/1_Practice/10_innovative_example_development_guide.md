@@ -8,7 +8,7 @@ CATLASS模板库中的每个样例都是在已有样例基础上的创新和扩�
 
 算子样例可以在[examples](../../../examples/)目录下查询。
 
-以[样例44](../../../examples/44_quant_matmul_full_loadA_tla/README.md)为例，它并非从零开始构建，而是结合了两个已有样例的特性：量化矩阵乘的后处理逻辑（BlockEpilogue）复用了[样例42](../../../examples/42_quant_optimized_matmul_tla/README.md)（`42_quant_optimized_matmul_tla`）的per-token反量化方案，A矩阵全载策略（包括BlockMmad和BlockScheduler）参考了[样例25](../../../examples/25_matmul_full_loadA/README.md)（`25_matmul_full_loadA`）。其BlockMmad组件（`block_mmad_pingpong_full_loadA_tla.hpp`）是在已有全载组件（`block_mmad_pingpong_full_loadA.hpp`）基础上做的TLA改写，BlockScheduler（`GemmIdentityBlockSwizzleL1FullLoad`）则直接复用了[样例25](../../../examples/25_matmul_full_loadA/README.md)的全载调度策略。[样例44](../../../examples/44_quant_matmul_full_loadA_tla/README.md)没有从零新增任何组件，所有模块均通过复用或TLA改写已有组件完成。
+以[样例44](../../../examples/44_quant_matmul_full_loadA_tla/README.md)为例，它并非从零开始构建，而是结合了两个已有样例的特性：量化矩阵乘的后处理逻辑（BlockEpilogue）复用了[样例42](../../../examples/42_quant_optimized_matmul_tla/README.md)（`42_quant_optimized_matmul_tla`）的per-token反量化方案，A矩阵全载策略（包括BlockMmad和BlockScheduler）参考了[样例25](../../../examples/25_matmul_full_loadA/README.md)（`25_matmul_full_loadA`）。其BlockMmad组件（`block_mmad_pingpong_full_loadA_tla.hpp`）是在已有全载组件（`block_mmad_pingpong_full_loadA.hpp`）基础上做的TLA（Tensor Layout Abstraction，张量布局抽象，详见[TLA Layout设计](../2_Design/02_tla/01_layout.md)）改写，BlockScheduler（`GemmIdentityBlockSwizzleL1FullLoad`）则直接复用了[样例25](../../../examples/25_matmul_full_loadA/README.md)的全载调度策略。[样例44](../../../examples/44_quant_matmul_full_loadA_tla/README.md)没有从零新增任何组件，所有模块均通过复用或TLA改写已有组件完成。
 
 ## 设计阶段
 
@@ -16,7 +16,7 @@ CATLASS模板库中的每个样例都是在已有样例基础上的创新和扩�
 
 在动手编码之前，首先需要明确算子的核心需求，并**充分调研已有样例和模板组件**，判断哪些可以直接复用、哪些需要参考改写、哪些必须全新开发：
 
-- **算子功能**：明确算子的数学定义和计算流程。样例44实现的是量化矩阵乘法 `D = (A_int8 × B_int8) * scale * perTokenScale`，输出bf16类型。
+- **算子功能**：明确算子的数学定义和计算流程。样例44实现的是量化矩阵乘法 `D = (A_int8*B_int8) * scale * perTokenScale`，输出bf16类型。
 - **已有组件调研**：遍历已有样例和`include/catlass/`下的模板组件，识别可复用资源。样例44的调研结论如下：
 
     | 特性                         | 参考来源                               | 复用方式               |
@@ -27,7 +27,7 @@ CATLASS模板库中的每个样例都是在已有样例基础上的创新和扩�
     | 全载场景多核调度             | 样例25 `25_matmul_full_loadA`          | BlockScheduler直接复用 |
 
 - **创新特性**：在调研基础上，明确真正需要创新的点。样例44的核心创新在于将量化矩阵乘与A矩阵全载两种特性结合，通过复用样例25的BlockScheduler使每个核处理的基本块在N方向连续分布，最大化A矩阵的L1复用率。
-- **适用场景**：明确新特性的收益场景和限制条件。A矩阵全载在N轴较大时收益显著（A矩阵可被多次复用），但要求L1空间足够容纳`L1TileShape::M × K`的数据量，否则无法使用。
+- **适用场景**：明确新特性的收益场景和限制条件。A矩阵全载在N轴较大时收益显著（A矩阵可被多次复用），但要求L1空间足够容纳`L1TileShape::M*K`的数据量，否则无法使用。该值为元素个数，占用字节数为`L1TileShape::M * K * sizeof(ElementA)`；Atlas A2/A3系列产品的L1容量为512KB，全载数据需位于可用L1空间内。N轴较大指N方向可切分出多个基本块，即`problemShape.N > L1TileShape::N`，此时同一A矩阵块可被多个N方向基本块复用；N不超过一个基本块时无法复用，性能可能低于普通模板。
 
 ### 方案设计
 
@@ -39,8 +39,8 @@ CATLASS模板库中的每个样例都是在已有样例基础上的创新和扩�
 
 | 参数           | 取值            | 说明                              |
 | -------------- | --------------- | --------------------------------- |
-| L1TileShape    | `128×256×512`   | L1级分块大小，M=128, N=256, K=512 |
-| L0TileShape    | `128×256×128`   | L0级计算分块大小                  |
+| L1TileShape    | `128*256*512`   | L1级计算分块大小（M\*N\*K） |
+| L0TileShape    | `128*256*128`   | L0级计算分块大小（M\*N\*K）                  |
 | ElementA/B     | int8_t          | 量化输入矩阵                      |
 | ElementC       | int32_t         | 累加器类型                        |
 | ElementD       | bfloat16_t      | 最终输出类型                      |
@@ -61,7 +61,7 @@ CATLASS模板库中的每个样例都是在已有样例基础上的创新和扩�
 
 设计数据搬运和计算的流水线。样例44的流水方案如下图所示：
 
-- 在计算开始阶段，通过MTE2将A矩阵的完整数据块（`L1TileShape::M × K`）一次性搬入L1
+- 在计算开始阶段，通过MTE2将A矩阵的完整数据块（`L1TileShape::M*K`）一次性搬入L1
 - 之后进入主循环，pingpong搬运B矩阵的K维分块到L1，同时执行L1→L0的数据搬运和Cube计算
 - A矩阵常驻L1，无需重复搬运，从而减少MTE2带宽压力
 
@@ -111,11 +111,11 @@ Host侧代码负责设备初始化、内存分配、组件组装和Kernel调用�
 
 按照“DispatchPolicy → BlockMmad → BlockEpilogue → BlockScheduler → Kernel → Adapter”的顺序逐层组装：
 
-- 首先确定DispatchPolicy（如`MmadFullLoadA`），它控制各级缓存的stage数和流水行为
-- 然后基于DispatchPolicy和TileShape组装BlockMmad，指定TileCopy组件处理数据搬运
-- 接着组装BlockEpilogue，配置反量化所需的Tile组件（如`TileRowBroadcastMul`）
-- 再根据M维度是否需要分核，选择合适的BlockScheduler（全载场景用`GemmIdentityBlockSwizzleL1FullLoad`，普通场景用`GemmIdentityBlockSwizzle`）
-- 最后将BlockMmad、BlockEpilogue、BlockScheduler组装为Kernel，并通过DeviceGemm适配器完成调用
+1. 首先确定DispatchPolicy（如`MmadFullLoadA`），它控制各级缓存的stage数和流水行为
+2. 然后基于DispatchPolicy和TileShape组装BlockMmad，指定TileCopy组件处理数据搬运
+3. 接着组装BlockEpilogue，配置反量化所需的Tile组件（如`TileRowBroadcastMul`）
+4. 再根据M维度是否需要分核，选择合适的BlockScheduler（全载场景用`GemmIdentityBlockSwizzleL1FullLoad`，普通场景用`GemmIdentityBlockSwizzle`）
+5. 最后将BlockMmad、BlockEpilogue、BlockScheduler组装为Kernel，并通过DeviceGemm适配器完成调用
 
 **（3）分核策略选择**
 
@@ -130,7 +130,7 @@ Kernel层是算子的执行入口，负责调度器初始化、全局张量定�
 
 **（1）参数结构设计**
 
-定义`Arguments`（用户接口层）和`Params`（内核执行层）两层参数结构。样例44的Arguments包含problemShape、aicCoreNum、输入张量组（A/B）和输出张量组（Scale/PerTokenScale/D）。
+定义`Arguments`（用户接口层）和`Params`（内核执行层）两层参数结构。样例44的Arguments包含problemShape（问题规模M/N/K）、aicCoreNum（参与计算的AIC核数，用于BlockScheduler划分任务）、输入张量组（A/B）和输出张量组（scale/perTokenScale/D）。
 
 **（2）AIC核实现**
 
@@ -139,6 +139,8 @@ AIC核负责矩阵乘法计算，核心流程为：
 - 初始化BlockScheduler，获取总循环次数
 - 定义指向GM的全局张量
 - 循环处理每个分块：计算块坐标→计算GM偏移→调用BlockMmad执行矩阵乘法→将结果写入Workspace
+
+Workspace是Host侧根据`GetWorkspaceSize`申请、经`aclrtMalloc`分配的GM内存，用于在AIC与AIV之间传递中间结果。样例44配置`workspaceStages = 2`，即为每个AIC分配两个基本块大小的空间，使AIC写入与AIV读取可以双缓冲流水执行。
 
 **（3）AIV核实现**
 
@@ -155,13 +157,13 @@ AIV核负责Epilogue后处理，核心流程为：
 
 ### Block层组件开发
 
-Block层是创新样例开发的核心。以下结合样例44说明三类组件的开发要点，各组件详细开发指南请参考对应文档：
+Block层是创新样例开发的核心。以下结合样例44说明三类组件的开发要点，各组件详细开发指南详见对应文档：
 
 **（1）BlockMmad — 矩阵乘计算组件**（详见 [BlockMmad代码开发](./04_block_mmad_development.md)）
 
 BlockMmad负责管理L1/L0缓存、执行数据搬运和Cube计算。样例44的`BlockMmadTla`（`block_mmad_pingpong_full_loadA_tla.hpp`）是在已有全载组件`block_mmad_pingpong_full_loadA.hpp`基础上做的TLA改写：
 
-- L1缓存分配：A矩阵占用`L1TileShape::M × K`空间（全载），B矩阵占用`L1TileShape::N × L1TileShape::K × 2`空间（双buffer pingpong）
+- L1缓存分配：A矩阵占用`L1TileShape::M*K`空间（全载），B矩阵占用`L1TileShape::N*L1TileShape::K*2`空间（双buffer pingpong）
 - 构造函数中完成L1/L0 buffer的分配和事件初始化
 - operator()中实现：先一次性加载完整A矩阵到L1→进入K维循环→pingpong加载B矩阵分块→L1→L0搬运→Cube计算→L0C写回
 
@@ -171,8 +173,8 @@ BlockMmad负责管理L1/L0缓存、执行数据搬运和Cube计算。样例44的
 
 BlockEpilogue负责对矩阵乘结果进行后处理。样例44的`BlockEpilogue`直接复用了样例42的per-token反量化方案：
 
-- UB缓存分配：为C矩阵、Scale、PerTokenScale、输出D矩阵各分配双buffer空间
-- 计算流程：从GM加载C和Scale到UB→执行tileRowBroadcastMul（per-channel乘）→加载PerTokenScale→执行tileOneBlkColumnBroadcastMul（per-token乘）→类型转换（int32→bf16）→写回GM
+- UB缓存分配：为C矩阵、scale、perTokenScale、输出D矩阵各分配双buffer空间
+- 计算流程：从GM加载C和scale到UB→执行tileRowBroadcastMul（per-channel乘）→加载perTokenScale→执行tileOneBlkColumnBroadcastMul（per-token乘）→类型转换（int32→bf16）→写回GM
 - 通过UB双buffer轮转实现计算与搬运的重叠
 
 **（3）BlockScheduler — 多核调度组件**（详见 [BlockScheduler代码开发](./05_block_scheduler_development.md)）
@@ -184,7 +186,7 @@ BlockScheduler负责将计算任务分配到多个AIC核。样例44复用了样�
 
 ### Tile层组件开发
 
-Tile组件是CATLASS中最底层的计算和数据操作单元，直接与硬件交互，主要包括`TileMmad`（矩阵乘法计算）和`TileCopy`（各级缓存间的数据搬运）。详细开发指南请参考[Tile组件代码开发详解](./06_tile_development.md)。
+Tile组件是CATLASS中最底层的计算和数据操作单元，直接与硬件交互，主要包括`TileMmad`（矩阵乘法计算）和`TileCopy`（各级缓存间的数据搬运）。详细开发指南详见[Tile组件代码开发详解](./06_tile_development.md)。
 
 在Block层组件开发过程中，需要分析BlockMmad和BlockEpilogue内部使用的Tile组件是否满足需求：
 
@@ -195,15 +197,20 @@ Tile组件是CATLASS中最底层的计算和数据操作单元，直接与硬件
 
 ### 编译与调试
 
-使用以下命令编译和运行样例：
+在仓库根目录执行以下命令编译和运行样例：
 
 ```bash
-# 编译
+# 编译样例，可执行文件生成到 output/bin 目录
 bash scripts/build.sh 44_quant_matmul_full_loadA_tla
 
-# 运行
-./output/bin/44_quant_matmul_full_loadA_tla 512 4096 1024 0
+# 切换到可执行文件所在目录
+cd output/bin
+# 可执行文件名 | 矩阵m轴 | n轴 | k轴 | Device ID
+# Device ID 可选，默认为 0；k 轴受 L1 容量约束，不应超过 2048
+./44_quant_matmul_full_loadA_tla 512 4096 1024 0
 ```
+
+编译成功时回显`[INFO] Target '44_quant_matmul_full_loadA_tla' built successfully`；运行成功时输出`Compare success.`，表示精度比对通过。
 
 开发过程中建议使用[性能调测工具](./08_evaluation.md)进行仿真验证，通过流水图检查数据搬运和计算的重叠情况是否符合预期。
 
@@ -211,13 +218,13 @@ bash scripts/build.sh 44_quant_matmul_full_loadA_tla
 
 ### 精度测试
 
-- 使用`examples/common/golden.hpp`中的标杆函数或自行实现标杆，对比算子输出与标杆结果的误差
-- 执行至少200例泛化精度测试，覆盖不同的M/N/K组合
-- 样例44使用`golden::QuantMatmul`作为精度标杆，对比bf16输出的误差
+- 使用[`examples/common/golden.hpp`](../../../examples/common/golden.hpp)中的标杆函数，或参考其中的函数签名自行实现标杆，对比算子输出与标杆结果的误差
+- 执行至少200例泛化精度测试，覆盖不同的M/N/K组合，包括小于、等于、大于各轴TileShape的取值以及非对齐shape
+- 样例44使用`golden::QuantMatmul`作为精度标杆，按[`compare_data.hpp`](../../../examples/common/golden/compare_data.hpp)中的判定标准对比bf16输出：累加次数小于2048时相对容限为$2^{-7}$，否则为$2^{-6}$，逐元素按$|actual-expected| \le rtol \times \max(1/256, |expected|)$判定
 
 ### 性能测试
 
-- 与标杆算子进行性能对比，验证新特性的收益。样例44以`12_quant_matmul`为标杆，在N轴较大的场景下性能提升5%~15%
+- 与标杆算子进行性能对比，验证新特性的收益。样例44以[12_quant_matmul](../../../examples/12_quant_matmul/README.md)为标杆，在N轴较大的场景下性能提升5%~15%
 - 在算子设计文档中记录性能数据、测试环境和标杆信息
 - 若性能未达预期，参考[性能瓶颈分析及优化手段](./evaluation/bottleneck_analysis_and_optimization.md)进行定位和优化
 
@@ -225,7 +232,7 @@ bash scripts/build.sh 44_quant_matmul_full_loadA_tla
 
 ### 代码规范检查
 
-- 确保代码符合项目的代码风格（参考`.clang-format`配置）
+- 确保代码符合项目的代码风格（参考[.clang-format](../../../.clang-format)配置）
 - 检查命名规范：样例目录使用`${id}_${op_name}`格式，文件名使用小写下划线风格
 - 添加必要的版权声明和License头
 

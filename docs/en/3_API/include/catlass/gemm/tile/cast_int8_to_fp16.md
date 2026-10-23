@@ -8,11 +8,11 @@
 
 The `TileCastInt8ToFp16Dequant` template dequantizes the INT8-quantized data into FP16 (`half`) and writes the result directly to global memory. It is often used in the prologue to dequantize the quantized weights and complete precision conversion before computation.
 
-**Pipeline**: Global memory (int8) → Unified Buffer → Cast (int8 → half) → Adds  (+zeroPoint) → Muls (×scale) → Unified Buffer → global memory (half). The design uses two-stage double buffering (STAGES=2) and event-driven control to enable pipeline concurrency.
+**Pipeline**: Global memory (int8) → Unified Buffer → Cast (int8 → half) → Adds  (+zeroPoint) → Muls (*scale) → Unified Buffer → global memory (half). The design uses two-stage double buffering (STAGES=2) and event-driven control to enable pipeline concurrency.
 
 The difference from [TileCastFp8ToFp16Dequant](./cast_fp8_to_fp16.md) is that the element type is `int8_t` (instead of FP8), and the dequantization operations are `Cast` + `Adds` + `Muls` (instead of FP8-specific table lookup/bitwise operations).
 
-> **Restriction**: Only the Atlas A2 architecture (`CATLASS_ARCH == 2201`) is supported. `COMPUTE_LEN` must not exceed 32 × 1024.
+> **Restriction**: Only the Atlas A2 architecture (`CATLASS_ARCH == 2201`) is supported. `COMPUTE_LEN` must not exceed 32*1024.
 
 ## Template Prototype
 
@@ -32,7 +32,7 @@ struct TileCastInt8ToFp16Dequant {
 };
 ```
 
-- `COMPUTE_LEN_`: length of a single Cast computation, with an upper limit of 32 × 1024
+- `COMPUTE_LEN_`: length of a single Cast computation, with an upper limit of 32*1024
 - `LayoutSrc`/`LayoutDst`: Only RowMajor and ColumnMajor are supported. The two values must be the same.
 
 ## Construction and Destruction
@@ -44,9 +44,8 @@ TileCastInt8ToFp16Dequant(Arch::Resource<ArchTag> const &resource, Params const 
 ```
 
 Allocate double buffering from the Resource Unified Buffer.
-
-- `ubInTensor[2]` × `COMPUTE_LEN` bytes (INT8 input)
-- `ubOutTensor[2]` × `COMPUTE_LEN * sizeof(half)` bytes (FP16 output)
+- `ubInTensor[2]`*`COMPUTE_LEN` bytes (INT8 input)
+- `ubOutTensor[2]`*`COMPUTE_LEN * sizeof(half)` bytes (FP16 output)
 
 Initialize the event flag.
 

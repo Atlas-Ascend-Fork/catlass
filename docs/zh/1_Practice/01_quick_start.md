@@ -1,6 +1,6 @@
 # 模板库快速上手
 
-在学习各类模板库开发知识之前，请您先参考下面步骤完成基础环境搭建和源码下载，确保已安装NPU驱动和CANN软件（`Ascend-cann-toolkit`和`Ascend-cann-ops`）等，并尝试进行最基础的模板库示例编译和运行。
+在学习各类模板库开发知识之前，先参考下面步骤完成基础环境搭建和源码下载，确保已安装NPU驱动和CANN软件（`Ascend-cann-toolkit`和`Ascend-cann-ops`）等，并尝试进行最基础的模板库示例编译和运行。
 
 ## 安装CANN
 
@@ -23,7 +23,7 @@ pip install torch-npu==2.9.0.post8 --extra-index-url https://ascend.devcloud.hua
 
 ## 安装其他基础依赖
 
-请根据您的实际操作系统环境，参考[README-软硬件配套说明](../../../README.md#-软硬件配套说明)逐个安装基础依赖。
+请根据实际操作系统环境，参考[README-软硬件配套说明](../../../README.md#-软硬件配套说明)逐个安装基础依赖。
 
 ### 环境验证
 
@@ -102,7 +102,7 @@ pip install -r requirements.txt
 - 样例名称里带`ascend950`字样的仅支持Ascend 950PR&950DT系列产品。
 - 其他样例仅支持Atlas A2/A3系列产品，代码中架构标签`ArchTag`统一使用`Arch::AtlasA2`。
 
-### 样例编译
+### 编译样例
 
 进入项目根目录，执行下述编译指令：
 
@@ -137,10 +137,18 @@ bash scripts/build.sh 00_basic_matmul
 若有下述提示信息，则编译成功。
 
 ```text
-"[INFO] Target "{target}" built successfully."
+[INFO] Target '00_basic_matmul' built successfully
 ```
 
-### 算子执行
+编译失败时`build.sh`以非零状态退出并打印错误信息，常见回显包括：
+
+- `[ERROR]No target specified`：未指定样例名。
+- `[ERROR]ASCEND_HOME_PATH environment variable is not set!`：未执行CANN环境变量脚本（见[环境变量配置](#环境变量配置)）。
+- `[ERROR]Multiple targets specified`：一次指定了多个样例名。
+
+其余失败为CMake配置或编译器报错，回显中包含出错文件与行号，可据此定位头文件缺失、架构标签不匹配等问题。
+
+### 执行算子
 
 算子编译产物在`output/bin`路径下，切换至该目录下可运行算子样例程序。
 以[00_basic_matmul](../../../examples/00_basic_matmul/README.md)样例为例，可通过下述指令执行该算子：
@@ -161,4 +169,6 @@ cd output/bin
 Compare success.
 ```
 
-请进一步参考[创新样例开发流程指南](./10_innovative_example_development_guide.md)开始第一个创新算子的完整开发，或参考[Host侧代码组装指南](./02_host_example_assembly.md)开始Host侧算子模板组装体验。
+精度比对失败时输出`Compare failed. Error count: <N>`，其中`N`为超出误差容限的元素个数。出现该输出时，先核对输入数据的生成方式与标杆计算是否一致，再检查数据搬运范围与累加过程。
+
+进一步参考[创新样例开发流程指南](./10_innovative_example_development_guide.md)开始第一个创新算子的完整开发，或参考[Host侧代码组装指南](./02_host_example_assembly.md)开始Host侧算子模板组装体验。

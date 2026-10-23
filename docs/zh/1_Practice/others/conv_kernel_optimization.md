@@ -111,8 +111,8 @@ L1空间预算的粗略估算：
 
 | Buffer     | 每个stage大小                               | 3 stages 总大小     |
 | ---------- | ------------------------------------------- | ------------------- |
-| L1A Fmap   | `Ho × Wo × Cin1 × C0 × sizeof(fp16)`        | 3倍单stage          |
-| L1B Filter | `Cin1 × Kh × Kw × Cout × C0 × sizeof(fp16)` | 3倍单stage          |
+| L1A Fmap   | `Ho*Wo*Cin1*C0*sizeof(fp16)`        | 3倍单stage          |
+| L1B Filter | `Cin1*Kh*Kw*Cout*C0*sizeof(fp16)` | 3倍单stage          |
 | 合计       | —                                           | 需 < 512KB（L1容量）|
 
 **经验判断**
@@ -130,7 +130,7 @@ Conv2D的三个Tile Shape分别控制不同存储层级上的分块粒度：
 
 | Tile Shape                      | 控制粒度                     | 影响                  |
 | ------------------------------- | ---------------------------- | --------------------- |
-| `FmapL1TileShape<Ho, Wo, Cin1>` | Fmap每次加载到L1的tile大小   | Ho×Wo循环次数、L1占用 |
+| `FmapL1TileShape<Ho, Wo, Cin1>` | Fmap每次加载到L1的tile大小   | Ho*Wo循环次数、L1占用 |
 | `FilterL1TileShape<Cout, Cin1>` | Filter每次加载到L1的tile大小 | Cout循环次数、L1占用  |
 | `L0TileShape<M, N, K>`          | Cube单次Mmad的计算粒度       | Cube利用率            |
 
@@ -141,15 +141,15 @@ Conv2D的三个Tile Shape分别控制不同存储层级上的分块粒度：
 **增大Fmap L1TileShape的Ho/Wo，减少外层循环。** MTE2 bound时，增大Ho/Wo可以降低Fmap数据从GM到L1的重复搬运量：
 
 ```text
-Fmap重复读取次数 ≈ batch × coTiles × cin1Tiles × (hoTiles × woTiles的减少比例)
+Fmap重复读取次数 ≈ batch*coTiles*cin1Tiles*(hoTiles*woTiles的减少比例)
 ```
 
-默认`<8, 12>`的Ho×Wo=96。可尝试增大到`<16, 16>`（Ho×Wo=256），循环次数减少约2.7倍；或`<32, 12>`（Ho×Wo=384）。
+默认`<8, 12>`的Ho*Wo=96。可尝试增大到`<16, 16>`（Ho*Wo=256），循环次数减少约2.7倍；或`<32, 12>`（Ho*Wo=384）。
 
 **增大FilterL1TileShape的Cout。** 增大Cout可以减少Cout方向的循环次数，降低Filter的重复读取：
 
 ```text
-Filter重复读取次数 ≈ batch × hoTiles × woTiles × cin1Tiles × (coTiles的减少比例)
+Filter重复读取次数 ≈ batch*hoTiles*woTiles*cin1Tiles*(coTiles的减少比例)
 ```
 
 默认`<96>`在Cout=80时仅1个tile。若Cout较大（如512），可从96逐步增加到128、192，直到L1空间极限。
@@ -158,9 +158,9 @@ Filter重复读取次数 ≈ batch × hoTiles × woTiles × cin1Tiles × (coTile
 
 | L0Shape         | 单次Mmad计算次数 | L0A大小    | 典型场景             |
 | --------------- | ---------------- | ---------- | -------------------- |
-| `<16, 96, 16>`  | 24K              | 16×16 fp16 | 当前默认             |
-| `<32, 96, 32>`  | 96K              | 32×32 fp16 | Cube bound, 空间充裕 |
-| `<16, 128, 16>` | 32K              | 16×16 fp16 | Cube bound, N轴增大  |
+| `<16, 96, 16>`  | 24K              | 16*16 fp16 | 当前默认             |
+| `<32, 96, 32>`  | 96K              | 32*32 fp16 | Cube bound, 空间充裕 |
+| `<16, 128, 16>` | 32K              | 16*16 fp16 | Cube bound, N轴增大  |
 
 **经验判断**
 

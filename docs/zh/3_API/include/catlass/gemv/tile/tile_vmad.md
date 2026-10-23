@@ -6,7 +6,7 @@
 
 ## 功能说明
 
-`TileVmad` 实现 GEMV 场景下的向量-矩阵乘加运算（`Y += A * X`）。将矩阵 A（m×n）的每行与向量 X（n 维）做内积，结果累加到向量 Y（m 维）。
+`TileVmad` 实现 GEMV 场景下的向量-矩阵乘加运算（`Y += A * X`）。将矩阵 A（m*n）的每行与向量 X（n 维）做内积，结果累加到向量 Y（m 维）。
 
 - 适用范围：AtlasA2
 - 两种实现：RowMajor 矩阵（MulAddDst + WholeReduceSum）+ ColumnMajor 矩阵（Axpy 逐列）

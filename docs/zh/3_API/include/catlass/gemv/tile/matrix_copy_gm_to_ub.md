@@ -36,7 +36,7 @@ struct MatrixCopyGmToUB;
 | 策略   | 触发条件                                        | 方式                                |
 | :----- | :---------------------------------------------- | :---------------------------------- |
 | 连续块 | 长度对齐 C0 且 stride 对齐 C0 且 stride < 65536 | 一次 `DataCopy`（blockCount = m/n） |
-| 跨步块 | 长度对齐 C0 且 stride×C0 < 65536                | C0 条 `DataCopy`，每条 stride 间隔  |
+| 跨步块 | 长度对齐 C0 且 stride*C0 < 65536                | C0 条 `DataCopy`，每条 stride 间隔  |
 | 单行   | 兜底                                            | 逐条 `DataCopy`                     |
 
 ## 调用接口

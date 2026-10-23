@@ -123,7 +123,7 @@ static_assert: `M * K <= 32768` (the L1A double-buffer capacity limit).
    └─ loop moves all of V into L1B by block page (look up blockTable when paged), event EVENT_ID2
 2. Arch::CrossCoreWaitFlag(softmaxFlag)
    └─ cross-core wait: the softmax core has produced a usable P (GM staging)
-3. mL1Loop × kL1Loop × kL0Loop
+3. mL1Loop*kL1Loop*kL0Loop
    └─ move P into L1A (pingpong) → MMAD accumulation (initMmad = (kL1Idx==0 && kL0Idx==0))
 4. output OTmp (fp32) to GM
 5. SetFlag(MTE1_MTE2, EVENT_ID2)
@@ -216,7 +216,7 @@ Typical instantiation: `OutputType_ = fp16`, `InputType_ = fp32` (OTmp), `Update
 | tmp | `10 * block` |
 | hm / gl / dm | `10 * block + 9/12/13 * vec` |
 
-Note that the hm/gl/dm offsets are **exactly the same** as the layout of the OnlineSoftmax epilogue — the two run at different stages of the same kernel and reuse the same UB plan, avoiding layout conflicts across epilogues. `MAX_UB_O_ELEM_NUM = 4096` limits the number of rows × columns of a single block.
+Note that the hm/gl/dm offsets are **exactly the same** as the layout of the OnlineSoftmax epilogue — the two run at different stages of the same kernel and reuse the same UB plan, avoiding layout conflicts across epilogues. `MAX_UB_O_ELEM_NUM = 4096` limits the number of rows*columns of a single block.
 
 ### Core Algorithm
 

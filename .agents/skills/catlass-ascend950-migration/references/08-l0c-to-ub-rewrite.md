@@ -25,8 +25,8 @@ Only two modes are in scope.
 
 | Mode | Direct-path behavior | Per-AIV C ring | Synchronization |
 |---|---|---|---|
-| `NO_SPLIT` | one AIV sub-block receives the full C tile | `M × N × sizeof(ElementC)` per stage | one credit per ring slot |
-| `SPLIT_M` | Fixpipe partitions the C tile across AIV sub-blocks | `(M / 2) × N × sizeof(ElementC)` per stage | paired credits per ring slot |
+| `NO_SPLIT` | one AIV sub-block receives the full C tile | `M*N*sizeof(ElementC)` per stage | one credit per ring slot |
+| `SPLIT_M` | Fixpipe partitions the C tile across AIV sub-blocks | `(M / 2)*N*sizeof(ElementC)` per stage | paired credits per ring slot |
 
 Calculate both candidates for the selected unit:
 

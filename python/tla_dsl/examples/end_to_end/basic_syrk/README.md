@@ -28,7 +28,7 @@ block_num 用于指定参与计算的 Cube 核数量，不设置时自动选择�
 
 ## 使用范围说明
 
-本样例按 `256×256` 输出块计算下三角，并通过 RowMajor/ColumnMajor 写回补全对称位置；L1/L0 的 K 分块分别为 128/64，使用双缓冲。默认采用 `GemmIdentityBlockSwizzle<3,1>` 调度，通过 CUBE/FIX 事件保护 L0C 双写，`unit_flag=0`。需要安装已包含 L0C→ColumnMajor GM 支持的 DSL wheel。
+本样例按 `256*256` 输出块计算下三角，并通过 RowMajor/ColumnMajor 写回补全对称位置；L1/L0 的 K 分块分别为 128/64，使用双缓冲。默认采用 `GemmIdentityBlockSwizzle<3,1>` 调度，通过 CUBE/FIX 事件保护 L0C 双写，`unit_flag=0`。需要安装已包含 L0C→ColumnMajor GM 支持的 DSL wheel。
 
 使用范围：
 

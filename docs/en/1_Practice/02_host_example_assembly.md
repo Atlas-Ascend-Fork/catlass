@@ -89,7 +89,7 @@ static void Run(const Options &options) {
     uint32_t n = options.problemShape.n();
     uint32_t k = options.problemShape.k();
 
-    // Elements counts: Matrix A (m × k), Matrix B (k × n), and Matrix C (m × n)
+    // Elements counts: Matrix A (m*k), Matrix B (k*n), and Matrix C (m*n)
     size_t lenA = static_cast<size_t>(m) * k;
     size_t lenB = static_cast<size_t>(k) * n;
     size_t lenC = static_cast<size_t>(m) * n;

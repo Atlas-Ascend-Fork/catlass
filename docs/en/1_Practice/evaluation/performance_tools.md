@@ -107,8 +107,18 @@ Through simulation, you can obtain visual data such as **pipeline diagrams**, **
     ```
 
     - ⚠ Precautions
-      - To view **code hotspot maps**, add `add_compile_options("SHELL:$<$<COMPILE_LANGUAGE:ASCEND>:-Xaicore-start -g -Xaicore-end")` to `examples/CMakeLists.txt`.
-      - If a large number of obvious `Vector` operations (such as `Add` and `Div`) are mapped to `Scalar` operations in the profiling results, causing significant anomalies in the results (`vector_ratio<10%`, `scalar>90%`), this is due to the compilation optimization level. You can add `add_compile_options($<$<COMPILE_LANGUAGE:ASCEND>:"-Xaicore-start -O3 -Xaicore-end">)` to `examples/CMakeLists.txt`.
+      - To view **code hotspot maps**, add the following code at the beginning of `examples/CMakeLists.txt`:
+
+        ```cmake
+        add_compile_options("SHELL:$<$<COMPILE_LANGUAGE:ASC>:-Xaicore-start -g -Xaicore-end>")
+        ```
+
+      - If a large number of obvious `Vector` operations (such as `Add` and `Div`) are mapped to `Scalar` operations in the profiling results, causing significant anomalies in the results (`vector_ratio<10%`, `scalar>90%`), this is due to the compilation optimization level. You can add the following code at the beginning of `examples/CMakeLists.txt` to raise the optimization level:
+
+        ```cmake
+        add_compile_options($<$<COMPILE_LANGUAGE:ASC>:"-Xaicore-start -O3 -Xaicore-end">)
+        ```
+
       - Simulation can only run on card 0; the NPU ID cannot be specified.
 
 #### Simulation Data Description
@@ -144,7 +154,7 @@ Choose the appropriate tool based on your browser:
 - Use the Chrome Trace Viewer tool in the Chrome browser: enter `chrome://tracing` in the address bar (Google Chrome or Chrome-based browsers)
 - [Perfetto](https://ui.perfetto.dev/) (general)
 
-Import the `trace.json` file to view the simulation instruction pipeline chart.
+Import the `trace.json` file to view the simulation instruction pipeline chart. All three tools provide the same functionality; use whichever is available.
 
 ###### Presentation Using MindStudio Insight
 

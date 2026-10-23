@@ -36,7 +36,7 @@ struct MatrixCopyGmToUB;
 | Strategy| Trigger Condition| Method|
 | :------ | :------ | :------ |
 | Contiguous block| Length aligned with C0, stride aligned with C0, and stride < 65536| Single `DataCopy` (blockCount = m/n)|
-| Strided block| Length aligned with C0 and stride × C0 < 65536| C0 `DataCopy` operations, each spaced by stride|
+| Strided block| Length aligned with C0 and stride*C0 < 65536| C0 `DataCopy` operations, each spaced by stride|
 | Row-by-row| Fallback| Row-by-row `DataCopy`|
 
 ## APIs

@@ -75,10 +75,10 @@ BasicMatmul默认使用的DispatchPolicy MmadPingpong支持以下几个模板参
 | 模板参数         | 默认值 | 参数说明                                         |
 | ---------------- | ------ | ------------------------------------------------ |
 | ArchTag          | 无     | 指定架构型号                                     |
-| enableUnitFlag   | false  | 是否开启Unitflag，开启L0C多缓冲时必须设置为false |
-| useHF32          | false  | 是否开启HF32，仅float类型支持                    |
-| l0CStages        | 1      | 指定L0C的缓冲区数量，设置为2即可开启L0C双缓冲    |
 | enableL1Resident | false  | 是否开启L1常驻                                   |
+| useHF32          | false  | 是否启用HF32，仅float类型支持                    |
+| l0CStages        | 1      | 指定L0C的缓冲区数量，设置为2即可启用L0C双缓冲    |
+| enableL1Resident | false  | 是否启用L1常驻                                   |
 | l1AStages        | 1      | L1上加载矩阵A的Buffer数量                        |
 | l1BStages        | 1      | L1上加载矩阵B的Buffer数量                        |
 | l0AStages        | 1      | L0上加载矩阵A的Buffer数量                        |

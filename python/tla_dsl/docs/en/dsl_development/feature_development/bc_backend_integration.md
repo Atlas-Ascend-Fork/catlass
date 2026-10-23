@@ -313,7 +313,7 @@ tla.copy(gm_a -> l1_a)                        ← user Python
 "tla.copy"(%l1, %gm) : <l1 zN>, <gm RowMajor>   ← tla dialect IR
         │ tla-cube-region pass (LowerTlaCopyPattern)
         │   getCopyRouteCallee() -> "copy_gm_RowMajor_to_l1_zN_float"
-        │   buildCopyPayloadForRoute() -> 8×i64 ×2
+        │   buildCopyPayloadForRoute() -> 8*i64*2
         ▼
 func.call @copy_gm_RowMajor_to_l1_zN_float(src, dst, …payload)   ← HIVM/LLVM IR
         │ CompilePipeline: FuncToLLVM -> call @_mlir_ciface_copy_…

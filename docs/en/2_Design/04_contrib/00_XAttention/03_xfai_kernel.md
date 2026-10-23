@@ -108,7 +108,7 @@ The KV offset takes two paths according to `PAGED_CACHE_FLAG_`:
 
 ### Main Loop: Three-Level Pingpong
 
-Inside `operator()` there is an nL1×mL0×kL0 three-level loop: the nL1 level splits KV split blocks by `stackSeqTile` using `l1NDynamic`; the three pingpong groups `l1KvPingPongFlag` (L1 B area), `l0ABPingPongFlag` (L0A/L0B), and `l0CPingPongFlag` (L0C) toggle independently, fully overlapping the three segments "load K / compute QK / write back S". After S is written to GM, the caller sets the `qkReady` cross-core flag to notify AIV.
+Inside `operator()` there is an nL1*mL0*kL0 three-level loop: the nL1 level splits KV split blocks by `stackSeqTile` using `l1NDynamic`; the three pingpong groups `l1KvPingPongFlag` (L1 B area), `l0ABPingPongFlag` (L0A/L0B), and `l0CPingPongFlag` (L0C) toggle independently, fully overlapping the three segments "load K / compute QK / write back S". After S is written to GM, the caller sets the `qkReady` cross-core flag to notify AIV.
 
 ## BlockMmadXFAIPV — PV GEMM Design
 
@@ -135,7 +135,7 @@ Execution order:
 
 1. **Batch load of V**: prefetch the V of `blockStackNum` KV blocks into L1 in one go (`EVENT_ID4` + `EVENT_ID0` synchronization), for reuse by the PV of several subsequent stackTiles;
 2. **Cross-core wait**: `CrossCoreWaitFlag(softmaxFlag)` — blocks until the AIV side Online Softmax has written the P of the current block to GM. This is the key gate that links the "QK → softmax → PV" pipeline;
-3. **P streaming pingpong**: in the main loop nL1×mL1×kL1×kL0, P flows from GM into L1A in pingpong fashion via `l1PPingPongFlag`, with `LOAB_BLOCK = 1`;
+3. **P streaming pingpong**: in the main loop nL1*mL1*kL1*kL0, P flows from GM into L1A in pingpong fashion via `l1PPingPongFlag`, with `LOAB_BLOCK = 1`;
 4. **PV direct write to GM**: the intermediate result O (OTmp) is written directly from L0C to GM, and the trailing `SetFlag` (MTE1_MTE2, `EVENT_ID4`) lets the AIV side RescaleO align.
 
 ## BlockEpilogueXFAIOnlineSoftmax Design

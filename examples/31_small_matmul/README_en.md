@@ -12,7 +12,7 @@
 ## Function
 
 - This operator reduces unnecessary scalar computation overheads based on basic_matmul in the small-shape scenarios.
-- The number of basic blocks to be tiled cannot exceed the number of cube cores, that is, `ceilDiv(m, L1TileShape::M) × ceilDiv(n, L1TileShape::N) ≤ aicCoreNum`.
+- The number of basic blocks to be tiled cannot exceed the number of cube cores, that is, `ceilDiv(m, L1TileShape::M)*ceilDiv(n, L1TileShape::N) ≤ aicCoreNum`.
 - The k axis cannot exceed `L1TileShape::K`.
 
 ## Example

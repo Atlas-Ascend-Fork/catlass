@@ -140,7 +140,7 @@
   - [Ascend950 Grouped Matmul Per-Tensor & Per-Channel Dequant](https://gitcode.com/cann/catlass/blob/v1.5.0/examples/48_ascend950_grouped_matmul_slice_m_per_tensor_per_channel_dequant/README.md)
   - [Ascend950 Flash Attention 推理](https://gitcode.com/cann/catlass/blob/v1.5.0/examples/49_ascend950_flash_attention_infer/README.md)
   - [Ascend950 基础 Matmul GEMV](https://gitcode.com/cann/catlass/blob/v1.5.0/examples/50_ascend950_basic_matmul_gemv/README.md)
-  - [Ascend950 Quant Matmul Per-Group & Per-Block TLA](https://gitcode.com/cann/catlass/blob/v1.5.0/examples/51_ascend950_quant_matmul_per_group_per_block_tla/README.md)（Per-Group × Per-Block 量化组合）
+  - [Ascend950 Quant Matmul Per-Group & Per-Block TLA](https://gitcode.com/cann/catlass/blob/v1.5.0/examples/51_ascend950_quant_matmul_per_group_per_block_tla/README.md)（Per-Group*Per-Block 量化组合）
   - [Quant Optimized Matmul TLA](https://gitcode.com/cann/catlass/blob/v1.5.0/examples/42_quant_optimized_matmul_tla/README.md)
   - [Quant Matmul Full LoadA TLA](https://gitcode.com/cann/catlass/blob/v1.5.0/examples/44_quant_matmul_full_loadA_tla/README.md)
   - [Strided Batched Matmul TLA](https://gitcode.com/cann/catlass/blob/v1.5.0/examples/45_strided_batched_matmul_tla/README.md)
@@ -257,17 +257,17 @@
     - 调整工程组织结构
     - 支持转置情况
   - 新增[`msTuner_CATLASS`](https://gitcode.com/cann/catlass/tree/v1.2.0/tools/tuner/README.md)工具，用于Tiling自动寻优，在搜索空间内全量运行并获取性能数据
-  - 支持使能[`msSanitizer`](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/devaids/optool/atlasopdev_16_0039.html)地址消毒工具（编译选项加入`--enable_mssanitizer`）
+  - 支持启用[`msSanitizer`](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/devaids/optool/atlasopdev_16_0039.html)地址消毒工具（编译选项加入`--enable_mssanitizer`）
 
 - 文档资料
   - 新增[`catlass_optimize_guidance.md`](https://gitcode.com/cann/catlass/tree/v1.2.0/docs/contents/advanced/catlass_optimize_guidance.md)文档，介绍CATLASS赋能下`Gemm`类算子常用的调优方式
 
 - Bugfix&优化
   - 优化[`OptimizedMatmul`](https://gitcode.com/cann/catlass/tree/v1.2.0/examples/06_optimized_matmul/README.md)算子实现，支持任意Padding方式组合
-  - 修复`ASCEND_RT_VISIBLE_DEVICES`环境变量使能下，`msTuner_CATLASS`工具无法取得实际运行`DeviceId`的问题
+  - 修复`ASCEND_RT_VISIBLE_DEVICES`环境变量启用下，`msTuner_CATLASS`工具无法取得实际运行`DeviceId`的问题
   - 修复[PFA算子样例](https://gitcode.com/cann/catlass/tree/v1.2.0/examples/19_mla/README.md)在单行数据场景下`Set/Wait`错配的异常情形
   - 修复[`OptimizedMatmul`](https://gitcode.com/cann/catlass/tree/v1.2.0/examples/06_optimized_matmul/README.md)算子样例计算`Workspace`大小出错
-  - 隔离使能`AscendC::Dump`及`AscendC::print`功能的代码段
+  - 隔离启用`AscendC::Dump`及`AscendC::print`功能的代码段
   - 修复[`GroupedMatmulSliceK`](https://gitcode.com/cann/catlass/tree/v1.2.0/examples/05_grouped_matmul_slice_k/README.md)算子在Ki=0特例时的输出清零行为，并将真值比较逻辑调整为全尺寸(M,N,K)比较
   - 修改[`performance_tools.md`](https://gitcode.com/cann/catlass/tree/v1.2.0/docs/tools/performance_tools.md)，[`tutorials.md`](https://gitcode.com/cann/catlass/tree/v1.2.0/docs/tutorials.md)等文档中的错误
 

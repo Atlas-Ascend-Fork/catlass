@@ -33,7 +33,7 @@
 | `n` | 输出矩阵 C 的列数 | 必填 |
 | `k` | GEMM 归约维度 | 必填 |
 | `deviceId` | 使用的 NPU 卡 ID | `0` |
-| `symmSide` | 对称矩阵所在侧：`0`=LEFT（C=S×B），`1`=RIGHT（C=B×S） | `1` |
+| `symmSide` | 对称矩阵所在侧：`0`=LEFT（C=S*B），`1`=RIGHT（C=B*S） | `1` |
 | `symmFill` | 有效三角区域：`1`=UPPER（上三角），`0`=LOWER（下三角） | `1` |
 
 ### Shape 约束
@@ -76,13 +76,13 @@ examples
     cd output/bin
 
     # 可执行文件名 |矩阵m轴|n轴|k轴|Device ID|symmSide|symmFill
-    # 左乘 + 上三角：C = S(M×M) × B(M×N)，S 上三角有效
+    # 左乘 + 上三角：C = S(M*M)*B(M*N)，S 上三角有效
     ./75_symm 768 4096 768 0 0 1
 
     # 左乘 + 下三角
     ./75_symm 768 4096 768 0 0 0
 
-    # 右乘 + 上三角：C = B(M×K) × S(K×K)，S 上三角有效
+    # 右乘 + 上三角：C = B(M*K)*S(K*K)，S 上三角有效
     ./75_symm 4096 768 768 0 1 1
 
     # 右乘 + 下三角

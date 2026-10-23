@@ -251,7 +251,7 @@ CATLASS adopts a hierarchical design. Therefore, new features are introduced bas
 
     ![](<../../assets/images/CATLASS new version capability introduction-image-2.png>)
 
-    | Parameter          | Description (Using an M × K Matrix as an Example)                                                                         |
+    | Parameter          | Description (Using an M*K Matrix as an Example)                                                                         |
     | -------------- | -------------------------------------------------------------------------------------- |
     | mStartPosition | Start position along the M axis of the source matrix, in units of 16 elements                                                            |
     | kStartPosition | Start position along the K axis of the source matrix, in units of 32 bytes                                                                   |

@@ -8,7 +8,7 @@ Every example in the CATLASS template library is an innovation and extension bui
 
 Operator examples can be found in the [examples](../../../examples/) directory.
 
-Take [example 44](../../../examples/44_quant_matmul_full_loadA_tla/README.md) as an example. It was not built from scratch; instead, it combines the features of two existing examples: the post-processing logic of the quantized matrix multiply (BlockEpilogue) reuses the per-token dequantization scheme of [example 42](../../../examples/42_quant_optimized_matmul_tla/README.md) (`42_quant_optimized_matmul_tla`), and the A-matrix full-load strategy (including BlockMmad and BlockScheduler) refers to [example 25](../../../examples/25_matmul_full_loadA/README.md) (`25_matmul_full_loadA`). Its BlockMmad component (`block_mmad_pingpong_full_loadA_tla.hpp`) is a TLA rewrite of the existing full-load component (`block_mmad_pingpong_full_loadA.hpp`), and the BlockScheduler (`GemmIdentityBlockSwizzleL1FullLoad`) directly reuses the full-load scheduling strategy of [example 25](../../../examples/25_matmul_full_loadA/README.md). [Example 44](../../../examples/44_quant_matmul_full_loadA_tla/README.md) did not add any component from scratch; all modules were completed by reusing or TLA-rewriting existing components.
+Take [example 44](../../../examples/44_quant_matmul_full_loadA_tla/README.md) as an example. It was not built from scratch; instead, it combines the features of two existing examples: the post-processing logic of the quantized matrix multiply (BlockEpilogue) reuses the per-token dequantization scheme of [example 42](../../../examples/42_quant_optimized_matmul_tla/README.md) (`42_quant_optimized_matmul_tla`), and the A-matrix full-load strategy (including BlockMmad and BlockScheduler) refers to [example 25](../../../examples/25_matmul_full_loadA/README.md) (`25_matmul_full_loadA`). Its BlockMmad component (`block_mmad_pingpong_full_loadA_tla.hpp`) is a TLA (Tensor Layout Abstraction, see [TLA Layout Design](../2_Design/02_tla/01_layout.md)) rewrite of the existing full-load component (`block_mmad_pingpong_full_loadA.hpp`), and the BlockScheduler (`GemmIdentityBlockSwizzleL1FullLoad`) directly reuses the full-load scheduling strategy of [example 25](../../../examples/25_matmul_full_loadA/README.md). [Example 44](../../../examples/44_quant_matmul_full_loadA_tla/README.md) did not add any component from scratch; all modules were completed by reusing or TLA-rewriting existing components.
 
 ## Design Stage
 
@@ -16,7 +16,7 @@ Take [example 44](../../../examples/44_quant_matmul_full_loadA_tla/README.md) as
 
 Before writing code, you first need to clarify the core requirements of the operator and **thoroughly investigate existing examples and template components** to determine which can be reused directly, which need to be rewritten by reference, and which must be developed from scratch:
 
-- **Operator functionality**: clarify the mathematical definition and computation flow of the operator. Example 44 implements the quantized matrix multiplication `D = (A_int8 × B_int8) * scale * perTokenScale`, with bf16 output.
+- **Operator functionality**: clarify the mathematical definition and computation flow of the operator. Example 44 implements the quantized matrix multiplication `D = (A_int8*B_int8) * scale * perTokenScale`, with bf16 output.
 - **Investigation of existing components**: traverse existing examples and the template components under `include/catlass/` to identify reusable resources. The investigation conclusions for example 44 are as follows:
 
     | Feature                         | Reference source                               | Reuse method               |
@@ -27,7 +27,7 @@ Before writing code, you first need to clarify the core requirements of the oper
     | Multi-core scheduling in the full-load scenario             | example 25 `25_matmul_full_loadA`          | BlockScheduler reused directly |
 
 - **Innovative features**: based on the investigation, identify the points that truly need innovation. The core innovation of example 44 is combining the two features of quantized matrix multiply and A-matrix full load, and reusing the BlockScheduler of example 25 so that the basic blocks handled by each core are distributed contiguously along N, maximizing the L1 reuse rate of the A matrix.
-- **Applicable scenarios**: clarify the benefit scenarios and constraints of the new feature. A-matrix full load brings significant benefits when the N axis is large (the A matrix can be reused many times), but it requires the L1 space to be large enough to hold the data volume of `L1TileShape::M × K`; otherwise it cannot be used.
+- **Applicable scenarios**: clarify the benefit scenarios and constraints of the new feature. A-matrix full load brings significant benefits when the N axis is large (the A matrix can be reused many times), but it requires the L1 space to be large enough to hold the data volume of `L1TileShape::M*K`; otherwise it cannot be used. This value is an element count, and the occupied bytes are `L1TileShape::M * K * sizeof(ElementA)`; the L1 capacity of Atlas A2/A3 series products is 512 KB, and the fully loaded data must fit in the available L1 space. A large N axis means that multiple basic blocks can be split along N, that is, `problemShape.N > L1TileShape::N`; in this case the same A-matrix block can be reused by multiple N-direction basic blocks. When N does not exceed one basic block, the A matrix cannot be reused and performance may be lower than that of the ordinary template.
 
 ### Solution Design
 
@@ -39,8 +39,8 @@ Determine the core template parameters of the operator, including TileShape, dat
 
 | Parameter           | Value            | Description                              |
 | -------------- | --------------- | --------------------------------- |
-| L1TileShape    | `128×256×512`   | L1-level tile size, M=128, N=256, K=512 |
-| L0TileShape    | `128×256×128`   | L0-level compute tile size                  |
+| L1TileShape    | `128*256*512`   | L1-level tile size, M=128, N=256, K=512 |
+| L0TileShape    | `128*256*128`   | L0-level compute tile size                  |
 | ElementA/B     | int8_t          | quantized input matrices                      |
 | ElementC       | int32_t         | accumulator type                        |
 | ElementD       | bfloat16_t      | final output type                      |
@@ -61,7 +61,7 @@ Split the operator into component modules and clarify the reuse/reference/new re
 
 Design the pipeline of data transfer and computation. The pipeline scheme of example 44 is shown in the following figure:
 
-- At the start of computation, the complete data block of the A matrix (`L1TileShape::M × K`) is moved into L1 in one pass through MTE2
+- At the start of computation, the complete data block of the A matrix (`L1TileShape::M*K`) is moved into L1 in one pass through MTE2
 - Then the main loop is entered, transferring the K-dimension blocks of the B matrix into L1 with pingpong, while performing the L1→L0 data transfer and the Cube computation
 - The A matrix resides in L1 and does not need to be transferred repeatedly, thus reducing MTE2 bandwidth pressure
 
@@ -111,11 +111,11 @@ Define the data types and memory layouts of all input and output tensors accordi
 
 Assemble layer by layer in the order "DispatchPolicy → BlockMmad → BlockEpilogue → BlockScheduler → Kernel → Adapter":
 
-- First determine the DispatchPolicy (such as `MmadFullLoadA`), which controls the stage counts and pipeline behavior of the caches at each level
-- Then assemble BlockMmad based on the DispatchPolicy and TileShape, specifying the TileCopy component to handle data transfer
-- Next assemble BlockEpilogue, configuring the Tile components needed for dequantization (such as `TileRowBroadcastMul`)
-- Then select the appropriate BlockScheduler depending on whether the M dimension needs core splitting (use `GemmIdentityBlockSwizzleL1FullLoad` in the full-load scenario and `GemmIdentityBlockSwizzle` in the ordinary scenario)
-- Finally assemble BlockMmad, BlockEpilogue, and BlockScheduler into a Kernel, and complete the invocation through the DeviceGemm adapter
+1. First determine the DispatchPolicy (such as `MmadFullLoadA`), which controls the stage counts and pipeline behavior of the caches at each level
+2. Then assemble BlockMmad based on the DispatchPolicy and TileShape, specifying the TileCopy component to handle data transfer
+3. Next assemble BlockEpilogue, configuring the Tile components needed for dequantization (such as `TileRowBroadcastMul`)
+4. Then select the appropriate BlockScheduler depending on whether the M dimension needs core splitting (use `GemmIdentityBlockSwizzleL1FullLoad` in the full-load scenario and `GemmIdentityBlockSwizzle` in the ordinary scenario)
+5. Finally assemble BlockMmad, BlockEpilogue, and BlockScheduler into a Kernel, and complete the invocation through the DeviceGemm adapter
 
 **(3) Selection of the core-splitting strategy**
 
@@ -130,7 +130,7 @@ The Kernel layer is the execution entry of the operator, responsible for schedul
 
 **(1) Parameter structure design**
 
-Define two levels of parameter structures, `Arguments` (user interface layer) and `Params` (kernel execution layer). The Arguments of example 44 contain problemShape, aicCoreNum, the input tensor group (A/B), and the output tensor group (Scale/PerTokenScale/D).
+Define two levels of parameter structures, `Arguments` (user interface layer) and `Params` (kernel execution layer). The Arguments of example 44 contain problemShape (problem sizes M/N/K), aicCoreNum (the number of AIC cores participating in the computation, used by BlockScheduler to divide tasks), the input tensor group (A/B), and the output tensor group (scale/perTokenScale/D).
 
 **(2) AIC core implementation**
 
@@ -139,6 +139,8 @@ The AIC core is responsible for the matrix multiply computation, and its core fl
 - Initialize BlockScheduler and obtain the total loop count
 - Define the global tensors pointing to GM
 - Loop over each block: compute block coordinates → compute the GM offset → call BlockMmad to perform the matrix multiply → write the result to the Workspace
+
+The Workspace is GM memory requested by the host through `GetWorkspaceSize` and allocated with `aclrtMalloc`. It is used to pass intermediate results between the AIC and AIV cores. Example 44 sets `workspaceStages = 2`, which allocates two basic-block-sized buffers per AIC so that AIC writes and AIV reads can overlap in a double-buffered pipeline.
 
 **(3) AIV core implementation**
 
@@ -161,7 +163,7 @@ The Block layer is the core of innovative example development. The following use
 
 BlockMmad is responsible for managing the L1/L0 caches, performing data transfer, and executing Cube computation. The `BlockMmadTla` of example 44 (`block_mmad_pingpong_full_loadA_tla.hpp`) is a TLA rewrite of the existing full-load component `block_mmad_pingpong_full_loadA.hpp`:
 
-- L1 cache allocation: the A matrix occupies the `L1TileShape::M × K` space (fully loaded), and the B matrix occupies the `L1TileShape::N × L1TileShape::K × 2` space (double-buffer pingpong)
+- L1 cache allocation: the A matrix occupies the `L1TileShape::M*K` space (fully loaded), and the B matrix occupies the `L1TileShape::N*L1TileShape::K*2` space (double-buffer pingpong)
 - The constructor completes the allocation of the L1/L0 buffers and the event initialization
 - operator() implements: first load the complete A matrix into L1 in one pass → enter the K-dimension loop → pingpong-load the B matrix blocks → L1→L0 transfer → Cube computation → L0C write-back
 
@@ -171,8 +173,8 @@ The core difference from an ordinary pingpong BlockMmad is that the A matrix is 
 
 BlockEpilogue is responsible for post-processing the matrix multiply result. The `BlockEpilogue` of example 44 directly reuses the per-token dequantization scheme of example 42:
 
-- UB cache allocation: allocate double-buffer space for each of the C matrix, Scale, PerTokenScale, and the output D matrix
-- Computation flow: load C and Scale from GM into UB → execute tileRowBroadcastMul (per-channel multiply) → load PerTokenScale → execute tileOneBlkColumnBroadcastMul (per-token multiply) → type conversion (int32→bf16) → write back to GM
+- UB cache allocation: allocate double-buffer space for each of the C matrix, scale, perTokenScale, and the output D matrix
+- Computation flow: load C and scale from GM into UB → execute tileRowBroadcastMul (per-channel multiply) → load perTokenScale → execute tileOneBlkColumnBroadcastMul (per-token multiply) → type conversion (int32→bf16) → write back to GM
 - Overlap computation and transfer through UB double-buffer rotation
 
 **(3) BlockScheduler — multi-core scheduling component** (see [BlockScheduler Code Development](./05_block_scheduler_development.md) for details)
@@ -195,15 +197,20 @@ Taking example 44 as an example, the TileMmad and TileCopy used inside its Block
 
 ### Compilation and Debugging
 
-Use the following commands to build and run the example:
+Run the following commands from the repository root to build and run the example:
 
 ```bash
-# build
+# Build the example; the executable is installed to output/bin
 bash scripts/build.sh 44_quant_matmul_full_loadA_tla
 
-# run
-./output/bin/44_quant_matmul_full_loadA_tla 512 4096 1024 0
+# Change to the directory of the executable
+cd output/bin
+# Executable file name | Matrix M-axis | N-axis | K-axis | Device ID (optional, defaults to 0)
+# The K-axis is limited by L1 capacity and must not exceed 2048
+./44_quant_matmul_full_loadA_tla 512 4096 1024 0
 ```
+
+On a successful build the log shows `[INFO] Target '44_quant_matmul_full_loadA_tla' built successfully`; on success the program prints `Compare success.`, indicating that the precision check passed.
 
 During development, it is recommended to use the [performance tuning tools](./08_evaluation.md) for simulation verification, checking through the pipeline chart whether the overlap of data transfer and computation meets expectations.
 
@@ -211,13 +218,13 @@ During development, it is recommended to use the [performance tuning tools](./08
 
 ### Precision Testing
 
-- Use the benchmark functions in `examples/common/golden.hpp` or implement a benchmark yourself, and compare the error between the operator output and the benchmark result
-- Execute at least 200 generalization precision test cases, covering different M/N/K combinations
-- Example 44 uses `golden::QuantMatmul` as the precision benchmark and compares the error of the bf16 output
+- Use the benchmark functions in [`examples/common/golden.hpp`](../../../examples/common/golden.hpp), or implement a benchmark by referring to the function signatures there, and compare the error between the operator output and the benchmark result
+- Execute at least 200 generalization precision test cases, covering different M/N/K combinations, including values below, equal to, and above the TileShape of each axis as well as non-aligned shapes
+- Example 44 uses `golden::QuantMatmul` as the precision benchmark and compares the bf16 output against the criteria in [`compare_data.hpp`](../../../examples/common/golden/compare_data.hpp): the relative tolerance is $2^{-7}$ when the accumulation count is below 2048 and $2^{-6}$ otherwise, with each element judged by $|actual-expected| \le rtol \times \max(1/256, |expected|)$
 
 ### Performance Testing
 
-- Compare performance with the benchmark operator to verify the benefits of the new feature. Example 44 uses `12_quant_matmul` as the benchmark and improves performance by 5%~15% in scenarios with a large N axis
+- Compare performance with the benchmark operator to verify the benefits of the new feature. Example 44 uses [12_quant_matmul](../../../examples/12_quant_matmul/README.md) as the benchmark and improves performance by 5%~15% in scenarios with a large N axis
 - Record the performance data, test environment, and benchmark information in the operator design document
 - If the performance does not meet expectations, refer to [Performance Bottleneck Analysis and Optimization Techniques](./evaluation/bottleneck_analysis_and_optimization.md) for localization and optimization
 
@@ -225,7 +232,7 @@ During development, it is recommended to use the [performance tuning tools](./08
 
 ### Code Specification Check
 
-- Ensure the code conforms to the project code style (refer to the `.clang-format` configuration)
+- Ensure the code conforms to the project code style (refer to the [.clang-format](../../../.clang-format) configuration)
 - Check the naming conventions: the example directory uses the `${id}_${op_name}` format, and file names use the lowercase-with-underscores style
 - Add the necessary copyright notice and License header
 

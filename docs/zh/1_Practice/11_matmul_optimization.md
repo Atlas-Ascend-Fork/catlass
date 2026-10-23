@@ -17,7 +17,7 @@ CATLASS算子模板库的定位，是针对GEMM类算子提供的模板样例库
 ### Matmul硬件可视化
 
 Atlas A2/A3系列产品硬件架构，参考[昇腾社区文档-基本架构](https://www.hiascend.com/document/redirect/CannCommunityAscendChibasic)。
-基础matmul切块、数据搬运、计算涉及的硬件架构如下图，由于使能了doubleBuffer，在L1/L0A/L0B上会保存两块Tile数据。
+基础matmul切块、数据搬运、计算涉及的硬件架构如下图，由于启用了doubleBuffer，在L1/L0A/L0B上会保存两块Tile数据。
 
 <img src="https://www.hiascend.com/doc_center/source/zh/CANNCommunityEdition/850/opdevg/Ascendcopdevg/figure/zh-cn_image_0000002502735896.png" width="80%">
 
@@ -92,7 +92,7 @@ struct MmadAtlasA2Pingpong : public MmadAtlasA2  {
 ```
 
 - [04_padding_matmul](../../../examples/04_padding_matmul/padding_matmul.cpp)，基于00_basic_matmul增加了输入矩阵的padding动作，实验发现RowMajor矩阵的shape[1]为512B对齐时，矩阵搬运效率更高，所以增加padding动作可以提高**非对齐场景**性能。
-- [06_optimized_matmul](../../../examples/06_optimized_matmul/optimized_matmul.cpp)，采用`MmadAtlasA2Preload`的`dispatchPolicy`，使能预加载和`shuffleK`动作。预加载动作减少搬运流水的中断情况，`shuffleK`打乱了不同核搬运`L1Tile`的顺序，减少了Bank冲突，使得基本块同行或同列的核在访问AB矩阵时的地址错开。同时也增加了输入矩阵向`L1TileShape`对齐的`padding`动作。相比[`basic_matmul`](../../../examples/00_basic_matmul/README.md)引入了更多优化动作，但也引入了Vector核使能和一些scalar计算的开销。
+- [06_optimized_matmul](../../../examples/06_optimized_matmul/optimized_matmul.cpp)，采用`MmadAtlasA2Preload`的`dispatchPolicy`，启用预加载和`shuffleK`动作。预加载动作减少搬运流水的中断情况，`shuffleK`打乱了不同核搬运`L1Tile`的顺序，减少了Bank冲突，使得基本块同行或同列的核在访问AB矩阵时的地址错开。同时也增加了输入矩阵向`L1TileShape`对齐的`padding`动作。相比[`basic_matmul`](../../../examples/00_basic_matmul/README.md)引入了更多优化动作，但也引入了Vector核启用和一些scalar计算的开销。
 
 ```cpp
 template <bool ENABLE_UNIT_FLAG_ = false, bool ENABLE_SHUFFLE_K_ = false>

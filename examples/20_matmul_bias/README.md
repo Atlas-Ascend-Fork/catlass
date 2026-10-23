@@ -1,37 +1,68 @@
 # MatmulBias Example Readme
 
-## 代码组织
+## 功能说明
 
-```text
-├── 20_matmul_bias
-│   ├── CMakeLists.txt   # CMake编译文件
-│   ├── README.md
-│   └── matmul_bias.cpp # 主文件
-```
+- 算子功能：完成矩阵乘并在结果上叠加一维偏置
+- 计算公式：
+
+  $$
+    \begin{aligned}
+    D &= A \times B + bias \\
+    D_{i,j} &= \Sigma_{k} A_{i,k}B_{k,j} + bias_{j}
+    \end{aligned}
+  $$
+
+  其中$A$和$B$分别是形如`(m,k)`，`(k,n)`的输入矩阵，$bias$是形如`(n,)`的偏置向量，$D$是形如`(m,n)`的输出矩阵。
+
+- 支持产品型号：Atlas A2/A3系列产品
+
+## 样例参数说明
+
+| 参数       | 属性 |shape|dtype| 说明                                                             |
+| ---------- | ------ | --------|---------|----------------------------------------------- |
+| `A`        | Input  | `(m,k)` | `float16/bfloat16` | 左矩阵，layout支持`RowMajor`（默认）和`ColumnMajor`  |
+| `B`        | Input  | `(k,n)` | `float16/bfloat16` | 右矩阵，layout支持`RowMajor`（默认）和`ColumnMajor`，数据类型与左矩阵一致 |
+| `bias`     | Input  | `(n,)`  | `float16` | 一维偏置，长度等于`n`|
+| `D`        | Output | `(m,n)` | `float16/bfloat16` | 矩阵乘加偏置的结果，layout仅支持`RowMajor`，数据类型与左矩阵一致 |
+
+## 使用范围说明
+
+本样例在基础矩阵乘的基础上融合一维偏置。
 
 ## 使用示例
 
-- 获取代码之后编译相应的算子可执行文件，可参考[quickstart](../../docs/zh/1_Practice/01_quick_start.md#编译执行)
-- matmul_bias在对float32输入数据计算时，为防止超过L1 Cache上限，推荐tiling如下：
-
-```cpp
-using L1TileShape = GemmShape<112, 128, 256>;
-using L0TileShape = GemmShape<112, 128, 64>;
-```
-
-- 执行算子
+### 命令行参数
 
 ```bash
-# 编译指定用例
-bash scripts/build.sh 20_matmul_bias
-cd output/bin
-# 可执行文件名 |矩阵m轴|n轴|k轴|Device ID
-# Device ID可选，默认为0
-./20_matmul_bias 256 512 1024 0
+20_matmul_bias [m] [n] [k] [deviceId]
 ```
 
-执行结果如下，说明精度比对成功。
+上述命令行参数具体说明如下：
 
-```text
-Compare success.
-```
+| 参数 | 默认值 | 参数说明 |
+| --- | --- | --- |
+| `m` | 无 | A 矩阵的 m 轴大小 |
+| `n` | 无 | B 矩阵的 n 轴大小，同时是 bias 的长度 |
+| `k` | 无 | A/B 矩阵的 k 轴大小 |
+| `deviceId` | `0` | 指定运行设备ID |
+
+### 执行示例
+
+1. 进入项目根目录，编译样例代码生成相应的算子可执行文件。
+
+    ```bash
+    bash scripts/build.sh 20_matmul_bias
+    ```
+
+2. 切换到可执行文件的编译目录 `output/bin`，执行算子样例程序。
+
+    ```bash
+    cd output/bin
+    ./20_matmul_bias 256 512 1024 0
+    ```
+
+3. 执行结果如下，说明样例执行成功，精度通过：
+
+    ```text
+    Compare success.
+    ```

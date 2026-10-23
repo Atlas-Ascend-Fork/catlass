@@ -1,44 +1,68 @@
 # MatmulFullLoadA Example Readme
 
-## 代码组织
+## 功能说明
 
-```text
-├── 25_matmul_full_loadA
-│   ├── CMakeLists.txt   # CMake编译文件
-│   ├── README.md
-│   └── matmul_full_loadA.cpp # 主文件
-```
+- 算子功能：完成矩阵乘，并将左矩阵 A 的分块整块常驻 L1（Full Load A），减少 K 方向重复搬运
+- 计算公式：
 
-## 功能介绍
+  $$
+    \begin{aligned}
+    C &= A \times B \\
+    C_{i,j} &= \Sigma_{k} A_{i,k}B_{k,j}
+    \end{aligned}
+  $$
 
-- 该算子在00_basic_matmul基础上支持A矩阵全载（需要一半的L1空间分配给数据量为`L1TileShape::M * problemShape.K`的矩阵），计算每个基本块时完整搬入A矩阵分块，而后pingpong搬入B矩阵；若L1空间不够A矩阵全载，则返回报错；
-- A矩阵全载时，N轴越大，单核越能多次复用L1中的A矩阵、无需再从GM或L2 Cache搬运A矩阵，性能收益就越大；
-- A矩阵全载时，N轴较小，无法复用A矩阵，性能收益较00_basic_matmul可能会出现劣化；
-- 若problemShape.M <= L1TileShape::M，即M方向不切块分核，此时常用GemmIdentityBlockSwizzle策略即可适用；
-- 若problemShape.M > L1TileShape::M，新增配套的GemmIdentityBlockSwizzleL1FullLoad<SwizzleOffset, SwizzleDirection, AicCoreNum>，使得每个核需要处理的基本块尽可能地连在一起，提升A矩阵分核全载时的块间复用率；
-- 需满足约束: L1TileShape::M \* k * 2B + L1TileShape::K \* L1TileShape::N \* L1_STAGES \* 2B  不超过L1_SIZE，在当前配置下，输入矩阵k轴不应超过1024。
-- 以24个cube核为例，常用的GemmIdentityBlockSwizzle策略，基本块分核顺序为0-1-2-...-22-23-0-1-2...-22-23-0-1-2...，每个核需要处理的基本块跳跃分布。新增的GemmIdentityBlockSwizzleL1FullLoad策略，基本块分核顺序为0-0..-0-1-1...-1-2-2...-23，每个核需要处理的基本块连续分布。
+  其中$A$和$B$分别是形如`(m,k)`，`(k,n)`的输入矩阵，$C$是形如`(m,n)`的输出矩阵。
+
+- 支持产品型号：Atlas A2/A3系列产品
+
+## 样例参数说明
+
+| 参数       | 属性 |shape|dtype| 说明                                                             |
+| ---------- | ------ | --------|---------|----------------------------------------------- |
+| `A`        | Input  | `(m,k)` | `float16/bfloat16` | 左矩阵，layout支持`RowMajor`（默认）和`ColumnMajor`  |
+| `B`        | Input  | `(k,n)` | `float16/bfloat16` | 右矩阵，layout支持`RowMajor`（默认）和`ColumnMajor`，数据类型与左矩阵一致 |
+| `C`        | Output | `(m,n)` | `float16/bfloat16` | 矩阵乘结果，layout仅支持`RowMajor`，数据类型与左矩阵一致 |
+
+## 使用范围说明
+
+该算子在00_basic_matmul基础上支持A矩阵全载，以减少A矩阵在部分矩阵计算场景中的重复搬运，提高性能。 注意：需满足下述约束：
+- L1TileShape::M \* k * 2B + L1TileShape::K \* L1TileShape::N \* L1_STAGES \* 2B  不超过L1_SIZE，在当前配置下，输入矩阵k轴不应超过1024。
 
 ## 使用示例
 
-- 获取代码之后编译相应的算子可执行文件，可参考[quickstart](../../docs/zh/1_Practice/01_quick_start.md#编译执行)
-- 执行算子
+### 命令行参数
 
 ```bash
-# 编译指定用例
-bash scripts/build.sh 25_matmul_full_loadA
-cd output/bin
-# 可执行文件名 |矩阵m轴|n轴|k轴|Device ID
-# Device ID可选，默认为0
-./25_matmul_full_loadA 256 512 1024 0
+25_matmul_full_loadA [m] [n] [k] [deviceId]
 ```
 
-执行结果如下，说明精度比对成功。
+上述命令行参数具体说明如下：
 
-```text
-Compare success.
-```
+| 参数 | 默认值 | 参数说明 |
+| --- | --- | --- |
+| `m` | 无 | A 矩阵的 m 轴大小 |
+| `n` | 无 | B 矩阵的 n 轴大小 |
+| `k` | 无 | A/B 矩阵的 k 轴大小 |
+| `deviceId` | `0` | 指定运行设备ID |
 
-## 模板推荐场景
+### 执行示例
 
-推荐 MNK 范围：`K ≤ 1024`，`N` 越大收益越大，推荐大 N 的窄 A 场景（如 `N ≥ 2048`）。
+1. 进入项目根目录，编译样例代码生成相应的算子可执行文件。
+
+    ```bash
+    bash scripts/build.sh 25_matmul_full_loadA
+    ```
+
+2. 切换到可执行文件的编译目录 `output/bin`，执行算子样例程序。
+
+    ```bash
+    cd output/bin
+    ./25_matmul_full_loadA 256 512 1024 0
+    ```
+
+3. 执行结果如下，说明样例执行成功，精度通过：
+
+    ```text
+    Compare success.
+    ```

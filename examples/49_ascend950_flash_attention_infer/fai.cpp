@@ -112,10 +112,6 @@ static bool CanImplement(
              << ") for GQA/MQA." << endl;
         return false;
     }
-    if (qSeqlen > kvSeqlen) {
-        cerr << "[ERROR] qSeqlen (" << qSeqlen << ") must not exceed kvSeqlen (" << kvSeqlen << ")." << endl;
-        return false;
-    }
     if ((dataType != "half") && (dataType != "bf16")) {
         cerr << "[ERROR] dtype must be 'half' or 'bf16'." << endl;
         return false;

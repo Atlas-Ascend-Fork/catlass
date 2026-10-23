@@ -67,14 +67,6 @@ class TestFlashAttentionInfer:
         kv_dtype: int
 
     @classmethod
-    def check_attr(
-        cls, batch: int, q_seqlen: int, kv_seqlen: int, num_blocks: int, block_size: int
-    ):
-        if q_seqlen > kv_seqlen:
-            logging("[ERROR] q_seqlen cannot exceed kv_seqlen.")
-            sys.exit()
-
-    @classmethod
     def group_matmul(cls, head, kv_head, left, right):
         group_num = head // kv_head
         score = None

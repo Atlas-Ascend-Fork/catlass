@@ -26,8 +26,8 @@
 | `mask` | Input | `(qTokenNum, kvSeqlen)` | `uint8` | causal 掩码，仅 `maskType=1` 时需要 |
 | `output` | Output | `(qTokenNum, numHeads, headDim)` | `fp16/bf16` | 注意力计算结果，layout 固定 `RowMajor` |
 | `batch` | Attr | - | `int` | `batch ≥ 1`，推荐 `1 ≤ batch ≤ 16` |
-| `qSeqlen` | Attr | - | `int` | `qSeqlen ≤ kvSeqlen`，推荐 `1 ≤ qSeqlen ≤ 16384` |
-| `kvSeqlen` | Attr | - | `int` | `kvSeqlen ≥ qSeqlen`，推荐 `1 ≤ kvSeqlen ≤ 16384` |
+| `qSeqlen` | Attr | - | `int` | 推荐 `1 ≤ qSeqlen ≤ 16384` |
+| `kvSeqlen` | Attr | - | `int` | 推荐 `1 ≤ kvSeqlen ≤ 16384` |
 | `numHeads` | Attr | - | `int` | `≥ kvHeads` 且为 `kvHeads` 的正整数倍（GQA/MQA），推荐 `1 ≤ numHeads ≤ 16` |
 | `kvHeads` | Attr | - | `int` | `kvHeads ≥ 1` 且整除 `numHeads`，推荐 `1 ≤ kvHeads ≤ 16` |
 | `headDim`（`embeddingSize`） | Attr | - | `int` | `headDim ≤ 128`，推荐 `128` |
@@ -64,7 +64,7 @@ python gen_data.py [batch] [qSeqlen] [kvSeqlen] [numHeads] [kvHeads] [headSize] 
 | 参数 | 默认值 | 参数说明 |
 | --- | --- | --- |
 | `batch` | 无 | batch 大小 |
-| `qSeqlen` | 无 | query 序列长度，须 ≤ `kvSeqlen` |
+| `qSeqlen` | 无 | query 序列长度 |
 | `kvSeqlen` | 无 | key/value 序列长度 |
 | `numHeads` | 无 | query 头数，须为 `kvHeads` 的正整数倍（GQA/MQA） |
 | `kvHeads` | 无 | key/value 头数 |

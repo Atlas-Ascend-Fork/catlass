@@ -207,6 +207,56 @@ static bool CheckOutput(const Options& options, const vector<ElementOutput>& act
     return metrics.passed;
 }
 
+static bool CanImplement(
+    const vector<uint32_t>& qSeqlenList, const vector<uint32_t>& kvSeqlenList, uint32_t numHeads, uint32_t numBlocks,
+    uint32_t blockSize, const string& dataType)
+{
+    if (qSeqlenList.empty() || kvSeqlenList.empty() || qSeqlenList.size() != kvSeqlenList.size()) {
+        cerr << "[ERROR] qSeqlenList/kvSeqlenList must be non-empty and of the same size, got " << qSeqlenList.size()
+             << " and " << kvSeqlenList.size() << endl;
+        return false;
+    }
+    for (size_t i = 0; i < qSeqlenList.size(); ++i) {
+        if (qSeqlenList[i] < 1 || qSeqlenList[i] > 4) {
+            cerr << "[ERROR] qSeqlen must be in [1, 4] (decode/MTP), got qSeqlenList[" << i << "]=" << qSeqlenList[i]
+                 << endl;
+            return false;
+        }
+        if (kvSeqlenList[i] < 128 || kvSeqlenList[i] > 16384) {
+            cerr << "[ERROR] kvSeqlen must be in [128, 16384], got kvSeqlenList[" << i << "]=" << kvSeqlenList[i]
+                 << endl;
+            return false;
+        }
+        if (kvSeqlenList[i] < qSeqlenList[i]) {
+            cerr << "[ERROR] kvSeqlen (" << kvSeqlenList[i] << ") must not be less than qSeqlen (" << qSeqlenList[i]
+                 << ")." << endl;
+            return false;
+        }
+    }
+    if (numHeads != 16 && numHeads != 32 && numHeads != 64 && numHeads != 128) {
+        cerr << "[ERROR] numHeads must be 16, 32, 64 or 128 (TP8/TP4/TP2/TP1), got " << numHeads << endl;
+        return false;
+    }
+    if (blockSize != 128) {
+        cerr << "[ERROR] blockSize must be 128, got " << blockSize << endl;
+        return false;
+    }
+    uint64_t requiredBlocks = 0;
+    for (uint32_t kv : kvSeqlenList) {
+        requiredBlocks += (static_cast<uint64_t>(kv) + blockSize - 1) / blockSize;
+    }
+    if (requiredBlocks > numBlocks) {
+        cerr << "[ERROR] numBlocks (" << numBlocks << ") is less than required "
+             << "sum(ceil(kvSeqlen / blockSize)) = " << requiredBlocks << endl;
+        return false;
+    }
+    if ((dataType != "half") && (dataType != "bf16")) {
+        cerr << "[ERROR] dtype must be 'half' or 'bf16'." << endl;
+        return false;
+    }
+    return true;
+}
+
 // Allocate several matrices in NPU device memory and call a
 // CATLASS MLA kernel.
 static bool Run(const Options& options)
@@ -251,8 +301,12 @@ static bool Run(const Options& options)
         }
     }
 
-    if ((dataType != "half") && (dataType != "bf16")) {
-        cerr << "[ERROR] dtype must be 'half' or 'bf16'." << endl;
+    if (!CanImplement(
+            options.qSeqlenList, options.kvSeqlenList, options.numHeads, options.numBlocks, options.blockSize,
+            dataType)) {
+        ACL_CHECK(aclrtDestroyStream(stream));
+        ACL_CHECK(aclrtResetDevice(options.deviceId));
+        ACL_CHECK(aclFinalize());
         return false;
     }
 

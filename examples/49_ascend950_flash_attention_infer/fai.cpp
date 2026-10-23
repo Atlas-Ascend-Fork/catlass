@@ -97,9 +97,54 @@ void FreeMem(uint8_t* host, uint8_t* device)
     ACL_CHECK(aclrtFree(device));
 }
 
+static bool CanImplement(
+    int32_t batch, int32_t qSeqlen, int32_t kvSeqlen, int32_t numHeads, int32_t kvHeads, int32_t embeddingSize,
+    int32_t isVariedLen, int32_t maskType, int32_t cacheMode, const string& dataType)
+{
+    if (batch < 1 || qSeqlen < 1 || kvSeqlen < 1 || numHeads < 1 || kvHeads < 1) {
+        cerr << "[ERROR] batch/qSeqlen/kvSeqlen/numHeads/kvHeads must all be positive, got batch=" << batch
+             << ", qSeqlen=" << qSeqlen << ", kvSeqlen=" << kvSeqlen << ", numHeads=" << numHeads
+             << ", kvHeads=" << kvHeads << endl;
+        return false;
+    }
+    if (numHeads % kvHeads != 0) {
+        cerr << "[ERROR] numHeads (" << numHeads << ") must be a positive multiple of kvHeads (" << kvHeads
+             << ") for GQA/MQA." << endl;
+        return false;
+    }
+    if (qSeqlen > kvSeqlen) {
+        cerr << "[ERROR] qSeqlen (" << qSeqlen << ") must not exceed kvSeqlen (" << kvSeqlen << ")." << endl;
+        return false;
+    }
+    if ((dataType != "half") && (dataType != "bf16")) {
+        cerr << "[ERROR] dtype must be 'half' or 'bf16'." << endl;
+        return false;
+    }
+    if (embeddingSize < 1 || embeddingSize > 128) {
+        cerr << "[ERROR] embeddingSize must be in [1, 128] (the current template only implements BlockMmadPV "
+                "output to UB), got "
+             << embeddingSize << endl;
+        return false;
+    }
+    if (isVariedLen != 0) {
+        cerr << "[ERROR] isVariedLen must be 0 (variable-length sequences are not supported yet), got " << isVariedLen
+             << endl;
+        return false;
+    }
+    if (maskType != 0 && maskType != 1) {
+        cerr << "[ERROR] maskType must be 0 (no mask) or 1 (causal mask), got " << maskType << endl;
+        return false;
+    }
+    if (cacheMode != 0 && cacheMode != 1) {
+        cerr << "[ERROR] cacheMode must be 0 (non-paged) or 1 (paged), got " << cacheMode << endl;
+        return false;
+    }
+    return true;
+}
+
 // Allocate several matrices in NPU device memory and call a
 // CATLASS FAI kernel.
-void Run(const Options& options)
+bool Run(const Options& options)
 {
     aclrtStream stream{nullptr};
     ACL_CHECK(aclInit(nullptr));
@@ -125,20 +170,12 @@ void Run(const Options& options)
     int32_t maxKvSeqlen = kvSeqlen;
     int32_t numBlocks = batch * ((maxKvSeqlen + blockSize - 1) / blockSize);
 
-    if ((dataType != "half") && (dataType != "bf16")) {
-        cerr << "[ERROR] dtype must be 'half' or 'bf16'." << endl;
-        return;
-    }
-    if (isVariedLen > 0) {
-        cerr << "[ERROR] isVariedLen must be '0'." << endl;
-        return;
-    }
-    if (embeddingSize > 128) {
-        cerr << "[ERROR] embeddingSize is only supported up to 128. The current template only implements BlockMmadPV "
-                "output to UB. "
-                "If larger embeddingSize need to be supported, the BlockMmadPV output to GM must be added."
-             << endl;
-        return;
+    if (!CanImplement(
+            batch, qSeqlen, kvSeqlen, numHeads, kvHeads, embeddingSize, isVariedLen, maskType, cacheMode, dataType)) {
+        ACL_CHECK(aclrtDestroyStream(stream));
+        ACL_CHECK(aclrtResetDevice(options.deviceId));
+        ACL_CHECK(aclFinalize());
+        return false;
     }
 
     void* qNtokens = nullptr;
@@ -184,7 +221,7 @@ void Run(const Options& options)
     ACL_CHECK(aclrtMallocHost(&qNtokens, 1 * sizeof(int32_t)));
     if (!ReadFile(dataPath + "/q_ntokens.bin", qNtokens, 1 * sizeof(int32_t))) {
         cleanupAndFinalize();
-        return;
+        return false;
     }
     int32_t numTokens = static_cast<int32_t*>(qNtokens)[0];
 
@@ -201,7 +238,7 @@ void Run(const Options& options)
     AllocMem(&qSeqHost, &qSeqDevice, seqArraySize);
     if (!ReadFile(dataPath + "/q_seqlen.bin", qSeqHost, seqArraySize)) {
         cleanupAndFinalize();
-        return;
+        return false;
     }
     ACL_CHECK(aclrtMemcpy(qSeqDevice, seqArraySize, qSeqHost, seqArraySize, ACL_MEMCPY_HOST_TO_DEVICE));
 
@@ -209,7 +246,7 @@ void Run(const Options& options)
     AllocMem(&kvSeqHost, &kvSeqDevice, seqArraySize);
     if (!ReadFile(dataPath + "/kv_seqlen.bin", kvSeqHost, seqArraySize)) {
         cleanupAndFinalize();
-        return;
+        return false;
     }
     ACL_CHECK(aclrtMemcpy(kvSeqDevice, seqArraySize, kvSeqHost, seqArraySize, ACL_MEMCPY_HOST_TO_DEVICE));
 
@@ -217,7 +254,7 @@ void Run(const Options& options)
     AllocMem(&qHost, &qDevice, qoSize);
     if (!ReadFile(dataPath + "/q.bin", qHost, qoSize)) {
         cleanupAndFinalize();
-        return;
+        return false;
     }
     ACL_CHECK(aclrtMemcpy(qDevice, qoSize, qHost, qoSize, ACL_MEMCPY_HOST_TO_DEVICE));
 
@@ -225,7 +262,7 @@ void Run(const Options& options)
     AllocMem(&kHost, &kDevice, kvSize);
     if (!ReadFile(dataPath + "/k.bin", kHost, kvSize)) {
         cleanupAndFinalize();
-        return;
+        return false;
     }
     ACL_CHECK(aclrtMemcpy(kDevice, kvSize, kHost, kvSize, ACL_MEMCPY_HOST_TO_DEVICE));
 
@@ -233,7 +270,7 @@ void Run(const Options& options)
     AllocMem(&vHost, &vDevice, kvSize);
     if (!ReadFile(dataPath + "/v.bin", vHost, kvSize)) {
         cleanupAndFinalize();
-        return;
+        return false;
     }
     ACL_CHECK(aclrtMemcpy(vDevice, kvSize, vHost, kvSize, ACL_MEMCPY_HOST_TO_DEVICE));
 
@@ -242,7 +279,7 @@ void Run(const Options& options)
         AllocMem(&maskHost, &maskDevice, maskSize);
         if (!ReadFile(dataPath + "/mask.bin", maskHost, maskSize)) {
             cleanupAndFinalize();
-            return;
+            return false;
         }
         ACL_CHECK(aclrtMemcpy(maskDevice, maskSize, maskHost, maskSize, ACL_MEMCPY_HOST_TO_DEVICE));
     }
@@ -251,7 +288,7 @@ void Run(const Options& options)
     AllocMem(&blockTableHost, &blockTableDevice, blockTableSize);
     if (cacheMode > 0 && !ReadFile(dataPath + "/block_table.bin", blockTableHost, blockTableSize)) {
         cleanupAndFinalize();
-        return;
+        return false;
     }
     ACL_CHECK(aclrtMemcpy(blockTableDevice, blockTableSize, blockTableHost, blockTableSize, ACL_MEMCPY_HOST_TO_DEVICE));
 
@@ -284,6 +321,7 @@ void Run(const Options& options)
     tilingHost = reinterpret_cast<void*>(&faTilingData);
 
     ACL_CHECK(aclrtMemcpy(tilingDevice, tilingSize, tilingHost, tilingSize, ACL_MEMCPY_HOST_TO_DEVICE));
+    bool passed = false;
     for (int i = 0; i < 1; i++) {
         if (dataType == "half") {
             if (maskType > 0 && cacheMode == 0) {
@@ -336,7 +374,7 @@ void Run(const Options& options)
         const size_t goldenSize = qoSize * 2;
         if (!ReadFile(dataPath + "/golden.bin", goldenHost.data(), goldenSize)) {
             cleanupAndFinalize();
-            return;
+            return false;
         }
 
         // Compare the result
@@ -348,6 +386,7 @@ void Run(const Options& options)
         } else {
             cout << "Compare failed. Error count: " << errorIndices.size() << endl;
         }
+        passed = errorIndices.empty();
     }
 
     // Free host memory allocations.
@@ -368,6 +407,7 @@ void Run(const Options& options)
     ACL_CHECK(aclrtDestroyStream(stream));
     ACL_CHECK(aclrtResetDevice(options.deviceId));
     ACL_CHECK(aclFinalize());
+    return passed;
 }
 
 /// Entry point to mla example.
@@ -378,6 +418,5 @@ int main(int argc, const char** argv)
     if (options.Parse(argc, argv) != 0) {
         return -1;
     }
-    Run(options);
-    return 0;
+    return Run(options) ? 0 : 1;
 }

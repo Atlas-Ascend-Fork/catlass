@@ -515,19 +515,21 @@ int32_t GetMLATilingParam(const MLAInfo& mlaInfo, uint32_t& blockDim, uint32_t* 
     }
 
     int32_t maxQseqlen = 0;
-    int32_t totalKvNumtokens = 0;
+    int64_t totalRequiredBlocks = 0;
     for (int32_t seqIdx = 0; seqIdx < mlaInfo.batch; seqIdx++) {
         int32_t qSeqLen = *(mlaInfo.qSeqLen + seqIdx);
         if (qSeqLen > NUM4) {
             cerr << "[ERROR] qSeqLen > 4 is not supported." << endl;
+            return -1;
         }
         int32_t kvSeqLen = *(mlaInfo.kvSeqLen + seqIdx);
         qSeqLen = (kvSeqLen == 0) ? 0 : qSeqLen;
         maxQseqlen = std::max(qSeqLen, maxQseqlen);
-        totalKvNumtokens += kvSeqLen;
+        totalRequiredBlocks += (static_cast<int64_t>(kvSeqLen) + mlaInfo.blockSize - 1) / mlaInfo.blockSize;
     }
-    if (totalKvNumtokens > mlaInfo.numBlocks * mlaInfo.blockSize) {
-        cerr << "[ERROR] the number of K and V tokens is too big to fit in the paged cache." << endl;
+    if (totalRequiredBlocks > mlaInfo.numBlocks) {
+        cerr << "[ERROR] the number of K and V blocks (" << totalRequiredBlocks
+             << ") is too big to fit in the paged cache (numBlocks = " << mlaInfo.numBlocks << ")." << endl;
         return -1;
     }
     float tor = static_cast<float>(1.0 / sqrt(1.0 * (mlaInfo.embeddingSize + mlaInfo.embeddingSizeRope)));

@@ -420,6 +420,7 @@ static void Run(const Options& options)
         aclrtMallocHost(&output, 128 * 128 * sizeof(fp16_t));
         aclrtMemcpy(
             output, sizeof(fp16_t) * 128 * 128, workspaceDevice, sizeof(fp16_t) * 128 * 128, ACL_MEMCPY_DEVICE_TO_HOST);
+        aclrtFreeHost(output);
 
         // Compute the golden result
         vector<float> goldenHost(oSize / sizeof(fp16_t));
@@ -444,10 +445,12 @@ static void Run(const Options& options)
     FreeMem(maskHost, maskDevice);
     FreeMem(blockTableHost, blockTableDevice);
     aclrtFree(oDevice);
+    aclrtFree(lseDevice);
     aclrtFree(tilingDevice);
     aclrtFree(workspaceDevice);
     aclrtFreeHost(tilingHost);
     aclrtFreeHost(qNtokens);
+    aclrtFreeHost(kvNtokens);
 
     // Destroy specified Stream and reset device.
     ACL_CHECK(aclrtDestroyStream(stream));

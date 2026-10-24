@@ -94,7 +94,7 @@ Note that if later Block-level implementations leverage certain specifics relate
 ```cpp
 // ...
 
-// 针对不同Dispatch特化提取的DispatchStagesGetter
+// DispatchStagesGetter specialized for different Dispatch policies
 template <class ArchTag, bool ENABLE_UNIT_FLAG, bool USE_HF32_MODE,
     uint32_t L0C_STAGES, bool ENABLE_L1_RESIDENT, uint32_t L1A_STAGES,
     uint32_t L1B_STAGES, uint32_t L0A_STAGES, uint32_t L0B_STAGES>

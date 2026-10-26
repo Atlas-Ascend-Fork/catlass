@@ -204,6 +204,16 @@ _MAKE_TENSOR_SUPPORTED_ELEMENT_TYPES = frozenset(
     }
 )
 
+# The only u64 tile the frontend admits, and only through ``make_tensor``: the
+# per-channel fixpipe dequant words, staged in L1 as a flat VectorLayout run (one
+# packed word per output channel). Nothing else has a u64 copy route -- the flat
+# GM -> L1 bc wrapper is the sole registration -- so a u64 tile on UB, GM or L0
+# cannot be moved at all. Keeping u64 out of the global set above means those
+# tiles are refused where they are built, instead of failing much later in bc
+# with no hint about which tensor was wrong.
+_U64_TILE_ADDRSPACE = "l1"
+_U64_TILE_LAYOUT_TAG = "VectorLayout"
+
 
 # An MX shared-exponent scale block nests exactly like the zZ layout, but its C0 is fixed by
 # the e8m0 scale format (2 elements per C0, 32 bytes per fractal) instead of being
@@ -4733,9 +4743,19 @@ def make_tensor(
         raise TlaLoweringError(
             f"tla.make_tensor cannot derive element type from ptr pointee {ptr_ty.pointee}"
         ) from exc
-    if dtype not in _MAKE_TENSOR_SUPPORTED_ELEMENT_TYPES:
+    if dtype not in _MAKE_TENSOR_SUPPORTED_ELEMENT_TYPES and not (
+        dtype == "u64"
+        and addr == _U64_TILE_ADDRSPACE
+        and layout._layout_tag == _U64_TILE_LAYOUT_TAG
+    ):
         raise TlaLoweringError(
             f"tla.make_tensor expects a supported element type, got [{dtype}]"
+            + (
+                "; u64 is only accepted as the L1 VectorLayout tile holding the "
+                "per-channel fixpipe dequant words"
+                if dtype == "u64"
+                else ""
+            )
         )
 
     shape_tree = _components_to_index_tree(layout._shape._components)
@@ -5112,7 +5132,7 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
     ("gm", "RowMajorMxScaleB", "l1", "nNMxScale"): ("f8e8m0",),
     ("gm", "ColMajorMxScaleB", "l1", "nNMxScale"): ("f8e8m0",),
 
-    ("gm", "VectorLayout", "l1", "VectorLayout"): ("f32", "i32"),
+    ("gm", "VectorLayout", "l1", "VectorLayout"): ("f32", "i32", "u64"),
     ("l1", "VectorLayout", "biasbuf", "VectorLayout"): ("f32", "i32"),
 
     # L1->L0 — AscendC LoadData 2dv2 accepts u32 but not u16 on dav-3510.
@@ -5198,6 +5218,11 @@ _SUPPORTED_CUBE_FIXPIPE_ROUTES = {
     ("gm", "RowMajor", "-", "PER_TENSOR", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
     ("gm", "ColumnMajor", "-", "PER_TENSOR", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
     ("gm", "ColumnMajor", "-", "PER_TENSOR", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
+
+    ("gm", "RowMajor", "-", "PER_CHANNEL", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
+    ("gm", "RowMajor", "-", "PER_CHANNEL", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
+    ("gm", "ColumnMajor", "-", "PER_CHANNEL", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
+    ("gm", "ColumnMajor", "-", "PER_CHANNEL", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
 }
 # fmt: on
 
@@ -5600,6 +5625,8 @@ def copy(
         such alternative: the bias table is a flat `N`-element run, so a
         multi-row bias tile is not representable at all -- slice the row you need
         rather than loading a taller tile.
+        The per-channel fixpipe dequant scale is the `GM`→`L1` flat route too:
+        one `u64` word per output channel, built with `VectorLayout`.
 
         Copy / tiling sizes follow each tile's logical `origin_shape`
         (not the nested physical `shape`). Physical `shape` / `stride` describe
@@ -5793,6 +5820,19 @@ def copy(
                 "CopyL0C2DstParams", "quant_tensor", params.quant_tensor, "tensor", 5
             )
             quant_tensor = _as_value(params.quant_tensor)
+            # The fixpipe reads one packed dequant word per output channel, and
+            # that word is a u64: an fp32 scale in [31:0], the int8 sign selector
+            # in [46], and the 9-bit offset in [45:37]. Anything else would reach
+            # bc as a dma copy of the wrong element width -- and the flat
+            # GM -> L1 route only registers u64 -- so refuse it here, where the
+            # message can name the argument.
+            quant_dtype = _tla_tensor_type_for_mlir_value(quant_tensor).element_type
+            if str(quant_dtype).strip().lower() != "u64":
+                _op_error(
+                    "CopyL0C2DstParams",
+                    "invalid argument 'quant_tensor' (position 5): expected a u64 "
+                    f"tile of packed dequant words, got {quant_dtype}",
+                )
         params_value = _tla_ops_gen.CopyL0C2DstParams(
             _tla_type_bridge.copy_l0c2dst_params_type_get(ctx),
             params.unit_flag,

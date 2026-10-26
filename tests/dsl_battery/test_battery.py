@@ -295,6 +295,30 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                     ]],
                 )
 
+    # --- basic_mmad fixpipe per-channel quant, with and without relu ---
+    # Same accumulator / dtype-c pairing as per-tensor. What differs is the
+    # scale: one value per output channel instead of one scalar, staged GM -> L1
+    # as a flat VectorLayout tile and handed to the fixpipe as its dequant
+    # tensor. `--layout-c col` takes the same transposing (nz2dn) store as
+    # per-tensor, with the per-channel dequant applied to the transposed tile.
+    # The kernel drives the fixpipe with the MMAD unit flag unconditionally, as
+    # per-tensor does, so there is no separate flag-sync case to cover.
+    for src, dst in FIXPIPE_QUANT_SRC_DST:
+        dtype_ab = "f32" if src == "f32" else "i8"
+        for layout_c in ("row", "col"):
+            for relu in (0, 1):
+                yield (
+                    f"mmad-fixpipe-per-channel-{layout_c}-{src}-{dst}-relu{relu}",
+                    [[
+                        "basic_mmad/basic_matmul_fixpipe_per_channel.py",
+                        *MMAD_MNK,
+                        "--dtype-ab", dtype_ab, "--dtype-c", dst,
+                        "--relu-enable", str(relu),
+                        "--layout-c", layout_c,
+                        *dev,
+                    ]],
+                )
+
     # --- basic_vadd: every dtype under each sync mode ---
     for mode in VADD_MODES:
         for dtype in VADD_DTYPES:

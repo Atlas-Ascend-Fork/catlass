@@ -81,6 +81,23 @@ CATLASS_DEVICE void copyL0CToGMQuantPerTensor(
     CopyL0CToGmTla{params}(dstTensor, srcTensor, unitFlag);
 }
 
+// L0C -> GM per-channel dequant. The scale tile lives in L1, one uint64 (a packed
+// fp32 scale) per output channel, and rides along with the fixpipe as its dequant
+// tensor.
+template <class ArchTag, LayoutTag DstLayout, typename ElementSrc, typename ElementDst, bool ReluEnable = false>
+CATLASS_DEVICE void copyL0CToGMQuantPerChannel(
+    memref_t<__cc__ ElementSrc, 1>* src, memref_t<__gm__ ElementDst, 2>* dst, memref_t<__cbuf__ uint64_t, 1>* scale,
+    const TensorDesc& srcDesc, const TensorDesc& dstDesc, const TensorDesc& scaleDesc, uint8_t unitFlag)
+{
+    auto srcTensor = makeL0CTensor<LayoutTag::L0Clayout, ElementSrc>(src, srcDesc);
+    auto dstTensor = makeGMTensor<DstLayout, ElementDst>(dst, dstDesc);
+    auto quantTensor = makeL1Tensor<LayoutTag::VectorLayout, uint64_t>(scale, scaleDesc);
+    Catlass::Gemm::Tile::CopyL0CToGmTla<
+        ArchTag, decltype(srcTensor), decltype(dstTensor), Catlass::Gemm::Tile::ScaleGranularity::PER_CHANNEL,
+        ReluEnable>{}(dstTensor, srcTensor, quantTensor, unitFlag);
+}
+
+// L0C holds fp32 MMAD accumulator; ElementDst may be f32/f16/bf16 (Ascend950 fixpipe).
 template <class ArchTag, LayoutTag DstLayout, typename ElementSrc, typename ElementDst, bool ReluEnable = false>
 CATLASS_DEVICE void copyL0CToL1(
     memref_t<__cc__ ElementSrc, 1>* src, memref_t<__cbuf__ ElementDst, 1>* dst, const TensorDesc& srcDesc,
@@ -282,16 +299,15 @@ REGISTER_GM_TO_L1(ColumnMajor, nZ, uint32_t)
 REGISTER_GM_TO_L1(ColumnMajor, nZ, fp8_e4m3fn_t)
 REGISTER_GM_TO_L1(ColumnMajor, nZ, fp8_e5m2_t)
 
-// RowMajor -> RowMajor is the contiguous-run route: the bias table staging
-// pipeline and, on the same shape, fixpipe per-channel scales. copyGMToL1
-// builds both endpoints rank-1 inside that specialization, so the VectorLayout
-// TileCopyTla specialization serves it -- no separate hand-written DMA.
 // VectorLayout -> VectorLayout is the flat contiguous run: GM and L1 both come out rank-1
 // (VectorLayout), so the VectorLayout TileCopyTla specialization in
 // copy_gm_to_l1.hpp serves it. RowMajor has no variant here: a flat tile is
 // spelled VectorLayout, and RowMajor stays two-dimensional.
 REGISTER_GM_TO_L1(VectorLayout, VectorLayout, float)
 REGISTER_GM_TO_L1(VectorLayout, VectorLayout, int32_t)
+// The per-channel fixpipe dequant scale tile is the same flat run, one u64 word
+// (a packed fp32 scale) per output channel.
+REGISTER_GM_TO_L1(VectorLayout, VectorLayout, uint64_t)
 
 REGISTER_L1_TO_L0A(zN, float)
 REGISTER_L1_TO_L0A(zN, half)
@@ -572,5 +588,49 @@ REGISTER_L0C_TO_UB(ColumnMajor, nosplit, NO_SPLIT, float, half)
 REGISTER_L0C_TO_UB(ColumnMajor, nosplit, NO_SPLIT, float, bf16)
 REGISTER_L0C_TO_UB(ColumnMajor, nosplit, NO_SPLIT, int32_t, int32_t)
 
+#define REGISTER_L0C_TO_GM_PER_CHANNEL_NORELU(LayoutDst, DTypeSrc, DTypeDst)                                       \
+    [aicore] __attribute__((always_inline)) void                                                                   \
+        _mlir_ciface_copy_l0c_to_gm_##LayoutDst##_perchannel_##DTypeSrc##_##DTypeDst(                              \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__gm__ DTypeDst, 2>* dst, DESC_ABI_PARAMS(src),            \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, memref_t<__cbuf__ uint64_t, 1>* quant, DESC_ABI_PARAMS(quant)) \
+    {                                                                                                              \
+        copyL0CToGMQuantPerChannel<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, false>(     \
+            src, dst, quant, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), TENSOR_DESC_12(quant), unitFlag);           \
+    }
+#define REGISTER_L0C_TO_GM_PER_CHANNEL_RELU(LayoutDst, DTypeSrc, DTypeDst)                                         \
+    [aicore] __attribute__((always_inline)) void                                                                   \
+        _mlir_ciface_copy_l0c_to_gm_##LayoutDst##_perchannel_relu_##DTypeSrc##_##DTypeDst(                         \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__gm__ DTypeDst, 2>* dst, DESC_ABI_PARAMS(src),            \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, memref_t<__cbuf__ uint64_t, 1>* quant, DESC_ABI_PARAMS(quant)) \
+    {                                                                                                              \
+        copyL0CToGMQuantPerChannel<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, true>(      \
+            src, dst, quant, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), TENSOR_DESC_12(quant), unitFlag);           \
+    }
+#define REGISTER_L0C_TO_GM_PER_CHANNEL(LayoutDst, DTypeSrc, DTypeDst)    \
+    REGISTER_L0C_TO_GM_PER_CHANNEL_NORELU(LayoutDst, DTypeSrc, DTypeDst) \
+    REGISTER_L0C_TO_GM_PER_CHANNEL_RELU(LayoutDst, DTypeSrc, DTypeDst)
+// PER_CHANNEL quant: the L1 uint64 scale tile rides along as the fixpipe dequant
+// tensor instead of a scalar. The symbol carries both element types, as the
+// per-tensor and no-quant routes do, so f32- and i32-accumulator registrations
+// of the same destination stay distinct. L0C -> GM per-channel covers both
+// RowMajor and ColumnMajor destinations.
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, float)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, half)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, bf16)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, int8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, uint8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, int32_t, half)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, int32_t, bf16)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, int32_t, int8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, int32_t, uint8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, float)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, half)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, bf16)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, int8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, uint8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, int32_t, half)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, int32_t, bf16)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, int32_t, int8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, int32_t, uint8_t)
 #endif
 }

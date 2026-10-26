@@ -385,8 +385,8 @@ struct CopyL0CToGmTla<
         AscendC::FixpipeParamsC310 intriParams;
 
         // Fixpipe layout information
-        intriParams.nSize = tla::get<1>(dstTensor.shape());
-        intriParams.mSize = tla::get<0>(dstTensor.shape());
+        intriParams.nSize = tla::get<1>(dstTensor.originShape());
+        intriParams.mSize = tla::get<0>(dstTensor.originShape());
         intriParams.srcStride = tla::get<1, 1>(srcTensor.stride()) / tla::get<0, 0>(srcTensor.stride());
         intriParams.dstStride = tla::get<0>(dstTensor.stride());
 
@@ -401,6 +401,52 @@ struct CopyL0CToGmTla<
 
         // Call AscendC Fixpipe
         AscendC::Fixpipe<ElementDst, ElementSrc, AscendC::CFG_ROW_MAJOR>(
+            dstTensor.data()[dstOffset], srcTensor.data()[srcOffset], quantTensor.data()[quantOffset], intriParams);
+    }
+};
+
+template <class TensorSrc_, class ElementDst_, class LayoutDst_, class CoordDst_, bool ReluEnable_>
+struct CopyL0CToGmTla<
+    Catlass::Arch::Ascend950, TensorSrc_,
+    tla::Tensor<AscendC::GlobalTensor<ElementDst_>, LayoutDst_, CoordDst_, AscendC::TPosition::GM>,
+    ScaleGranularity::PER_CHANNEL, ReluEnable_, std::enable_if_t<tla::detail::isColumnMajor<LayoutDst_>::value>> {
+    using ArchTag = Catlass::Arch::Ascend950;
+    using ElementDst = ElementDst_;
+    using ElementSrc = typename TensorSrc_::Element;
+    static constexpr auto quantPre =
+        CopyL0CToDstQuantMode<ArchTag, ElementSrc, ElementDst, ScaleGranularity::PER_CHANNEL>::VALUE;
+    static constexpr auto reluEn = ReluEnable_;
+
+    template <class TensorDst, class TensorSrc, class TensorQuant>
+    CATLASS_DEVICE void operator()(
+        TensorDst const& dstTensor, TensorSrc const& srcTensor, TensorQuant const& quantTensor, uint8_t unitFlag = 0)
+    {
+        static_assert(
+            tla::detail::isColumnMajor<typename TensorDst::Layout>::value &&
+                TensorSrc::position == AscendC::TPosition::CO1 && TensorDst::position == AscendC::TPosition::GM,
+            "The input parameters do not match. TensorSrc must be L0C, while TensorDst must be GM and ColumnMajor");
+
+        AscendC::FixpipeParamsC310<AscendC::CO2Layout::COLUMN_MAJOR> intriParams;
+
+        intriParams.nSize = tla::get<1>(dstTensor.originShape());
+        intriParams.mSize = tla::get<0>(dstTensor.originShape());
+        intriParams.srcStride = tla::get<1, 1>(srcTensor.stride()) / tla::get<0, 0>(srcTensor.stride());
+        intriParams.dstStride = tla::get<1>(dstTensor.stride());
+        intriParams.params = AscendC::Nz2DnParams(
+            1,  // dnNum
+            0,  // srcNzMatrixStride
+            0,  // dstDnMatrixStride
+            1); // srcNzC0Stride
+
+        intriParams.quantPre = quantPre;
+        intriParams.reluEn = reluEn;
+        intriParams.unitFlag = unitFlag;
+
+        auto dstOffset = dstTensor.layout()(dstTensor.coord());
+        auto srcOffset = srcTensor.layout()(srcTensor.coord());
+        auto quantOffset = quantTensor.layout()(quantTensor.coord());
+
+        AscendC::Fixpipe<ElementDst, ElementSrc, AscendC::CFG_COLUMN_MAJOR>(
             dstTensor.data()[dstOffset], srcTensor.data()[srcOffset], quantTensor.data()[quantOffset], intriParams);
     }
 };

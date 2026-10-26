@@ -524,7 +524,7 @@ struct LowerTlaCopyPattern : public OpRewritePattern<::tla::CopyOp> {
         uint8_t subBlockId = 0;
         Value quantScale;
         Value quantOffset;
-        Value quantTensor;
+        TensorDescriptor quantDesc;
     };
 
     /// Decode the tla.CopyL0C2DstParams operand of an L0C-source copy.
@@ -580,6 +580,17 @@ struct LowerTlaCopyPattern : public OpRewritePattern<::tla::CopyOp> {
             info.quantOffset = l0c2DstParamsOp.getQuantOffset();
         } else if (info.quantMode == QuantMode::PER_CHANNEL) {
             extraDesc += "perchannel_";
+            Value quantTensor = l0c2DstParamsOp.getQuantTensor();
+            if (!quantTensor || !::llvm::isa<::tla::TlaTensorType>(quantTensor.getType())) {
+                op->emitError("PER_CHANNEL copy requires a tensor quant_tensor operand");
+                return failure();
+            }
+            auto quantIt = tensorDescriptorByValue.find(quantTensor);
+            if (quantIt == tensorDescriptorByValue.end()) {
+                op->emitError("missing descriptor for per-channel quant tensor");
+                return failure();
+            }
+            info.quantDesc = quantIt->second;
         }
         if (info.relu_enable) {
             extraDesc += "relu_";
@@ -683,6 +694,18 @@ struct LowerTlaCopyPattern : public OpRewritePattern<::tla::CopyOp> {
                         quantOffset = rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 32);
                     operandTypes.push_back(rewriter.getI32Type());
                     operands.push_back(quantOffset);
+                } else if (l0c2DstInfo.quantMode == QuantMode::PER_CHANNEL) {
+                    FailureOr<Value> quantRuntimeMemref = buildRuntimeMemref(l0c2DstInfo.quantDesc);
+                    if (failed(quantRuntimeMemref))
+                        return failure();
+                    operandTypes.push_back((*quantRuntimeMemref).getType());
+                    operands.push_back(*quantRuntimeMemref);
+                    SmallVector<Value, 12> quantPayload =
+                        ::tla::buildCopyPayloadForDescriptor(rewriter, op.getLoc(), l0c2DstInfo.quantDesc);
+                    for (Value quantValue : quantPayload) {
+                        operandTypes.push_back(quantValue.getType());
+                        operands.push_back(quantValue);
+                    }
                 }
             }
             auto callee = ::tla::getOrCreateRuntimeCall(op->getParentOfType<ModuleOp>(), calleeName, operandTypes);

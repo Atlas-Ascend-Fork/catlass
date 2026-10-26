@@ -1084,3 +1084,112 @@ def test_frontend_rejects_pertensor_offset_that_is_not_i32(
         match=r"quant_offset.*expected int or Int32",
     ):
         _pertensor_offset_kernel(offset).dump_mlir(type_args=(gm,))
+
+
+def _perchannel_quant_kernel(quant_dtype: object):
+    """Build a PER_CHANNEL kernel whose quant_tensor has ``quant_dtype``.
+
+    The fixpipe reads one packed dequant word per output channel, and that word
+    is u64. A tile of any other element type would reach bc as a copy of the
+    wrong width -- and only u64 is registered on the flat GM -> L1 route -- so
+    the frontend refuses it rather than failing later in the pass pipeline.
+    """
+
+    @tla.kernel
+    def kernel(gm_c: tla.Tensor, quant: tla.Tensor) -> None:
+        gm_tile = tla.tile_view(gm_c, tla.make_shape(32, 32), tla.make_coord(0, 0))
+        l0c = tla.make_tensor_like(
+            tla.allocate((32, 32), tla.Float32, tla.AddressSpace.l0c, 512),
+            gm_tile,
+            tla.arch.L0Clayout,
+        )
+        with tla.cube():
+            tla.copy(
+                gm_tile,
+                l0c,
+                tla.params.CopyL0C2DstParams(
+                    quant_mode=tla.params.QuantMode.PER_CHANNEL,
+                    quant_tensor=quant,
+                ),
+            )
+
+    return kernel
+
+
+def _quant_tensor(dtype: object) -> object:
+    return make_fake_tensor(
+        dtype, (32,), (1,), origin_shape=(32,), layout_tag=tla.arch.VectorLayout
+    )
+
+
+def test_frontend_accepts_perchannel_u64_quant_tensor() -> None:
+    """The packed dequant words are u64; that is the accepted element type."""
+    gm = _fp_tensor(tla.Int8, tla.arch.RowMajor)
+    mlir = _perchannel_quant_kernel(tla.UInt64).dump_mlir(
+        type_args=(gm, _quant_tensor(tla.UInt64))
+    )
+    assert "quant_mode = #tla.quant_mode<PER_CHANNEL>" in mlir
+
+
+@pytest.mark.parametrize(
+    ("label", "dtype"),
+    [
+        ("u32", tla.UInt32),
+        ("i64", tla.Int64),
+        ("f32", tla.Float32),
+        ("u8", tla.UInt8),
+    ],
+)
+def test_frontend_rejects_perchannel_quant_tensor_that_is_not_u64(
+    label: str, dtype: object
+) -> None:
+    """A quant tile of any other width is refused, naming the argument."""
+    gm = _fp_tensor(tla.Int8, tla.arch.RowMajor)
+    with pytest.raises(
+        runtime_mod.TlaCoreAPIError,
+        match=r"quant_tensor.*expected a u64 tile",
+    ):
+        _perchannel_quant_kernel(dtype).dump_mlir(type_args=(gm, _quant_tensor(dtype)))
+
+
+def _u64_tile_kernel(addrspace: object, layout_tag: object):
+    """Build a u64 tile in ``addrspace`` with ``layout_tag``."""
+
+    @tla.kernel
+    def kernel() -> None:
+        ptr = tla.allocate(32, tla.UInt64, addrspace, 512)
+        tla.make_tensor(
+            ptr,
+            tla.make_layout(
+                tla.make_shape(32), tla.make_stride(1), layoutTag=layout_tag
+            ),
+        )
+
+    return kernel
+
+
+def test_frontend_accepts_u64_l1_vectorlayout_tile() -> None:
+    """The per-channel dequant run is the one u64 tile the frontend admits."""
+    _u64_tile_kernel(tla.AddressSpace.l1, tla.arch.VectorLayout).dump_mlir()
+
+
+@pytest.mark.parametrize(
+    ("label", "addrspace", "layout_tag"),
+    [
+        ("ub", tla.AddressSpace.ub, tla.arch.VectorLayout),
+        ("l1-rowmajor", tla.AddressSpace.l1, tla.arch.RowMajor),
+    ],
+)
+def test_frontend_rejects_u64_tile_outside_the_dequant_run(
+    label: str, addrspace: object, layout_tag: object
+) -> None:
+    """u64 has exactly one copy route, so any other tile is refused at build time.
+
+    Admitting u64 globally would let a UB or row-major L1 u64 tile through the
+    frontend, to fail much later in bc where no wrapper exists.
+    """
+    with pytest.raises(
+        TlaLoweringError,
+        match=r"u64 is only accepted as the L1 VectorLayout tile",
+    ):
+        _u64_tile_kernel(addrspace, layout_tag).dump_mlir()

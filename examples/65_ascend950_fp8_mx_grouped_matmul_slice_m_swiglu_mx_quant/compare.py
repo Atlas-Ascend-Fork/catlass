@@ -14,8 +14,6 @@ import os
 import sys
 import argparse
 import torch
-import math
-from typing import Tuple
 import numpy as np
 from en_dtypes import float8_e8m0
 from ml_dtypes import float8_e4m3fn, float8_e5m2
@@ -39,14 +37,14 @@ def swiglu(gmm_out):
 
 def quant(swiglu_out, mx_quant_dtype):
     MX_BLOCK_SIZE = 32
-    MAX_EXP_FOR_BF16 = 0x7f80
-    BF16_EXP_BIAS = 0x7f00
+    MAX_EXP_FOR_BF16 = 0x7F80
+    BF16_EXP_BIAS = 0x7F00
     SHR_NUM_FOR_BF16 = 7
     EMAX_SHIFTED = 0x0400
-    NAN_CUSTOMIZATION = 0x7f81
-    MAX_EXP_FOR_FP8 = 0x00ff
+    NAN_CUSTOMIZATION = 0x7F81
+    MAX_EXP_FOR_FP8 = 0x00FF
     SPECIAL_EXP_THRESHOLD = 0x0040
-    
+
     if mx_quant_dtype == 36:
         EMAX_SHIFTED = 0x0400
     elif mx_quant_dtype == 35:
@@ -98,8 +96,12 @@ def quant(swiglu_out, mx_quant_dtype):
     half_scale_val = torch.where(zero_mask, half_scale_val, t_zero)
     half_scale_val = torch.where(special_data_mask, t_special, half_scale_val)
 
-    half_scale_expanded = half_scale_val.unsqueeze(-1).expand(-1, -1, MX_BLOCK_SIZE).reshape(M, N_padded)
-    half_scale_bf16 = half_scale_expanded.to(torch.int16).contiguous().view(torch.bfloat16)
+    half_scale_expanded = (
+        half_scale_val.unsqueeze(-1).expand(-1, -1, MX_BLOCK_SIZE).reshape(M, N_padded)
+    )
+    half_scale_bf16 = (
+        half_scale_expanded.to(torch.int16).contiguous().view(torch.bfloat16)
+    )
 
     scaled_data = data_padded * half_scale_bf16
     scaled_data_f32 = scaled_data.to(torch.float32)[:, :N]
@@ -130,27 +132,38 @@ def golden_compute(group, m, n, k, quant_type_str):
         dtype = float8_e4m3fn
         mx_quant_dtype = 36
     elif quant_type_str == "float8_e5m2":
-        dtype = float8_e5m2fn
+        dtype = float8_e5m2
         mx_quant_dtype = 35
     else:
         raise ValueError(f"不支持的量化类型: {quant_type_str}")
 
-    a=np.fromfile(os.path.join(input_dir, "a_8.bin"),dtype=dtype)
-    a_scale=np.fromfile(os.path.join(input_dir, "a_scale.bin"),dtype=float8_e8m0)
-    b=np.fromfile(os.path.join(input_dir, "b_8_trans.bin"),dtype=dtype)
-    b_scale=np.fromfile(os.path.join(input_dir, "b_scale_trans.bin"),dtype=float8_e8m0)
+    a = np.fromfile(os.path.join(input_dir, "a_8.bin"), dtype=dtype)
+    a_scale = np.fromfile(os.path.join(input_dir, "a_scale.bin"), dtype=float8_e8m0)
+    b = np.fromfile(os.path.join(input_dir, "b_8_trans.bin"), dtype=dtype)
+    b_scale = np.fromfile(
+        os.path.join(input_dir, "b_scale_trans.bin"), dtype=float8_e8m0
+    )
 
-    group_list = np.fromfile(os.path.join(input_dir, "group_list.bin"),dtype=np.int64)
+    group_list = np.fromfile(os.path.join(input_dir, "group_list.bin"), dtype=np.int64)
     group_list = np.cumsum(group_list)
 
-    k0 = ceilDiv(k,64)
+    k0 = ceilDiv(k, 64)
     x = a.reshape(m, k).astype(np.float32)
-    x_s = np.repeat(a_scale.reshape(m,k0*2), 32, axis=-1).astype(np.float32)
-    w = b.reshape(group,n,k).transpose(0,2,1).astype(np.float32)
-    w_s = np.repeat(b_scale.reshape(group,n,k0*2), 32, axis=-1).transpose(0,2,1).astype(np.float32)
-    
+    x_s = np.repeat(a_scale.reshape(m, k0 * 2), 32, axis=-1).astype(np.float32)
+    w = b.reshape(group, n, k).transpose(0, 2, 1).astype(np.float32)
+    w_s = (
+        np.repeat(b_scale.reshape(group, n, k0 * 2), 32, axis=-1)
+        .transpose(0, 2, 1)
+        .astype(np.float32)
+    )
+
     x_pad_len = x_s.shape[-1] - x.shape[-1]
-    x = np.pad(x, [(0, 0)] * (len(x.shape) - 1) + [(0, x_pad_len)], mode='constant', constant_values=0)
+    x = np.pad(
+        x,
+        [(0, 0)] * (len(x.shape) - 1) + [(0, x_pad_len)],
+        mode="constant",
+        constant_values=0,
+    )
     x = torch.from_numpy(x)
     x_s = torch.from_numpy(x_s)
 
@@ -161,19 +174,21 @@ def golden_compute(group, m, n, k, quant_type_str):
         w_temp = w[i]
         w_s_temp = w_s[i]
         w_pad_len = w_s_temp.shape[-2] - w_temp.shape[-2]
-        w_temp = np.pad(w_temp, [(0, w_pad_len)] + [(0, 0)], mode='constant', constant_values=0)
+        w_temp = np.pad(
+            w_temp, [(0, w_pad_len)] + [(0, 0)], mode="constant", constant_values=0
+        )
         w_temp = torch.from_numpy(w_temp)
         w_s_temp = torch.from_numpy(w_s_temp)
         x2 = w_temp * w_s_temp
         if i == 0:
-            x1_temp = x1[:group_list[i], :]
+            x1_temp = x1[: group_list[i], :]
         else:
-            x1_temp = x1[group_list[i-1]:group_list[i], :]
+            x1_temp = x1[group_list[i - 1] : group_list[i], :]
 
         gmm_out = torch.matmul(x1_temp, x2)
         torch.set_printoptions(threshold=torch.inf)
-        has_inf = torch.isinf(gmm_out).any()
-        has_nan = torch.isnan(gmm_out).any()
+        _has_inf = torch.isinf(gmm_out).any()
+        _has_nan = torch.isnan(gmm_out).any()
         swiglu_out = swiglu(gmm_out)
         swiglu_out = swiglu_out.to(torch.bfloat16)
         swiglu_out = swiglu_out.to(torch.float32)
@@ -181,10 +196,10 @@ def golden_compute(group, m, n, k, quant_type_str):
 
         grouped_quant_output.append(quant_output)
         grouped_quant_scale_output.append(quant_scale_output)
-    
+
     result_np = np.concatenate(grouped_quant_output, axis=0)
     result_np.tofile(os.path.join(golden_dir, "golden_result.bin"))
-    
+
     result_scale_np = np.concatenate(grouped_quant_scale_output, axis=0)
     result_scale_np.tofile(os.path.join(golden_dir, "golden_result_scale.bin"))
 
@@ -215,9 +230,9 @@ def golden_high_precision_compute(group, m, n, k, quant_type_str):
     grouped_quant_scale_output = []
     for i in range(group):
         if i == 0:
-            a_slice = a_fp32[:group_list[i], :]
+            a_slice = a_fp32[: group_list[i], :]
         else:
-            a_slice = a_fp32[group_list[i-1]:group_list[i], :]
+            a_slice = a_fp32[group_list[i - 1] : group_list[i], :]
 
         gmm_out = torch.matmul(a_slice, b_fp32[i])
         swiglu_out = swiglu(gmm_out)
@@ -230,7 +245,9 @@ def golden_high_precision_compute(group, m, n, k, quant_type_str):
     result_np.tofile(os.path.join(golden_dir, "golden_high_precision_result.bin"))
 
     result_scale_np = np.concatenate(grouped_quant_scale_output, axis=0)
-    result_scale_np.tofile(os.path.join(golden_dir, "golden_high_precision_result_scale.bin"))
+    result_scale_np.tofile(
+        os.path.join(golden_dir, "golden_high_precision_result_scale.bin")
+    )
 
 
 def compare_results(quant_type_str, m, n):
@@ -239,10 +256,10 @@ def compare_results(quant_type_str, m, n):
 
     if quant_type_str == "float8_e4m3fn":
         dtype = float8_e4m3fn
-        err = 2 ** -4
+        err = 2**-4
     elif quant_type_str == "float8_e5m2":
         dtype = float8_e5m2
-        err = 2 ** -3
+        err = 2**-3
     else:
         raise ValueError(f"不支持的量化类型: {quant_type_str}")
 
@@ -253,29 +270,58 @@ def compare_results(quant_type_str, m, n):
     q_scale_row_stride = ceilDiv(N_half, 32)
 
     example_result = np.fromfile(os.path.join(golden_dir, "result.bin"), dtype=dtype)
-    example_result = example_result.reshape(m, N_half)[:valid_m, :].flatten().astype(np.float32)
-    example_scale = np.fromfile(os.path.join(golden_dir, "result_scale.bin"), dtype=float8_e8m0)
-    example_scale = example_scale.reshape(m, q_scale_row_stride)[:valid_m, :].flatten().astype(np.float32)
-    golden_result = np.fromfile(os.path.join(golden_dir, "golden_result.bin"), dtype=dtype).astype(np.float32)
-    golden_scale = np.fromfile(os.path.join(golden_dir, "golden_result_scale.bin"), dtype=float8_e8m0).astype(np.float32)
-    hp_result = np.fromfile(os.path.join(golden_dir, "golden_high_precision_result.bin"), dtype=dtype).astype(np.float32)
-    hp_scale = np.fromfile(os.path.join(golden_dir, "golden_high_precision_result_scale.bin"), dtype=float8_e8m0).astype(np.float32)
+    example_result = (
+        example_result.reshape(m, N_half)[:valid_m, :].flatten().astype(np.float32)
+    )
+    example_scale = np.fromfile(
+        os.path.join(golden_dir, "result_scale.bin"), dtype=float8_e8m0
+    )
+    example_scale = (
+        example_scale.reshape(m, q_scale_row_stride)[:valid_m, :]
+        .flatten()
+        .astype(np.float32)
+    )
+    golden_result = np.fromfile(
+        os.path.join(golden_dir, "golden_result.bin"), dtype=dtype
+    ).astype(np.float32)
+    golden_scale = np.fromfile(
+        os.path.join(golden_dir, "golden_result_scale.bin"), dtype=float8_e8m0
+    ).astype(np.float32)
+    hp_result = np.fromfile(
+        os.path.join(golden_dir, "golden_high_precision_result.bin"), dtype=dtype
+    ).astype(np.float32)
+    hp_scale = np.fromfile(
+        os.path.join(golden_dir, "golden_high_precision_result_scale.bin"),
+        dtype=float8_e8m0,
+    ).astype(np.float32)
 
     if example_result.size != hp_result.size or golden_result.size != hp_result.size:
-        print(f"Compare failed. Size mismatch: example={example_result.size}, golden={golden_result.size}, hp={hp_result.size}")
+        print(
+            f"Compare failed. Size mismatch: example={example_result.size}, golden={golden_result.size}, hp={hp_result.size}"
+        )
         sys.exit(1)
     if example_scale.size != hp_scale.size or golden_scale.size != hp_scale.size:
-        print(f"Compare failed. Scale size mismatch: example={example_scale.size}, golden={golden_scale.size}, hp={hp_scale.size}")
+        print(
+            f"Compare failed. Scale size mismatch: example={example_scale.size}, golden={golden_scale.size}, hp={hp_scale.size}"
+        )
         sys.exit(1)
 
-    error_example = np.abs(hp_result - example_result) / np.maximum(np.abs(hp_result), 1.0)
-    error_golden = np.abs(hp_result - golden_result) / np.maximum(np.abs(hp_result), 1.0)
+    error_example = np.abs(hp_result - example_result) / np.maximum(
+        np.abs(hp_result), 1.0
+    )
+    error_golden = np.abs(hp_result - golden_result) / np.maximum(
+        np.abs(hp_result), 1.0
+    )
 
     failed_mask_result = error_example > np.maximum(error_golden, err) * 2
     failed_count_result = int(np.sum(failed_mask_result))
 
-    error_example_scale = np.abs(hp_scale - example_scale) / np.maximum(np.abs(hp_scale), 1.0)
-    error_golden_scale = np.abs(hp_scale - golden_scale) / np.maximum(np.abs(hp_scale), 1.0)
+    error_example_scale = np.abs(hp_scale - example_scale) / np.maximum(
+        np.abs(hp_scale), 1.0
+    )
+    error_golden_scale = np.abs(hp_scale - golden_scale) / np.maximum(
+        np.abs(hp_scale), 1.0
+    )
 
     failed_mask_scale = error_example_scale > np.maximum(error_golden_scale, err) * 2
     failed_count_scale = int(np.sum(failed_mask_scale))
@@ -283,19 +329,23 @@ def compare_results(quant_type_str, m, n):
     if failed_count_result == 0 and failed_count_scale == 0:
         print("Compare success.")
     else:
-        print(f"Compare failed. Error count: Q: {failed_count_result}, QScale: {failed_count_scale}")
+        print(
+            f"Compare failed. Error count: Q: {failed_count_result}, QScale: {failed_count_scale}"
+        )
         sys.exit(1)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('problem_count', type=int)
-    parser.add_argument('m', type=int)
-    parser.add_argument('n', type=int)
-    parser.add_argument('k', type=int)
+    parser.add_argument("problem_count", type=int)
+    parser.add_argument("m", type=int)
+    parser.add_argument("n", type=int)
+    parser.add_argument("k", type=int)
     args = parser.parse_args()
 
-    quant_type = 'float8_e4m3fn'
+    quant_type = "float8_e4m3fn"
     golden_compute(args.problem_count, args.m, args.n, args.k, quant_type)
-    golden_high_precision_compute(args.problem_count, args.m, args.n, args.k, quant_type)
+    golden_high_precision_compute(
+        args.problem_count, args.m, args.n, args.k, quant_type
+    )
     compare_results(quant_type, args.m, args.n)

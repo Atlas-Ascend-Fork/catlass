@@ -64,8 +64,9 @@ def matmul_evg_silu_kernel(
 
     dtype_a = gm_a.ptr.dtype
     dtype_b = gm_b.ptr.dtype
-    dtype_gm_c = gm_d.ptr.dtype
+    dtype_d = gm_d.ptr.dtype
     DTYPE_C = tla.Float32  # L0C accumulator only
+    DTYPE_GM_C = tla.Float32  # workspace and UB accumulator are fp32
 
     m = gm_a.origin_shape[0]
     n = gm_b.origin_shape[1]
@@ -136,13 +137,13 @@ def matmul_evg_silu_kernel(
     )
 
     # ---- UB allocates ----
-    ub_acc_ptr0 = tla.allocate(UB_SLOT_ELEMS, dtype_gm_c, tla.AddressSpace.ub, 256)
-    ub_out_ptr0 = tla.allocate(UB_SLOT_ELEMS, dtype_gm_c, tla.AddressSpace.ub, 256)
+    ub_acc_ptr0 = tla.allocate(UB_SLOT_ELEMS, DTYPE_GM_C, tla.AddressSpace.ub, 256)
+    ub_out_ptr0 = tla.allocate(UB_SLOT_ELEMS, dtype_d, tla.AddressSpace.ub, 256)
     ub_acc_ptr1 = ub_acc_ptr0
     ub_out_ptr1 = ub_out_ptr0
     if tla.const_expr(EVG_UB_STAGES >= 2):
-        ub_acc_ptr1 = tla.allocate(UB_SLOT_ELEMS, dtype_gm_c, tla.AddressSpace.ub, 256)
-        ub_out_ptr1 = tla.allocate(UB_SLOT_ELEMS, dtype_gm_c, tla.AddressSpace.ub, 256)
+        ub_acc_ptr1 = tla.allocate(UB_SLOT_ELEMS, DTYPE_GM_C, tla.AddressSpace.ub, 256)
+        ub_out_ptr1 = tla.allocate(UB_SLOT_ELEMS, dtype_d, tla.AddressSpace.ub, 256)
 
     # ---- grid / swizzle setup ----
     grid_m = (m + _tiling.l1_tm - 1) // _tiling.l1_tm
@@ -157,6 +158,24 @@ def matmul_evg_silu_kernel(
         swizzle_tile_count = (
             grid_n + _swizzle.SWIZZLE_OFFSET - 1
         ) // _swizzle.SWIZZLE_OFFSET
+
+    # ---- cast preset ----
+    if tla.const_expr(dtype_d != DTYPE_GM_C):
+        if tla.const_expr(dtype_d == tla.Float16):
+            cast_to_gm_params = tla.params.CastParams(
+                reg_slot=tla.params.RegSlot.ZERO,
+                sat_mode=tla.params.SatMode.NOSAT,
+                round_mode=tla.params.RoundMode.CAST_FLOOR,
+            )
+        else:
+            cast_to_gm_params = tla.params.CastParams(
+                reg_slot=tla.params.RegSlot.ZERO,
+                sat_mode=tla.params.SatMode.NOSAT,
+                round_mode=tla.params.RoundMode.CAST_ROUND,
+            )
+        pack_store = tla.params.NormalStoreParams(
+            store_dist=tla.params.StoreDist.DIST_PACK_B32
+        )
 
     # ---- cube: prime flags; MN tile loop; K pingpong; FixPipe; handoff; drain ----
     with tla.cube():
@@ -528,6 +547,11 @@ def matmul_evg_silu_kernel(
                     with tla.vec.func(mode="simd"):
                         for row_i in tla.range(c0, tile_rows, c1):
                             remaining = tile_cols
+                            remaining_store = tile_cols
+                            if tla.const_expr(dtype_d != DTYPE_GM_C):
+                                # pack_b32 maps two 16-bit source lanes per stored element.
+                                remaining_store *= 2
+                            # execute inplace silu operation
                             for col_j in tla.range(c0, n_simd_strips, c1):
                                 c_chunk = tla.tile_view(
                                     ub_acc,
@@ -540,14 +564,20 @@ def matmul_evg_silu_kernel(
                                     tla.make_coord(row_i, col_j),
                                 )
                                 tail, remaining = tla.update_mask(
-                                    remaining, dtype=dtype_gm_c
+                                    remaining, dtype=DTYPE_GM_C
                                 )
                                 # Silu(x) = x / (1 + exp(-x)) = x * sigmoid(x)
                                 xv = c_chunk.load()
                                 den = 1.0 + tla.exp(tla.neg(xv, mask=tail), mask=tail)
-                                result_chunk.store(
-                                    tla.div(xv, den, mask=tail), mask=tail
-                                )
+                                out = tla.div(xv, den, mask=tail)
+                                if tla.const_expr(dtype_d != DTYPE_GM_C):
+                                    out = out.to(dtype_d, cast_to_gm_params, mask=tail)
+                                    store_tail, remaining_store = tla.update_mask(
+                                        remaining_store, dtype=dtype_d
+                                    )
+                                    result_chunk.store(out, pack_store, mask=store_tail)
+                                else:
+                                    result_chunk.store(out, mask=tail)
 
                     if use_ub_stage1:
                         tla.set_flag(ub_acc1_available)
@@ -618,6 +648,10 @@ def matmul_evg_silu_kernel(
                         with tla.vec.func(mode="simd"):
                             for r_i in tla.range(c0, tile_rows, c1):
                                 remaining = tile_cols
+                                remaining_store = tile_cols
+                                if tla.const_expr(dtype_d != DTYPE_GM_C):
+                                    # pack_b32 maps two 16-bit source lanes per stored element.
+                                    remaining_store *= 2
                                 for col_j in tla.range(c0, n_simd_strips, c1):
                                     c_chunk = tla.tile_view(
                                         ub_acc,
@@ -630,16 +664,26 @@ def matmul_evg_silu_kernel(
                                         tla.make_coord(r_i, col_j),
                                     )
                                     tail, remaining = tla.update_mask(
-                                        remaining, dtype=dtype_gm_c
+                                        remaining, dtype=DTYPE_GM_C
                                     )
                                     # Silu(x) = x / (1 + exp(-x))
                                     xv = c_chunk.load()
                                     den = 1.0 + tla.exp(
                                         tla.neg(xv, mask=tail), mask=tail
                                     )
-                                    result_chunk.store(
-                                        tla.div(xv, den, mask=tail), mask=tail
-                                    )
+                                    out = tla.div(xv, den, mask=tail)
+                                    if tla.const_expr(dtype_d != DTYPE_GM_C):
+                                        out = out.to(
+                                            dtype_d, cast_to_gm_params, mask=tail
+                                        )
+                                        store_tail, remaining_store = tla.update_mask(
+                                            remaining_store, dtype=dtype_d
+                                        )
+                                        result_chunk.store(
+                                            out, pack_store, mask=store_tail
+                                        )
+                                    else:
+                                        result_chunk.store(out, mask=tail)
 
                         if use_ub_stage1:
                             tla.set_flag(ub_acc1_available)
@@ -676,11 +720,12 @@ DEFAULT_CACHE_DIR = EXAMPLE_DIR / "artifacts" / "runtime-cache"
 DESCRIPTION = "Matmul EVG silu: D=silu(A@B) via L0C→GM workspace + AIV; dynamic GM."
 
 
-def _compute_ub_slots(dtype_c: str) -> tuple[int, int]:
-    """Compute UB_SLOT_ELEMS / SIMD_LANES according to the stages and element data type."""
+def _compute_ub_slots() -> tuple[int, int]:
+    """Size UB slots in fp32 elements: workspace/Acc and silu compute are fp32."""
+    dtype_acc = tla.Float32.dtype
     return (
-        compute_ub_slot_elems(dtype_c, nodes=EVG_UB_NODES, stages=EVG_UB_STAGES),
-        VECTOR_ELE // dtype_size_bytes(dtype_c),
+        compute_ub_slot_elems(dtype_acc, nodes=EVG_UB_NODES, stages=EVG_UB_STAGES),
+        VECTOR_ELE // dtype_size_bytes(dtype_acc),
     )
 
 
@@ -707,7 +752,7 @@ def run(args: argparse.Namespace) -> int:
     a = torch.rand(args.m, args.k, dtype=dtype_a, device="npu") * 10.0 - 5.0
     b = torch.rand(args.k, args.n, dtype=dtype_b, device="npu") * 10.0 - 5.0
     d = torch.zeros(args.m, args.n, dtype=dtype_c, device="npu")
-    workspace = torch.zeros(args.m, args.n, dtype=dtype_c, device="npu")
+    workspace = torch.zeros(args.m, args.n, dtype=torch.float32, device="npu")
     ref = torch.nn.functional.silu(a.float() @ b.float())
     if dtype_c in (torch.float16, torch.bfloat16):
         ref = ref.to(dtype_c).float()
@@ -719,7 +764,7 @@ def run(args: argparse.Namespace) -> int:
     d_tensor = create_tla_tensor(d, "row")
     wks_tensor = create_tla_tensor(workspace, "row")
 
-    _ub_slot_elements, _simd_lanes = _compute_ub_slots(args.dtype_c)
+    _ub_slot_elements, _simd_lanes = _compute_ub_slots()
     artifact = tla.compile(
         matmul_evg_silu_kernel,
         a_tensor,

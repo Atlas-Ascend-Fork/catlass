@@ -1154,6 +1154,33 @@ static mlir::LogicalResult verifyUpdatePtr(mlir::Operation* op, mlir::Value ptr,
     return mlir::success();
 }
 
+static mlir::LogicalResult verifyOptionalBlockStride(mlir::Operation* op, mlir::Value stride)
+{
+    if (!stride)
+        return mlir::success();
+    if (auto constantOp = stride.getDefiningOp<mlir::arith::ConstantOp>()) {
+        if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(constantOp.getValue())) {
+            int64_t value = intAttr.getInt();
+            if (value < 0 || value > 0xFFFF)
+                return op->emitOpError("block_stride must be in [0, 65535]");
+        }
+    }
+    return mlir::success();
+}
+
+static mlir::LogicalResult verifyDataBlockUpdateStride(mlir::Operation* op, mlir::Value stride)
+{
+    if (failed(verifyUpdateStride(op, stride)))
+        return mlir::failure();
+    if (auto constantOp = stride.getDefiningOp<mlir::arith::ConstantOp>()) {
+        if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(constantOp.getValue())) {
+            if (intAttr.getInt() > 0xFFFF)
+                return op->emitOpError("DATA_BLOCK_COPY post_update_stride must be in [1, 65535]");
+        }
+    }
+    return mlir::success();
+}
+
 mlir::LogicalResult LoadUpdateOp::verify()
 {
     if (!hasEnclosingRegion<VecFuncOp>(getOperation()))
@@ -1165,8 +1192,14 @@ mlir::LogicalResult LoadUpdateOp::verify()
         return emitOpError("source !tla.tensor must be in ub address space");
     if (!mlir::isa<VectorSSAType>(getResult().getType()))
         return emitOpError("result must be !tla.vector");
-    if (failed(verifyUpdateStride(getOperation(), getPostUpdateStride())))
+    if (failed(verifyOptionalBlockStride(getOperation(), getBlockStride())))
         return mlir::failure();
+    if (getBlockStride()) {
+        if (failed(verifyDataBlockUpdateStride(getOperation(), getPostUpdateStride())))
+            return mlir::failure();
+    } else if (failed(verifyUpdateStride(getOperation(), getPostUpdateStride()))) {
+        return mlir::failure();
+    }
     return verifyUpdatePtr(getOperation(), getNextPtr(), sourceType.getPtr().getPointee());
 }
 
@@ -1181,8 +1214,14 @@ mlir::LogicalResult StoreUpdateOp::verify()
         return emitOpError("dest !tla.tensor must be in ub address space");
     if (!mlir::isa<VectorSSAType>(getSource().getType()))
         return emitOpError("source must be !tla.vector");
-    if (failed(verifyUpdateStride(getOperation(), getPostUpdateStride())))
+    if (failed(verifyOptionalBlockStride(getOperation(), getBlockStride())))
         return mlir::failure();
+    if (getBlockStride()) {
+        if (failed(verifyDataBlockUpdateStride(getOperation(), getPostUpdateStride())))
+            return mlir::failure();
+    } else if (failed(verifyUpdateStride(getOperation(), getPostUpdateStride()))) {
+        return mlir::failure();
+    }
     if (failed(verifyUpdatePtr(getOperation(), getNextPtr(), destType.getPtr().getPointee())))
         return mlir::failure();
     return verifyMaskMatchesVector(getOperation(), getMask(), getSource().getType());

@@ -257,14 +257,53 @@ def _validate_post_update_params(params: Any) -> bool:
     """Return True if UPDATE is requested; raise on illegal combinations."""
     from ..core_api import _const_int_value
     from ..execution_lowering import TlaLoweringError
-    from ..params import LoadDist, PostMode, StoreDist
+    from ..params import (
+        BlockLoadParams,
+        BlockStoreParams,
+        LoadDist,
+        PostMode,
+        StoreDist,
+    )
 
+    # Params without PostMode fields are never UPDATE.
     if not hasattr(params, "post_mode"):
         return False
+    # BlockLoad NORMAL: nonzero repeat_stride is the vsldb pre-offset.
+    # BlockStore NORMAL: no pre-offset path — nonzero must not be ignored.
+    # Block UPDATE: repeat_stride is the vsldb/vsstb POST repeat stride.
+    if isinstance(params, (BlockLoadParams, BlockStoreParams)):
+        stride = params.repeat_stride
+        static_stride = None if isinstance(stride, bool) else _const_int_value(stride)
+        if params.post_mode != PostMode.POST_MODE_UPDATE:
+            # static_stride is None for runtime values; NORMAL must stay 0.
+            if isinstance(params, BlockStoreParams) and static_stride != 0:
+                raise TlaLoweringError(
+                    "BlockStoreParams.repeat_stride requires "
+                    "post_mode=update; NORMAL BlockStore has no pre-offset "
+                    f"(got repeat_stride={params.repeat_stride!r})"
+                )
+            return False
+        if static_stride is not None and not 0 < static_stride <= 0xFFFF:
+            raise TlaLoweringError(
+                "DATA_BLOCK_COPY post_mode=update requires "
+                "repeat_stride in [1, 65535] (32B DataBlocks), got "
+                f"{params.repeat_stride!r}"
+            )
+        block_stride = getattr(params, "block_stride", 0)
+        if (
+            isinstance(block_stride, int)
+            and not isinstance(block_stride, bool)
+            and not 0 <= block_stride <= 0xFFFF
+        ):
+            raise TlaLoweringError(
+                "DATA_BLOCK_COPY block_stride must be in [0, 65535], got "
+                f"{block_stride}"
+            )
+        return True
 
-    is_update = params.post_mode == PostMode.POST_MODE_UPDATE
     stride = params.post_update_stride
     static_stride = None if isinstance(stride, bool) else _const_int_value(stride)
+    is_update = params.post_mode == PostMode.POST_MODE_UPDATE
     if is_update:
         load_dist = getattr(params, "load_dist", None)
         if load_dist is not None and load_dist != LoadDist.DIST_NORM:
@@ -495,7 +534,7 @@ class _Tensor(TensorABC):
               `BlockLoadParams` is a stride-based `DataBlock` gather: one load gathers
               8 blocks whose heads are `block_stride` blocks (32B `DataBlock` units)
               apart; `block_stride == 0` repeats the first block into all
-              8 slots; `post_update_stride` is the compile-time address
+              8 slots; `repeat_stride` is the compile-time address
               pre-offset in 32B blocks.
               `MaskLoadParams.load_dist` may be `DIST_NORM` (default bit-packed
               mask load), `DIST_US` (bit upsample), or `DIST_DS` (bit
@@ -511,7 +550,7 @@ class _Tensor(TensorABC):
               `dintlv_b32` needs f32; `blk` works for any element size.
             - `BlockLoadParams` requires a 2/4-byte element type
               (f32/f16/bf16/i32/u32/i16/u16); `block_stride` and
-              `post_update_stride` must fit in [0, 65535].
+              `repeat_stride` must fit in [0, 65535].
             - ``DIST_US`` / ``DIST_DS``: UB element type may be any
               b8/b16/b32/b64 scalar. The element type only types the UB
               address; the mask bit layout does not depend on element width.
@@ -665,29 +704,38 @@ class _Tensor(TensorABC):
             )
 
         if _validate_post_update_params(params):
-            if not isinstance(params, NormalLoadParams):
+            is_block = isinstance(params, BlockLoadParams)
+            if not is_block and not isinstance(params, NormalLoadParams):
                 raise TlaLoweringError(
-                    "post_mode=update on tile.load only accepts NormalLoadParams; "
-                    f"got {type(params).__name__}"
+                    "post_mode=update on tile.load only accepts NormalLoadParams "
+                    f"or BlockLoadParams, got {type(params).__name__}"
                 )
             window = _require_update_origin_window(self, loc=loc)
-            _require_update_unit_stride(window)
+            if not is_block:
+                _require_update_unit_stride(window)
             source = _as_value(window)
             source_desc = _tla_tensor_type_for_mlir_value(source)
-            _require_update_supported_dtype(source_desc.element_type)
+            if not is_block:
+                _require_update_supported_dtype(source_desc.element_type)
             result_type = _coerce_type(
                 _vector_ssa_type_from_tensor_descriptor(source_desc)
             )
             ptr_type = _tla_type_bridge.tensor_ptr_type_get(source.type)
-            vec_val, live_ptr = _tla_ops_gen.load_update(
+            load_kwargs: dict[str, Any] = {"loc": loc}
+            if is_block:
+                load_kwargs["block_stride"] = _as_value(params.block_stride)
+            update_stride = (
+                params.repeat_stride if is_block else params.post_update_stride
+            )
+            vec_val, next_ptr = _tla_ops_gen.load_update(
                 result_type,
                 ptr_type,
                 source,
-                _as_value(params.post_update_stride),
-                loc=loc,
+                _as_value(update_stride),
+                **load_kwargs,
             )
             return VectorSSA(vec_val), _make_update_tile_from_ptr(
-                live_ptr, window, loc=loc
+                next_ptr, window, loc=loc
             )
         if isinstance(params, UnalignLoadParams) and params.is_pre:
             raise NotImplementedError(f"currently unsupported is_pre {params.is_pre}")
@@ -730,7 +778,7 @@ class _Tensor(TensorABC):
             # out-of-range values at compile time (Issue 519 acceptance).
             for stride_name, stride_value in (
                 ("block_stride", params.block_stride),
-                ("post_update_stride", params.post_update_stride),
+                ("repeat_stride", params.repeat_stride),
             ):
                 if not 0 <= stride_value <= 0xFFFF:
                     raise TlaLoweringError(
@@ -868,11 +916,11 @@ class _Tensor(TensorABC):
             return tuple(VectorSSA(result) for result in results)
 
         block_stride_attr = params.block_stride if is_block_load else None
-        # BlockLoadParams.post_update_stride is vsldb repeat_stride (NORMAL
+        # BlockLoadParams.repeat_stride is vsldb repeat_stride (NORMAL
         # compile-time pre-offset in 32B DataBlocks).
         repeat_stride_attr = (
-            params.post_update_stride
-            if is_block_load and params.post_update_stride != 0
+            params.repeat_stride
+            if is_block_load and params.repeat_stride != 0
             else None
         )
         result = _tla_ops_gen.load(
@@ -1023,29 +1071,37 @@ class _Tensor(TensorABC):
                 f"MaskStoreParams, got {type(params).__name__}"
             )
         if _validate_post_update_params(params):
-            if not isinstance(params, NormalStoreParams):
+            is_block = isinstance(params, BlockStoreParams)
+            if not is_block and not isinstance(params, NormalStoreParams):
                 raise TlaLoweringError(
-                    "post_mode=update on tile.store only accepts NormalStoreParams; "
-                    f"got {type(params).__name__}"
+                    "post_mode=update on tile.store only accepts NormalStoreParams "
+                    f"or BlockStoreParams, got {type(params).__name__}"
                 )
             mask_val = _as_value(mask) if mask is not None else None
             if mask_val is not None:
                 _require_category("store", "mask", mask, "mask_ssa", 2)
                 _require_mask_matches_vector("store", mask_val, value_val)
             window = _require_update_origin_window(self, loc=loc)
-            _require_update_unit_stride(window)
+            if not is_block:
+                _require_update_unit_stride(window)
             dest = _as_value(window)
-            _require_update_supported_dtype(
-                _tla_tensor_type_for_mlir_value(dest).element_type
-            )
+            if not is_block:
+                _require_update_supported_dtype(
+                    _tla_tensor_type_for_mlir_value(dest).element_type
+                )
             ptr_type = _tla_type_bridge.tensor_ptr_type_get(dest.type)
+            store_kwargs: dict[str, Any] = {"mask": mask_val, "loc": loc}
+            if is_block:
+                store_kwargs["block_stride"] = _as_value(params.block_stride)
+            update_stride = (
+                params.repeat_stride if is_block else params.post_update_stride
+            )
             next_ptr = _tla_ops_gen.store_update(
                 ptr_type,
                 dest,
                 value_val,
-                _as_value(params.post_update_stride),
-                mask=mask_val,
-                loc=loc,
+                _as_value(update_stride),
+                **store_kwargs,
             )
             return _make_update_tile_from_ptr(next_ptr, window, loc=loc)
         mask_val = _as_value(mask) if mask is not None else None

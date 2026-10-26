@@ -52,6 +52,42 @@ REGISTER_VSSTB(uint16_t, uint16)
 REGISTER_VSSTB(int8_t, int8)
 REGISTER_VSSTB_AS_BYTES(fp8_e4m3fn_t, fp8_e4m3fn)
 REGISTER_VSSTB_AS_BYTES(fp8_e5m2_t, fp8_e5m2)
+
+// DATA_BLOCK_COPY POST_MODE_UPDATE. vsstb.post is not an HIVMC op. AscendC
+// updates the pointer argument; return that hardware pointer. No software
+// offset advance.
+#define REGISTER_VSSTB_POST_UPDATE_RETPTR(Dtype, dtype)                                                               \
+    __aiv__ __attribute__((always_inline)) __ubuf__ Dtype* _mlir_ciface_store_with_stride_post_update_retptr_##dtype( \
+        VectorReg<Dtype> srcReg, __ubuf__ Dtype* dstAddr, int32_t blockStride, int32_t repeatStride, ave_preg preg)   \
+    {                                                                                                                 \
+        __ubuf__ Dtype* p = dstAddr;                                                                                  \
+        int32_t strideConfig = (blockStride << 16) | (repeatStride & 0xFFFF);                                         \
+        vector_bool mask = convertAVEPregToVecBool(preg);                                                             \
+        vsstb(srcReg, p, strideConfig, mask, POST_UPDATE);                                                            \
+        return p;                                                                                                     \
+    }
+
+#define REGISTER_VSSTB_POST_UPDATE_RETPTR_AS_BYTES(Dtype, dtype)                                                      \
+    __aiv__ __attribute__((always_inline)) __ubuf__ Dtype* _mlir_ciface_store_with_stride_post_update_retptr_##dtype( \
+        VectorReg<int8_t> srcReg, __ubuf__ Dtype* dstAddr, int32_t blockStride, int32_t repeatStride, ave_preg preg)  \
+    {                                                                                                                 \
+        auto* p = reinterpret_cast<__ubuf__ int8_t*>(dstAddr);                                                        \
+        int32_t strideConfig = (blockStride << 16) | (repeatStride & 0xFFFF);                                         \
+        vector_bool mask = convertAVEPregToVecBool(preg);                                                             \
+        vsstb(srcReg, p, strideConfig, mask, POST_UPDATE);                                                            \
+        return reinterpret_cast<__ubuf__ Dtype*>(p);                                                                  \
+    }
+
+REGISTER_VSSTB_POST_UPDATE_RETPTR(float, float)
+REGISTER_VSSTB_POST_UPDATE_RETPTR(half, half)
+REGISTER_VSSTB_POST_UPDATE_RETPTR(bfloat16_t, bf16)
+REGISTER_VSSTB_POST_UPDATE_RETPTR(int32_t, int32)
+REGISTER_VSSTB_POST_UPDATE_RETPTR(uint32_t, uint32)
+REGISTER_VSSTB_POST_UPDATE_RETPTR(int16_t, int16)
+REGISTER_VSSTB_POST_UPDATE_RETPTR(uint16_t, uint16)
+REGISTER_VSSTB_POST_UPDATE_RETPTR(int8_t, int8)
+REGISTER_VSSTB_POST_UPDATE_RETPTR_AS_BYTES(fp8_e4m3fn_t, fp8_e4m3fn)
+REGISTER_VSSTB_POST_UPDATE_RETPTR_AS_BYTES(fp8_e5m2_t, fp8_e5m2)
 }
 
 #endif

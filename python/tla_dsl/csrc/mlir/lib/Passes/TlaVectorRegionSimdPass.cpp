@@ -703,26 +703,32 @@ static func::FuncOp getOrCreateMaskSelectLibraryCall(ModuleOp module, Location l
     return callee;
 }
 
+/// Shared bc type suffix for DATA_BLOCK_COPY helpers in ``bc/Vector/{load,store}.cpp``.
+static std::string dataBlockCopyElementSuffix(Type elementType)
+{
+    if (elementType.isF32())
+        return "float";
+    if (elementType.isF16())
+        return "half";
+    if (elementType.isBF16())
+        return "bf16";
+    if (elementType.isInteger(32))
+        return elementType.isUnsignedInteger() ? "uint32" : "int32";
+    if (elementType.isInteger(16))
+        return elementType.isUnsignedInteger() ? "uint16" : "int16";
+    if (isa<Float8E4M3FNType>(elementType))
+        return "fp8_e4m3fn";
+    if (isa<Float8E5M2Type>(elementType))
+        return "fp8_e5m2";
+    if (elementType.isInteger(8) && !elementType.isUnsignedInteger())
+        return "int8";
+    return {};
+}
+
 static std::string getStoreWithStrideLibraryCallName(Type elementType)
 {
-    if (elementType.isF32()) {
-        return "store_with_stride_float";
-    } else if (elementType.isF16()) {
-        return "store_with_stride_half";
-    } else if (elementType.isBF16()) {
-        return "store_with_stride_bf16";
-    } else if (elementType.isInteger(32)) {
-        return elementType.isUnsignedInteger() ? "store_with_stride_uint32" : "store_with_stride_int32";
-    } else if (elementType.isInteger(16)) {
-        return elementType.isUnsignedInteger() ? "store_with_stride_uint16" : "store_with_stride_int16";
-    } else if (isa<Float8E4M3FNType>(elementType)) {
-        return "store_with_stride_fp8_e4m3fn";
-    } else if (isa<Float8E5M2Type>(elementType)) {
-        return "store_with_stride_fp8_e5m2";
-    } else if (elementType.isInteger(8) && !elementType.isUnsignedInteger()) {
-        return "store_with_stride_int8";
-    }
-    return {};
+    std::string suffix = dataBlockCopyElementSuffix(elementType);
+    return suffix.empty() ? std::string{} : ("store_with_stride_" + suffix);
 }
 
 // The 8-bit block load/store stubs take the register as int8_t, because the AIV
@@ -746,28 +752,10 @@ static void annotateStoreWithStrideLibraryCall(func::FuncOp callee)
     callee->setAttr(hivm::TFuncCoreTypeAttr::name, hivm::TFuncCoreTypeAttr::get(ctx, hivm::TFuncCoreType::AIV));
 }
 
-// Strided block load (vsldb) library call names, mirroring the AVE bc stubs in
-// bc/Vector/load.cpp: one symbol per element type.
 static std::string getLoadWithStrideLibraryCallName(Type elementType)
 {
-    if (elementType.isF32()) {
-        return "load_with_stride_float";
-    } else if (elementType.isF16()) {
-        return "load_with_stride_half";
-    } else if (elementType.isBF16()) {
-        return "load_with_stride_bf16";
-    } else if (elementType.isInteger(32)) {
-        return elementType.isUnsignedInteger() ? "load_with_stride_uint32" : "load_with_stride_int32";
-    } else if (elementType.isInteger(16)) {
-        return elementType.isUnsignedInteger() ? "load_with_stride_uint16" : "load_with_stride_int16";
-    } else if (isa<Float8E4M3FNType>(elementType)) {
-        return "load_with_stride_fp8_e4m3fn";
-    } else if (isa<Float8E5M2Type>(elementType)) {
-        return "load_with_stride_fp8_e5m2";
-    } else if (elementType.isInteger(8) && !elementType.isUnsignedInteger()) {
-        return "load_with_stride_int8";
-    }
-    return {};
+    std::string suffix = dataBlockCopyElementSuffix(elementType);
+    return suffix.empty() ? std::string{} : ("load_with_stride_" + suffix);
 }
 
 static func::FuncOp getOrCreateStoreWithStrideLibraryCall(
@@ -804,6 +792,61 @@ static func::FuncOp getOrCreateLoadWithStrideLibraryCall(
         {vecType});
     auto callee = moduleBuilder.create<func::FuncOp>(loc, calleeName, fnType);
     annotateStoreWithStrideLibraryCall(callee);
+    return callee;
+}
+
+// vsldb.post / vsstb.post are not HIVMC ops. The bc helper returns the hardware
+// pointer (store) or writes it to an i64 slot (load, so the VectorReg return
+// ABI stays the single-result form already used by load_with_stride).
+// Helpers already use the ``_mlir_ciface_*`` ABI in ``bc/Vector/{load,store}.cpp``
+// (raw UB pointer, not a memref descriptor). Call that symbol directly.
+// ``llvm.emit_c_interface`` would keep the bare name as the simd_vf callee,
+// and bisheng then fails to find a body to inline.
+static void annotateDataBlockCopyUpdateLibraryCall(func::FuncOp callee)
+{
+    MLIRContext* ctx = callee.getContext();
+    callee.setPrivate();
+    callee->setAttr(hivm::TFuncCoreTypeAttr::name, hivm::TFuncCoreTypeAttr::get(ctx, hivm::TFuncCoreType::AIV));
+}
+
+static func::FuncOp getOrCreateLoadUpdateRetptrLibraryCall(
+    ModuleOp module, Location loc, Type vecType, StringRef calleeName)
+{
+    auto ctx = module.getContext();
+    if (auto existing = module.lookupSymbol<func::FuncOp>(calleeName)) {
+        annotateDataBlockCopyUpdateLibraryCall(existing);
+        return existing;
+    }
+    OpBuilder moduleBuilder(module.getBodyRegion());
+    auto ubPtr = getUbPtrType(ctx);
+    auto slotPtr = LLVM::LLVMPointerType::get(ctx);
+    auto fnType = FunctionType::get(
+        ctx,
+        {ubPtr, IntegerType::get(ctx, 32), IntegerType::get(ctx, 32), VectorType::get({256}, IntegerType::get(ctx, 1)),
+         slotPtr},
+        {vecType});
+    auto callee = moduleBuilder.create<func::FuncOp>(loc, calleeName, fnType);
+    annotateDataBlockCopyUpdateLibraryCall(callee);
+    return callee;
+}
+
+static func::FuncOp getOrCreateStoreUpdateRetptrLibraryCall(
+    ModuleOp module, Location loc, Type vecType, StringRef calleeName)
+{
+    auto ctx = module.getContext();
+    if (auto existing = module.lookupSymbol<func::FuncOp>(calleeName)) {
+        annotateDataBlockCopyUpdateLibraryCall(existing);
+        return existing;
+    }
+    OpBuilder moduleBuilder(module.getBodyRegion());
+    auto ubPtr = getUbPtrType(ctx);
+    auto fnType = FunctionType::get(
+        ctx,
+        {vecType, ubPtr, IntegerType::get(ctx, 32), IntegerType::get(ctx, 32),
+         VectorType::get({256}, IntegerType::get(ctx, 1))},
+        {ubPtr});
+    auto callee = moduleBuilder.create<func::FuncOp>(loc, calleeName, fnType);
+    annotateDataBlockCopyUpdateLibraryCall(callee);
     return callee;
 }
 
@@ -1001,6 +1044,22 @@ public:
         Value mask = createPredicatePge(entryBuilder, loc, maskType, semanticLanes, hivmave::PgePattern::ALL);
         masks[semanticLanes] = mask;
         return mask;
+    }
+
+    /// i64 out-param slot for load_update retptr helpers. Always at the outlined
+    /// helper entry — not the enclosing ``scf.for`` / ``scf.if`` region.
+    /// ``lowerScfFor`` body callbacks run before the for-region is linked, so
+    /// ``getInsertionBlock()->getParentOp()`` is null there; an escaped alloca
+    /// left in the loop body would grow the AIV stack every trip after scf→cf.
+    FailureOr<Value> createI64RetptrSlot(OpBuilder& b, Location loc)
+    {
+        if (!entry)
+            return failure();
+        OpBuilder::InsertionGuard guard(b);
+        b.setInsertionPointToStart(entry);
+        Value one = b.create<LLVM::ConstantOp>(loc, b.getI32Type(), b.getI32IntegerAttr(1));
+        Type slotPtrTy = LLVM::LLVMPointerType::get(b.getContext());
+        return b.create<LLVM::AllocaOp>(loc, slotPtrTy, b.getI64Type(), one).getResult();
     }
 
 private:
@@ -2152,7 +2211,27 @@ static LogicalResult lowerLoad(
     return success();
 }
 
-static LogicalResult lowerLoadUpdate(::tla::LoadUpdateOp loadOp, OpBuilder& b, DenseMap<Value, Value>& valueMap)
+static LogicalResult materializeBlockStrides(
+    Operation* op, Value blockStride, Value repeatStride, OpBuilder& b, DenseMap<Value, Value>& valueMap,
+    Value& blockOut, Value& repeatOut)
+{
+    Location loc = op->getLoc();
+    blockOut = valueMap.lookup(blockStride);
+    if (!blockOut)
+        blockOut = lookupOrCloneScalarValue(b, blockStride, valueMap);
+    repeatOut = valueMap.lookup(repeatStride);
+    if (!repeatOut)
+        repeatOut = lookupOrCloneScalarValue(b, repeatStride, valueMap);
+    if (!blockOut || !repeatOut)
+        return op->emitError("failed to materialize DATA_BLOCK_COPY strides"), failure();
+    blockOut = castToI32(b, loc, blockOut);
+    repeatOut = castToI32(b, loc, repeatOut);
+    return success();
+}
+
+static LogicalResult lowerLoadUpdate(
+    ::tla::LoadUpdateOp loadOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
+    AutoFullPredicateCache& fullMasks)
 {
     Location loc = loadOp.getLoc();
     Value source = valueMap.lookup(loadOp.getSource());
@@ -2164,17 +2243,49 @@ static LogicalResult lowerLoadUpdate(::tla::LoadUpdateOp loadOp, OpBuilder& b, D
     auto opCtx = deriveVecCtxForElement(sourceType.getElementType());
     if (failed(opCtx))
         return loadOp.emitError("unsupported element type for load_update vector helper"), failure();
-    Value stride = valueMap.lookup(loadOp.getPostUpdateStride());
-    if (!stride)
-        stride = lookupOrCloneScalarValue(b, loadOp.getPostUpdateStride(), valueMap);
-    if (!stride)
-        return loadOp.emitError("failed to materialize post_update_stride in vector helper"), failure();
     auto ptrOr = resolveEffectiveUbPtr(loadOp.getSource(), b, loc, valueMap);
     if (failed(ptrOr))
         return loadOp.emitError(
                    "load_update requires an effective UB address "
                    "(tensor_desc over live inttoptr / materialized memref)"),
                failure();
+
+    // DATA_BLOCK_COPY UPDATE: no HIVMC vsldb.post — AIV bc returns the pointer.
+    if (Value blockStrideVal = loadOp.getBlockStride()) {
+        Value blockStride;
+        Value repeatStride;
+        if (failed(materializeBlockStrides(
+                loadOp, blockStrideVal, loadOp.getPostUpdateStride(), b, valueMap, blockStride, repeatStride)))
+            return failure();
+        std::string suffix = dataBlockCopyElementSuffix(sourceType.getElementType());
+        if (suffix.empty())
+            return loadOp.emitError("unsupported element type for DATA_BLOCK_COPY load_update: ")
+                       << sourceType.getElementType(),
+                   failure();
+        bool viaBytes = blockStrideUsesByteRegister(sourceType.getElementType());
+        Type resultVecType = viaBytes ? byteRegisterTypeFor(opCtx->vecType) : Type(opCtx->vecType);
+        auto callee = getOrCreateLoadUpdateRetptrLibraryCall(
+            module, loc, resultVecType, ("_mlir_ciface_load_with_stride_post_update_retptr_" + suffix));
+        Value allTrue = allTrueMaskFor(fullMasks, loc, opCtx->vecType, loadOp.getResult().getType());
+        Value preg = castMaskToPregType(b, loc, allTrue, fullPregVecType(b.getContext()));
+        auto slotOr = fullMasks.createI64RetptrSlot(b, loc);
+        if (failed(slotOr))
+            return loadOp.emitError("failed to allocate load_update retptr slot in outlined func entry"), failure();
+        auto call = b.create<func::CallOp>(loc, callee, ValueRange{*ptrOr, blockStride, repeatStride, preg, *slotOr});
+        Value loaded = call.getResult(0);
+        if (viaBytes)
+            loaded = b.create<mlir::vector::BitCastOp>(loc, opCtx->vecType, loaded).getResult();
+        Value newAddr = b.create<LLVM::LoadOp>(loc, b.getI64Type(), *slotOr);
+        valueMap[loadOp.getResult()] = loaded;
+        mapUpdateNextPtrI64(loadOp.getNextPtr(), newAddr, valueMap);
+        return success();
+    }
+
+    Value stride = valueMap.lookup(loadOp.getPostUpdateStride());
+    if (!stride)
+        stride = lookupOrCloneScalarValue(b, loadOp.getPostUpdateStride(), valueMap);
+    if (!stride)
+        return loadOp.emitError("failed to materialize post_update_stride in vector helper"), failure();
     Type elemTy = sourceType.getElementType();
     FailureOr<std::pair<Value, Value>> emitted = emitVldsx1Post(b, loc, *ptrOr, stride, elemTy, opCtx->vecType);
     if (failed(emitted))
@@ -2904,7 +3015,8 @@ static LogicalResult lowerStore(
 }
 
 static LogicalResult lowerStoreUpdate(
-    ::tla::StoreUpdateOp storeOp, OpBuilder& b, DenseMap<Value, Value>& valueMap, AutoFullPredicateCache& fullMasks)
+    ::tla::StoreUpdateOp storeOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
+    AutoFullPredicateCache& fullMasks)
 {
     Location loc = storeOp.getLoc();
     Value dest = valueMap.lookup(storeOp.getDest());
@@ -2914,11 +3026,6 @@ static LogicalResult lowerStoreUpdate(
     auto sourceTy = dyn_cast<VectorType>(source.getType());
     if (!sourceTy)
         return failure();
-    Value stride = valueMap.lookup(storeOp.getPostUpdateStride());
-    if (!stride)
-        stride = lookupOrCloneScalarValue(b, storeOp.getPostUpdateStride(), valueMap);
-    if (!stride)
-        return storeOp.emitError("failed to materialize post_update_stride in vector helper"), failure();
     Value mask;
     auto opCtx = deriveVecCtxForElement(sourceTy.getElementType());
     if (failed(opCtx))
@@ -2949,6 +3056,36 @@ static LogicalResult lowerStoreUpdate(
                    "store_update requires an effective UB address "
                    "(tensor_desc over live inttoptr / materialized memref)"),
                failure();
+
+    // DATA_BLOCK_COPY UPDATE: no HIVMC vsstb.post — AIV bc returns the pointer.
+    if (Value blockStrideVal = storeOp.getBlockStride()) {
+        Value blockStride;
+        Value repeatStride;
+        if (failed(materializeBlockStrides(
+                storeOp, blockStrideVal, storeOp.getPostUpdateStride(), b, valueMap, blockStride, repeatStride)))
+            return failure();
+        std::string suffix = dataBlockCopyElementSuffix(sourceTy.getElementType());
+        if (suffix.empty())
+            return storeOp.emitError("unsupported element type for DATA_BLOCK_COPY store_update: ")
+                       << sourceTy.getElementType(),
+                   failure();
+        Value storeSrc = source;
+        if (blockStrideUsesByteRegister(sourceTy.getElementType()))
+            storeSrc = b.create<mlir::vector::BitCastOp>(loc, byteRegisterTypeFor(sourceTy), source).getResult();
+        auto callee = getOrCreateStoreUpdateRetptrLibraryCall(
+            module, loc, storeSrc.getType(), ("_mlir_ciface_store_with_stride_post_update_retptr_" + suffix));
+        auto call =
+            b.create<func::CallOp>(loc, callee, ValueRange{storeSrc, *ptrOr, blockStride, repeatStride, pregMask});
+        Value newAddr = b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), call.getResult(0));
+        mapUpdateNextPtrI64(storeOp.getNextPtr(), newAddr, valueMap);
+        return success();
+    }
+
+    Value stride = valueMap.lookup(storeOp.getPostUpdateStride());
+    if (!stride)
+        stride = lookupOrCloneScalarValue(b, storeOp.getPostUpdateStride(), valueMap);
+    if (!stride)
+        return storeOp.emitError("failed to materialize post_update_stride in vector helper"), failure();
     FailureOr<Value> newPtrOr = emitVstsx1Post(b, loc, source, *ptrOr, stride, pregMask, sourceTy.getElementType());
     if (failed(newPtrOr))
         return storeOp.emitError("unsupported element type for tla.store_update: ") << sourceTy.getElementType(),
@@ -3142,7 +3279,7 @@ static LogicalResult lowerNestedVectorOp(
         return lowerLoad(loadOp, b, module, valueMap, fullMasks);
 
     if (auto loadUpdateOp = dyn_cast<::tla::LoadUpdateOp>(op))
-        return lowerLoadUpdate(loadUpdateOp, b, valueMap);
+        return lowerLoadUpdate(loadUpdateOp, b, module, valueMap, fullMasks);
 
     // Preserve local-memory ordering while outlining a vec.func into its AVE
     // helper. Every operation in the source region must be recreated explicitly;
@@ -3310,7 +3447,7 @@ static LogicalResult lowerNestedVectorOp(
         return lowerStore(storeOp, b, module, valueMap, fullMasks);
 
     if (auto storeUpdateOp = dyn_cast<::tla::StoreUpdateOp>(op))
-        return lowerStoreUpdate(storeUpdateOp, b, valueMap, fullMasks);
+        return lowerStoreUpdate(storeUpdateOp, b, module, valueMap, fullMasks);
 
     if (auto forOp = dyn_cast<scf::ForOp>(op))
         return lowerScfFor(forOp, b, module, valueMap, fullMasks);

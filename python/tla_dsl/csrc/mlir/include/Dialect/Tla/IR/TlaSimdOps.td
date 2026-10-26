@@ -641,50 +641,67 @@ def Tla_PackOp : Tla_Op<"pack", [Pure]> {
 }
 
 def Tla_LoadUpdateOp : Tla_Op<"load_update", []> {
-  let summary = "Aligned PostMode UPDATE load";
+  let summary = "PostMode UPDATE load (aligned or DATA_BLOCK_COPY)";
   let description = [{
-    Continuous aligned UB load with AscendC ``POST_MODE_UPDATE``.
+    UB load with AscendC ``POST_MODE_UPDATE``. Results are the loaded
+    ``!tla.vector`` and the next-window ``!tla.ptr``.
 
-    Results are the loaded ``!tla.vector`` and the next-window ``!tla.ptr``.
-    ``post_update_stride`` is an element count (integer or index SSA).
-    VectorRegion emits HIVM ``vldsx1.post`` and maps ``newPtr`` onto that
-    pointer. The frontend builds a coord-0 tile from the pointer and yields
-    the tile. UnAlign UPDATE is not this op.
+    * Without ``block_stride``: continuous aligned load. ``post_update_stride``
+      is an **element** count. VectorRegion emits HIVM ``vldsx1.post``.
+    * With ``block_stride``: AscendC ``LoadAlign<T, DATA_BLOCK_COPY,
+      POST_MODE_UPDATE>`` (``vsldb`` POST). Both ``block_stride`` and
+      ``post_update_stride`` are 32B DataBlock counts. There is no HIVMC
+      ``vsldb.post``, so VectorRegion lowers through an AIV bc that returns
+      the hardware pointer.
+
+    The frontend builds a coord-0 tile from the pointer and yields the tile.
+    UnAlign UPDATE is not this op.
   }];
   let arguments = (ins Tla_TensorType:$source,
-                       Tla_IntegerOrIndexType:$post_update_stride);
+                       Tla_IntegerOrIndexType:$post_update_stride,
+                       Optional<Tla_IntegerOrIndexType>:$block_stride);
   let results = (outs Tla_VectorSSAType:$result,
                       Tla_PtrType:$next_ptr);
   let assemblyFormat = [{
-    $source `post_update_stride` $post_update_stride attr-dict `:`
+    $source `post_update_stride` $post_update_stride
+    (`block_stride` $block_stride^)? attr-dict `:`
     type($source) `post_update_stride` qualified(type($post_update_stride))
+    (`block_stride` qualified(type($block_stride))^)?
     `->` qualified(type($result)) `,` qualified(type($next_ptr))
   }];
   let hasVerifier = 1;
 }
 
-def Tla_StoreUpdateOp : Tla_Op<"store_update", []> {
-  let summary = "Aligned PostMode UPDATE store";
+def Tla_StoreUpdateOp : Tla_Op<"store_update", [AttrSizedOperandSegments]> {
+  let summary = "PostMode UPDATE store (aligned or DATA_BLOCK_COPY)";
   let description = [{
-    Continuous aligned UB store with AscendC ``POST_MODE_UPDATE``.
+    UB store with AscendC ``POST_MODE_UPDATE``. Result is the next-window
+    ``!tla.ptr``. Optional predicate ``mask``.
 
-    Result is the next-window ``!tla.ptr``. ``post_update_stride`` is an
-    element count (integer or index SSA). Optional predicate ``mask``.
-    VectorRegion emits HIVM ``vstsx1.post`` and maps ``newPtr`` onto that
-    pointer. The frontend builds a coord-0 tile from the pointer and yields
-    the tile. UnAlign UPDATE is not this op.
+    * Without ``block_stride``: continuous aligned store. ``post_update_stride``
+      is an **element** count. VectorRegion emits HIVM ``vstsx1.post``.
+    * With ``block_stride``: AscendC ``StoreAlign<T, DATA_BLOCK_COPY,
+      POST_MODE_UPDATE>`` (``vsstb`` POST). Both strides are 32B DataBlock
+      counts. There is no HIVMC ``vsstb.post``, so VectorRegion lowers through
+      an AIV bc that returns the hardware pointer.
+
+    The frontend builds a coord-0 tile from the pointer and yields the tile.
+    UnAlign UPDATE is not this op.
   }];
   let arguments = (ins Tla_TensorType:$dest,
                        Tla_VectorSSAType:$source,
                        Tla_IntegerOrIndexType:$post_update_stride,
-                       Optional<Tla_MaskSSAType>:$mask);
+                       Optional<Tla_MaskSSAType>:$mask,
+                       Optional<Tla_IntegerOrIndexType>:$block_stride);
   let results = (outs Tla_PtrType:$next_ptr);
   let assemblyFormat = [{
-    $dest `,` $source `post_update_stride` $post_update_stride (`mask` $mask^)?
+    $dest `,` $source `post_update_stride` $post_update_stride
+    (`mask` $mask^)? (`block_stride` $block_stride^)?
     attr-dict `:`
     type($dest) `,` qualified(type($source))
     `post_update_stride` qualified(type($post_update_stride))
     (`mask` qualified(type($mask))^)?
+    (`block_stride` qualified(type($block_stride))^)?
     `->` qualified(type($next_ptr))
   }];
   let hasVerifier = 1;

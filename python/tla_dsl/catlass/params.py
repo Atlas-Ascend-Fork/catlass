@@ -146,10 +146,17 @@ class UnalignStoreParams(StoreParams):
 class BlockStoreParams(StoreParams):
     """UB Block store with stride (AscendC ``DATA_BLOCK_COPY``).
 
-    ``block_stride`` is in 32B DataBlock units.
+    ``block_stride`` is in 32B DataBlock units. Unlike ``BlockLoadParams``,
+    NORMAL mode has no software pre-offset: ``repeat_stride`` is only used
+    with ``post_mode=update`` (``StoreAlign<T, DATA_BLOCK_COPY,
+    POST_MODE_UPDATE>``, 32B DataBlock repeat stride; returns the next tile
+    from the ``vsstb`` POST pointer via an AIV bc helper — no HIVMC
+    ``vsstb.post``).
     """
 
     block_stride: int = 0
+    post_mode: str = PostMode.POST_MODE_NORMAL
+    repeat_stride: Any = 0
 
 
 @dataclass
@@ -195,13 +202,18 @@ class BlockLoadParams(LoadParams):
 
     One load gathers 8 DataBlocks whose heads are ``block_stride``
     DataBlocks (32B units) apart; ``block_stride == 0`` repeats the first
-    DataBlock into all 8 slots. ``post_update_stride`` is a compile-time
-    address pre-offset in 32B DataBlocks. Both strides must fit in 16 bits
-    ([0, 65535]).
+    DataBlock into all 8 slots. ``repeat_stride`` matches AscendC
+    ``vsldb`` / ``DATA_BLOCK_COPY`` naming: with ``post_mode=normal`` it is
+    a compile-time address pre-offset in 32B DataBlocks; with
+    ``post_mode=update`` it is the POST repeat stride in the same unit, and
+    the call returns ``(vector, next_tile)``. There is no HIVMC
+    ``vsldb.post``, so UPDATE lowers through an AIV bc helper. Both strides
+    must fit in 16 bits ([0, 65535]).
     """
 
     block_stride: int = 0
-    post_update_stride: int = 0
+    post_mode: str = PostMode.POST_MODE_NORMAL
+    repeat_stride: Any = 0
 
 
 @dataclass

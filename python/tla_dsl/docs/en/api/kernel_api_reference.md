@@ -968,7 +968,7 @@ Supported vector copy routes
 
 ### `Tensor.load`
 
-**Source:** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L474)
+**Source:** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L513)
 
 Description:
 
@@ -995,7 +995,7 @@ Parameters:
   `BlockLoadParams` is a stride-based `DataBlock` gather: one load gathers
   8 blocks whose heads are `block_stride` blocks (32B `DataBlock` units)
   apart; `block_stride == 0` repeats the first block into all
-  8 slots; `post_update_stride` is the compile-time address
+  8 slots; `repeat_stride` is the compile-time address
   pre-offset in 32B blocks.
   `MaskLoadParams.load_dist` may be `DIST_NORM` (default bit-packed
   mask load), `DIST_US` (bit upsample), or `DIST_DS` (bit
@@ -1012,7 +1012,7 @@ Constraints:
   `dintlv_b32` needs f32; `blk` works for any element size.
 - `BlockLoadParams` requires a 2/4-byte element type
   (f32/f16/bf16/i32/u32/i16/u16); `block_stride` and
-  `post_update_stride` must fit in [0, 65535].
+  `repeat_stride` must fit in [0, 65535].
 - ``DIST_US`` / ``DIST_DS``: UB element type may be any
   b8/b16/b32/b64 scalar. The element type only types the UB
   address; the mask bit layout does not depend on element width.
@@ -1051,7 +1051,7 @@ with tla.vec.func(mode="simd"):
 
 ### `Tensor.store`
 
-**Source:** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L889)
+**Source:** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L937)
 
 Description:
 
@@ -1106,7 +1106,7 @@ with tla.vec.func(mode="simd"):
 
 ### `Tensor.__getitem__`
 
-**Source:** [`catlass.tla.tensor._Tensor.__getitem__`](../../../catlass/tla/tensor.py#L1228)
+**Source:** [`catlass.tla.tensor._Tensor.__getitem__`](../../../catlass/tla/tensor.py#L1284)
 
 Description:
 
@@ -1159,7 +1159,7 @@ with tla.vec.func(mode="simt", thread_block_dim=256):
 
 ### `Tensor.__setitem__`
 
-**Source:** [`catlass.tla.tensor._Tensor.__setitem__`](../../../catlass/tla/tensor.py#L1347)
+**Source:** [`catlass.tla.tensor._Tensor.__setitem__`](../../../catlass/tla/tensor.py#L1403)
 
 Description:
 
@@ -3691,7 +3691,7 @@ with tla.vector():
 
 ### `Tensor.fill`
 
-**Source:** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1115)
+**Source:** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1171)
 
 Description:
 

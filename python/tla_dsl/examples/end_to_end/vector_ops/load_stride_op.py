@@ -26,7 +26,7 @@ from vector_op_harness import (
 # whose heads are block_stride DataBlocks (32B) apart. Three modes are covered:
 #   stride: block_stride=4 (sparse gather)
 #   repeat: block_stride=0 (first DataBlock replicated 8x)
-#   post:   block_stride=1 + post_update_stride=2 (POST_MODE_NORMAL pre-offset,
+#   post:   block_stride=1 + repeat_stride=2 (POST_MODE_NORMAL pre-offset,
 #           equal to a contiguous load starting 2 DataBlocks ahead)
 VECTOR_ELE = 512
 ALL_DTYPES = ("f32", "i32", "f16")
@@ -49,7 +49,7 @@ _KERNEL_SENTINEL: int = -7
 
 
 def _load_params() -> BlockLoadParams:
-    return BlockLoadParams(block_stride=BLOCK_STRIDE, post_update_stride=POST_STRIDE)
+    return BlockLoadParams(block_stride=BLOCK_STRIDE, repeat_stride=POST_STRIDE)
 
 
 @tla.kernel

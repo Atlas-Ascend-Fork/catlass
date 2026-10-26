@@ -38,9 +38,9 @@ def _make_stride_kernel(params: BlockLoadParams, view: int) -> Any:
     return _load_stride_kernel
 
 
-# (id, block_stride, post_update_stride, expect_repeat): BlockLoadParams always
-# emits block_stride; repeat_stride is only emitted for a non-zero
-# post_update_stride (the vsldb compile-time address pre-offset).
+# (id, block_stride, repeat_stride, expect_repeat): BlockLoadParams always
+# emits block_stride; repeat_stride is only emitted when non-zero
+# (the vsldb compile-time address pre-offset).
 _POSITIVE_CASES = [
     ("default", 0, 0, False),
     ("block-only", 4, 0, False),
@@ -58,7 +58,7 @@ _DTYPES = [
 
 
 @pytest.mark.parametrize(
-    ("case_id", "block_stride", "post_update_stride", "expect_repeat"),
+    ("case_id", "block_stride", "repeat_stride", "expect_repeat"),
     _POSITIVE_CASES,
 )
 @pytest.mark.parametrize(("dtype", "ir_dtype", "vl_ele"), _DTYPES)
@@ -66,7 +66,7 @@ def test_load_stride_emits_tlair(
     compiler_tlair: Any,
     case_id: str,
     block_stride: int,
-    post_update_stride: int,
+    repeat_stride: int,
     expect_repeat: bool,
     dtype: type[tla.Numeric],
     ir_dtype: str,
@@ -75,7 +75,7 @@ def test_load_stride_emits_tlair(
     mlir = compiler_tlair(
         _make_stride_kernel(
             BlockLoadParams(
-                block_stride=block_stride, post_update_stride=post_update_stride
+                block_stride=block_stride, repeat_stride=repeat_stride
             ),
             vl_ele,
         ),
@@ -89,7 +89,7 @@ def test_load_stride_emits_tlair(
     assert len(load_lines) == 1
     assert f"block_stride = {block_stride} : i32" in load_lines[0]
     if expect_repeat:
-        assert f"repeat_stride = {post_update_stride} : i32" in load_lines[0]
+        assert f"repeat_stride = {repeat_stride} : i32" in load_lines[0]
     else:
         assert "repeat_stride" not in load_lines[0]
     assert f"!tla.vector<{vl_ele}x{ir_dtype}>" in load_lines[0]
@@ -99,7 +99,7 @@ def test_load_stride_emits_tlair(
 # out-of-range strides and 1-byte element types are rejected at the frontend
 # before any IR is emitted.
 @pytest.mark.parametrize(
-    ("block_stride", "post_update_stride"),
+    ("block_stride", "repeat_stride"),
     [
         (-1, 0),
         (0x10000, 0),
@@ -110,13 +110,13 @@ def test_load_stride_emits_tlair(
 def test_load_stride_rejects_out_of_range_strides(
     compiler_tlair: Any,
     block_stride: int,
-    post_update_stride: int,
+    repeat_stride: int,
 ) -> None:
     with pytest.raises(TlaLoweringError, match=r"must be in \[0, 65535\]"):
         compiler_tlair(
             _make_stride_kernel(
                 BlockLoadParams(
-                    block_stride=block_stride, post_update_stride=post_update_stride
+                    block_stride=block_stride, repeat_stride=repeat_stride
                 ),
                 128,
             ),

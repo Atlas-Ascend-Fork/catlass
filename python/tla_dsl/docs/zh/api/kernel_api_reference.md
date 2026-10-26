@@ -909,8 +909,7 @@ Vector 拷贝通路
 
 ### `Tensor.load`
 
-**源码：** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L474)
-
+**源码：** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L503)
 功能说明：
 
 将本 UB tensor tile 载入 vector 或 mask SSA（`tile.load`）。
@@ -933,7 +932,7 @@ tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[Vecto
   （元素到 DataBlock 广播）、`blk`（一个 32 字节 DataBlock 广播到全部 8 个）。
   `BlockLoadParams` 为跨步 `DataBlock` 收集：一次 `load` 收集 8 个 `DataBlock`，
   块头间隔 `block_stride` 个 `DataBlock`（32B 单位）；`block_stride == 0`
-  时将首个 `DataBlock` 复制到全部 8 槽；`post_update_stride` 为编译期地址
+  时将首个 `DataBlock` 复制到全部 8 槽；`repeat_stride` 为编译期地址
   预偏移，单位 32B `DataBlock`。
   `MaskLoadParams.load_dist` 可为 `DIST_NORM`（默认，bit-packed 掩码载入）、
   `DIST_US`（bit 上采样）或 `DIST_DS`（bit 下采样）。可选，默认 `None`。
@@ -948,7 +947,7 @@ tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[Vecto
   要求 4 字节（f32/i32/u32）；`dintlv_b32` 要求 f32；`blk` 适用于任意
   元素宽度。
 - `BlockLoadParams` 要求 2/4 字节元素类型（f32/f16/bf16/i32/u32/i16/u16）；
-  `block_stride` 与 `post_update_stride` 须在 [0, 65535] 范围内。
+  `block_stride` 与 `repeat_stride` 须在 [0, 65535] 范围内。
 - `DIST_US` / `DIST_DS`：UB 元素类型可为任意 b8/b16/b32/b64 标量。
   元素类型仅用于 UB 寻址；掩码位布局与元素宽度无关。
   静态 tile shape 乘积属于 `{32,64,128,256}` 时作为 `!tla.mask<N>` 的 `N`；
@@ -990,8 +989,7 @@ with tla.vec.func(mode="simd"):
 
 ### `Tensor.store`
 
-**源码：** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L889)
-
+**源码：** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L937)
 功能说明：
 
 将 vector 或 mask SSA 写回本 UB tensor tile（`tile.store`）。
@@ -3097,8 +3095,7 @@ with tla.vector():
 
 ### `Tensor.fill`
 
-**源码：** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1115)
-
+**源码：** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1181)
 功能说明：
 
 用给定值填充整个 L1 zN/nZ tile。填充区域即该 tile 自身：在逻辑二维

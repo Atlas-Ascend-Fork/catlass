@@ -5,6 +5,8 @@
 
 #include "vector_reg_utils.h"
 
+#include <cstdint>
+
 extern "C" {
 
 // load with block stride (vsldb): one instruction gathers 8 DataBlocks whose
@@ -53,5 +55,46 @@ REGISTER_VSLDB(int8_t, int8)
 
 REGISTER_VSLDB_AS_BYTES(fp8_e4m3fn_t, fp8_e4m3fn)
 REGISTER_VSLDB_AS_BYTES(fp8_e5m2_t, fp8_e5m2)
+
+// DATA_BLOCK_COPY POST_MODE_UPDATE. vsldb.post is not an HIVMC op, so the
+// hardware pointer comes back through an i64 slot. The vector stays the
+// function result, matching the NORMAL vsldb ABI.
+#define REGISTER_VSLDB_POST_UPDATE_RETPTR(Dtype, dtype)                                                               \
+    __aiv__ __attribute__((always_inline)) VectorReg<Dtype> _mlir_ciface_load_with_stride_post_update_retptr_##dtype( \
+        __ubuf__ Dtype* srcAddr, int32_t blockStride, int32_t repeatStride, ave_preg preg, uint64_t* outAddr)         \
+    {                                                                                                                 \
+        __ubuf__ Dtype* p = srcAddr;                                                                                  \
+        int32_t strideConfig = (blockStride << 16) | (repeatStride & 0xFFFF);                                         \
+        vector_bool mask = convertAVEPregToVecBool(preg);                                                             \
+        VectorReg<Dtype> dstReg;                                                                                      \
+        vsldb(dstReg, p, strideConfig, mask, POST_UPDATE);                                                            \
+        *outAddr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(p));                                             \
+        return dstReg;                                                                                                \
+    }
+
+#define REGISTER_VSLDB_POST_UPDATE_RETPTR_AS_BYTES(Dtype, dtype)                                                       \
+    __aiv__ __attribute__((always_inline)) VectorReg<int8_t> _mlir_ciface_load_with_stride_post_update_retptr_##dtype( \
+        __ubuf__ Dtype* srcAddr, int32_t blockStride, int32_t repeatStride, ave_preg preg, uint64_t* outAddr)          \
+    {                                                                                                                  \
+        auto* srcBytes = reinterpret_cast<__ubuf__ int8_t*>(srcAddr);                                                  \
+        __ubuf__ int8_t* p = srcBytes;                                                                                 \
+        int32_t strideConfig = (blockStride << 16) | (repeatStride & 0xFFFF);                                          \
+        vector_bool mask = convertAVEPregToVecBool(preg);                                                              \
+        VectorReg<int8_t> dstReg;                                                                                      \
+        vsldb(dstReg, p, strideConfig, mask, POST_UPDATE);                                                             \
+        *outAddr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(p));                                              \
+        return dstReg;                                                                                                 \
+    }
+
+REGISTER_VSLDB_POST_UPDATE_RETPTR(float, float)
+REGISTER_VSLDB_POST_UPDATE_RETPTR(half, half)
+REGISTER_VSLDB_POST_UPDATE_RETPTR(bfloat16_t, bf16)
+REGISTER_VSLDB_POST_UPDATE_RETPTR(int32_t, int32)
+REGISTER_VSLDB_POST_UPDATE_RETPTR(uint32_t, uint32)
+REGISTER_VSLDB_POST_UPDATE_RETPTR(int16_t, int16)
+REGISTER_VSLDB_POST_UPDATE_RETPTR(uint16_t, uint16)
+REGISTER_VSLDB_POST_UPDATE_RETPTR(int8_t, int8)
+REGISTER_VSLDB_POST_UPDATE_RETPTR_AS_BYTES(fp8_e4m3fn_t, fp8_e4m3fn)
+REGISTER_VSLDB_POST_UPDATE_RETPTR_AS_BYTES(fp8_e5m2_t, fp8_e5m2)
 }
 #endif

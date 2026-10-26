@@ -526,6 +526,28 @@ static LogicalResult collectInstructionPlans(
             plans.push_back(std::move(plan));
             return;
         }
+        // tla.img2col is an L1 -> L0A load on the same MTE1 pipe as the plain
+        // tla.copy that does the non-convolution version of the same hop, so it
+        // needs the same plan -- otherwise a conv kernel's operand loads sit
+        // outside auto-sync entirely.
+        if (auto img2col = dyn_cast<::tla::Img2colOp>(operation)) {
+            FailureOr<::Pipe> pipe = inferCopyPipe(img2col.getSrc());
+            if (failed(pipe)) {
+                img2col.emitError("cannot infer automatic mutex pipe for tla.img2col");
+                result = failure();
+                return;
+            }
+            FailureOr<MutexIdSpace> idSpace = resolveMutexIdSpace(func, img2col);
+            if (failed(idSpace)) {
+                result = failure();
+                return;
+            }
+            InstructionPlan plan{img2col, *pipe, *idSpace, {}};
+            plan.resources.push_back(resolver.resolve(img2col.getDst()));
+            plan.resources.push_back(resolver.resolve(img2col.getSrc()));
+            plans.push_back(std::move(plan));
+            return;
+        }
         // tla.fill zeroes a pad region of an L1 zN/nZ tile through the bc's
         // AscendC::Fill helper: an MTE2 instruction, same pipe window as the
         // GM->L1 copy whose tile it pads. It therefore needs the same mutex

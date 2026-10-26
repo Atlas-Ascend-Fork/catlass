@@ -217,10 +217,18 @@ CATLASS_DEVICE auto makeGMTensor(memref_t<__gm__ T, 2>* memref, const TensorDesc
         return tla::MakeTensor(
             makeGlobalTensor(basePtr(memref)), makeVectorTlaLayout(desc), tla::MakeCoord(makeVectorTlaCoord(desc)),
             Catlass::Arch::PositionGM{});
+    } else if constexpr (Tag == LayoutTag::zNUnAlign) {
+        // A feature map in NC1HWC0: ((hw, 1), (C0, c1)) with the c1 leaf at the
+        // full-feature-map pitch. Same tree as the L1 tile it is copied into, so
+        // the copy is a run of contiguous C1 slices rather than a re-layout.
+        return tla::MakeTensor(
+            makeGlobalTensor(basePtr(memref)), makezNUnAlignTlaLayout<T>(desc), makeTlaTileCoord(desc),
+            Catlass::Arch::PositionGM{});
     } else {
         static_assert(
-            Tag == LayoutTag::RowMajor || Tag == LayoutTag::ColumnMajor || Tag == LayoutTag::VectorLayout,
-            "GM tensor supports RowMajor/ColumnMajor/VectorLayout only");
+            Tag == LayoutTag::RowMajor || Tag == LayoutTag::ColumnMajor || Tag == LayoutTag::VectorLayout ||
+                Tag == LayoutTag::zNUnAlign,
+            "GM tensor supports RowMajor/ColumnMajor/VectorLayout/zNUnAlign only");
     }
 }
 
@@ -261,10 +269,17 @@ CATLASS_DEVICE auto makeL1Tensor(memref_t<__cbuf__ T, 1>* memref, const TensorDe
         // identical construction.
         return tla::MakeTensor(
             tensor, makeVectorTlaLayout(desc), tla::MakeCoord(makeVectorTlaCoord(desc)), Catlass::Arch::PositionL1{});
+    } else if constexpr (Tag == LayoutTag::zNUnAlign) {
+        // The NC1HWC0 feature-map tile that tla.img2col reads. Its M axis is not
+        // fractal-blocked -- h*w rows sit back to back inside each C1 slice --
+        // which is exactly what zNUnAlign already describes.
+        return tla::MakeTensor(
+            tensor, makezNUnAlignTlaLayout<T>(desc), makeTlaTileCoord(desc), Catlass::Arch::PositionL1{});
     } else {
         static_assert(
-            Tag == LayoutTag::zN || Tag == LayoutTag::nZ || Tag == LayoutTag::VectorLayout,
-            "L1 tensor supports zN/nZ/VectorLayout only");
+            Tag == LayoutTag::zN || Tag == LayoutTag::nZ || Tag == LayoutTag::VectorLayout ||
+                Tag == LayoutTag::zNUnAlign,
+            "L1 tensor supports zN/nZ/VectorLayout/zNUnAlign only");
     }
 }
 

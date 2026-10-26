@@ -4,6 +4,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <utility>
 
 #include "Dialect/Tla/IR/TlaAttrs.h"
 #include "Dialect/Tla/IR/TlaTypes.h"
@@ -445,6 +446,102 @@ mlir::LogicalResult CopyMxOp::verify()
         return emitOpError("MX scale tile for an ")
                << (dst == AddressSpace::l0a ? "l0a" : "l0b") << " destination must be tagged "
                << (dst == AddressSpace::l0a ? "zZMxScale" : "nNMxScale");
+    return mlir::success();
+}
+
+mlir::LogicalResult Img2colOp::verify()
+{
+    if (!hasEnclosingRegion<CubeOp>(getOperation()))
+        return emitOpError("must be nested inside a tla.cube region");
+    auto srcTy = mlir::dyn_cast<TlaTensorType>(getSrc().getType());
+    auto dstTy = mlir::dyn_cast<TlaTensorType>(getDst().getType());
+    if (!srcTy || !dstTy)
+        return mlir::success(); // Operand type verifier handles malformed tensors.
+
+    if (srcTy.getPtr().getAddrspace() != AddressSpace::l1)
+        return emitOpError("img2col source must be an l1 feature-map tile");
+    if (srcTy.getLayout().getLayoutTag() != LayoutTag::zNUnAlign)
+        return emitOpError("img2col source must be tagged zNUnAlign");
+    AddressSpace dst = dstTy.getPtr().getAddrspace();
+    if (dst != AddressSpace::l0a)
+        return emitOpError("img2col destination must be an l0a tile");
+    if (dstTy.getLayout().getLayoutTag() != LayoutTag::zN)
+        return emitOpError("img2col destination must be tagged zN");
+    if (srcTy.getPtr().getPointee() != dstTy.getPtr().getPointee())
+        return emitOpError("img2col source and destination element types must match");
+    // The A5 img2col path is instantiated for 2- and 4-byte elements only
+    // (f16/bf16/f32); int8/fp8/fp4 have no img2col route, so refuse them here
+    // rather than at lowering time.
+    ::mlir::Type elem = srcTy.getPtr().getPointee();
+    if (!elem.isF16() && !elem.isBF16() && !elem.isF32())
+        return emitOpError("img2col element type must be f16, bf16 or f32, but got ") << elem;
+
+    // Validate the packing contract before lowering narrows hardware fields.
+    // A dynamic filter or K window cannot establish whole-C1 boundaries, so
+    // reject it rather than silently configuring a different convolution.
+    int64_t filterExtents[2];
+    unsigned filterAxis = 0;
+    for (mlir::Value extent : {getFilterH(), getFilterW()}) {
+        llvm::APInt value;
+        if (!mlir::matchPattern(extent, mlir::m_ConstantInt(&value)))
+            return emitOpError("filter_hw must be compile-time constants for K-window validation");
+        int64_t size = value.getSExtValue();
+        if (size < 1 || size > 511)
+            return emitOpError("filter_hw entries must be in 1..511");
+        filterExtents[filterAxis++] = size;
+    }
+
+    // These fields are narrowed to uint16_t/uint8_t in the device helper.
+    // Reject out-of-range constants here; dynamic values retain the documented
+    // runtime precondition because their value is not available to the verifier.
+    auto verifyConstantRange = [&](mlir::Value value, llvm::StringRef name, int64_t min,
+                                   int64_t max) -> mlir::LogicalResult {
+        llvm::APInt constant;
+        if (!mlir::matchPattern(value, mlir::m_ConstantInt(&constant)))
+            return mlir::success();
+        int64_t integer = constant.getSExtValue();
+        if (integer < min || integer > max)
+            return emitOpError() << name << " must be in " << min << ".." << max << ", got " << integer;
+        return mlir::success();
+    };
+    for (auto [value, name] : {std::pair{getFmapH(), "fmap_h"}, std::pair{getFmapW(), "fmap_w"}}) {
+        if (mlir::failed(verifyConstantRange(value, name, 1, 65535)))
+            return mlir::failure();
+    }
+    for (auto [value, name] :
+         {std::pair{getStrideH(), "stride_h"}, std::pair{getStrideW(), "stride_w"},
+          std::pair{getDilationH(), "dilation_h"}, std::pair{getDilationW(), "dilation_w"}}) {
+        if (mlir::failed(verifyConstantRange(value, name, 1, 255)))
+            return mlir::failure();
+    }
+    for (auto [value, name] :
+         {std::pair{getPadLeft(), "pad_left"}, std::pair{getPadRight(), "pad_right"}, std::pair{getPadTop(), "pad_top"},
+          std::pair{getPadBottom(), "pad_bottom"}}) {
+        if (mlir::failed(verifyConstantRange(value, name, 0, 255)))
+            return mlir::failure();
+    }
+
+    llvm::SmallVector<int64_t> srcShape, dstShape, dstCoord;
+    if (failed(getTlaIndexTreeLeaves(srcTy.getLayout().getShape().getTree(), srcShape)) ||
+        failed(getTlaIndexTreeLeaves(dstTy.getLayout().getShape().getTree(), dstShape)) ||
+        failed(getTlaIndexTreeLeaves(dstTy.getCoord().getTree(), dstCoord)) || srcShape.size() != 4 ||
+        dstShape.size() != 4 || dstCoord.size() != 2)
+        return emitOpError("requires four-leaf source/destination shapes and a two-axis destination coordinate");
+    int64_t c0 = elem.isF32() ? 8 : 16;
+    if (srcShape[2] != c0 || srcShape[3] < 1 || srcShape[3] > 65535 / c0)
+        return emitOpError("source channels must be static whole C1 slices within 1..65535 channels");
+    int64_t channels = c0 * srcShape[3];
+    if (dstShape[2] != c0 || dstShape[3] < 1 || dstShape[3] > 65535 / c0)
+        return emitOpError("destination K extent must be static, C0-aligned and within 1..65535");
+    int64_t kExtent = c0 * dstShape[3];
+    int64_t sliceK = filterExtents[0] * filterExtents[1] * c0;
+    if (kExtent % sliceK != 0)
+        return emitOpError("destination K extent must span whole C1 slices (filter_h * filter_w * C0)");
+    if (dstCoord[1] < 0 || dstCoord[1] > 65535 || dstCoord[1] % sliceK != 0)
+        return emitOpError("destination K coordinate must be static, within 0..65535 and on a whole C1 slice");
+    int64_t fullK = channels * filterExtents[0] * filterExtents[1];
+    if (dstCoord[1] + kExtent > fullK)
+        return emitOpError("destination K window exceeds the source channel/filter extent");
     return mlir::success();
 }
 

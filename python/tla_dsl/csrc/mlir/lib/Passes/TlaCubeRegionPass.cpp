@@ -506,6 +506,110 @@ private:
     DenseMap<Value, Value>& loweredMemrefByValue;
 };
 
+// tla.img2col: L1 NC1HWC0 feature map -> L0A, expanded by the img2col unit. The
+// geometry rides along as scalars, so one compiled kernel serves any
+// pad/stride/dilation; the extents and start points come off the destination
+// tile's descriptor inside the callee.
+struct LowerTlaImg2colPattern : public OpRewritePattern<::tla::Img2colOp> {
+    LowerTlaImg2colPattern(
+        MLIRContext* ctx, DenseMap<Value, TensorDescriptor>& tensorDescriptorByValue,
+        SmallVectorImpl<Operation*>& toErase, DenseMap<Value, Value>& loweredMemrefByValue)
+        : OpRewritePattern<::tla::Img2colOp>(ctx),
+          tensorDescriptorByValue(tensorDescriptorByValue),
+          toErase(toErase),
+          loweredMemrefByValue(loweredMemrefByValue)
+    {}
+
+    LogicalResult matchAndRewrite(::tla::Img2colOp op, PatternRewriter& rewriter) const override
+    {
+        auto lookup = [&](Value v, StringRef what) -> const TensorDescriptor* {
+            auto it = tensorDescriptorByValue.find(v);
+            if (it == tensorDescriptorByValue.end()) {
+                op.emitError() << "missing descriptor for tla.img2col " << what << " tile";
+                return nullptr;
+            }
+            return &it->second;
+        };
+        const TensorDescriptor* dstDesc = lookup(op.getDst(), "dst");
+        const TensorDescriptor* srcDesc = lookup(op.getSrc(), "src");
+        if (!dstDesc || !srcDesc)
+            return failure();
+
+        auto buildRuntimeMemref = [&](const TensorDescriptor& desc) -> FailureOr<Value> {
+            FailureOr<Value> base = ::tla::materializeTileMemrefFromDescriptor(
+                rewriter, op.getLoc(), desc, op.getOperation(), loweredMemrefByValue);
+            if (failed(base))
+                return failure();
+            auto baseType = dyn_cast<MemRefType>((*base).getType());
+            if (!baseType)
+                return failure();
+            return ::tla::castMemrefToType(rewriter, op.getLoc(), *base, ::tla::getDynamicStridedMemrefType(baseType));
+        };
+        FailureOr<Value> srcMemref = buildRuntimeMemref(*srcDesc);
+        FailureOr<Value> dstMemref = buildRuntimeMemref(*dstDesc);
+        if (failed(srcMemref) || failed(dstMemref))
+            return failure();
+
+        if (dstDesc->addrspace != "l0a") {
+            // img2col to L0B exists in hardware (img2colv2_cbuf_to_cb) and is what
+            // wgrad would need, but nothing instantiates it yet.
+            op.emitError() << "tla.img2col currently supports an l0a destination only";
+            return failure();
+        }
+
+        StringRef typeName;
+        ::mlir::Type elem = srcDesc->elementType;
+        if (elem.isF16())
+            typeName = "half";
+        else if (elem.isBF16())
+            typeName = "bf16";
+        else if (elem.isF32())
+            typeName = "float";
+        else {
+            op.emitError() << "unsupported tla.img2col element type " << elem << "; expected f16, bf16 or f32";
+            return failure();
+        }
+        std::string calleeName = (Twine("img2col_l1_zNUnAlign_to_l0a_zN_") + typeName).str();
+
+        SmallVector<Value, 32> payload;
+        auto appendDesc = [&](const TensorDescriptor& desc) {
+            SmallVector<Value, 12> fields = ::tla::buildCopyPayloadForDescriptor(rewriter, op.getLoc(), desc);
+            payload.append(fields.begin(), fields.end());
+        };
+        appendDesc(*srcDesc);
+        appendDesc(*dstDesc);
+
+        // The callee takes the geometry as i32; the op carries index so the
+        // frontend can pass either a literal or a runtime value.
+        auto toI32 = [&](Value v) -> Value {
+            return rewriter.create<arith::IndexCastOp>(op.getLoc(), rewriter.getI32Type(), v);
+        };
+        for (Value v :
+             {op.getFmapH(), op.getFmapW(), op.getFilterH(), op.getFilterW(), op.getStrideH(), op.getStrideW(),
+              op.getDilationH(), op.getDilationW(), op.getPadLeft(), op.getPadRight(), op.getPadTop(),
+              op.getPadBottom()})
+            payload.push_back(toI32(v));
+        payload.push_back(rewriter.create<arith::ConstantOp>(
+            op.getLoc(), rewriter.getI32IntegerAttr(static_cast<int32_t>(op.getPadValue()))));
+
+        SmallVector<Type, 32> operandTypes = {(*srcMemref).getType(), (*dstMemref).getType()};
+        for (Value v : payload)
+            operandTypes.push_back(v.getType());
+        SmallVector<Value, 32> operands = {*srcMemref, *dstMemref};
+        operands.append(payload.begin(), payload.end());
+
+        auto callee = ::tla::getOrCreateRuntimeCall(op->getParentOfType<ModuleOp>(), calleeName, operandTypes);
+        rewriter.create<func::CallOp>(op.getLoc(), callee, operands);
+        toErase.push_back(op.getOperation());
+        return success();
+    }
+
+private:
+    DenseMap<Value, TensorDescriptor>& tensorDescriptorByValue;
+    SmallVectorImpl<Operation*>& toErase;
+    DenseMap<Value, Value>& loweredMemrefByValue;
+};
+
 struct LowerTlaCopyPattern : public OpRewritePattern<::tla::CopyOp> {
     LowerTlaCopyPattern(
         MLIRContext* ctx, DenseMap<Value, TensorDescriptor>& tensorDescriptorByValue,
@@ -1025,6 +1129,20 @@ public:
             PatternRewriter rewriter(op.getContext());
             rewriter.setInsertionPoint(op);
             if (failed(lowerCopyMx.matchAndRewrite(op, rewriter)))
+                passFailed = true;
+        }
+
+        // tla.img2col runs on the same descriptors, for the same reason copy_mx does.
+        LowerTlaImg2colPattern lowerImg2col(
+            &getContext(), tensorDescriptorByValue, toErase, lowering.loweredMemrefByValue);
+        SmallVector<::tla::Img2colOp, 8> img2colOps;
+        root->walk([&](::tla::Img2colOp op) { img2colOps.push_back(op); });
+        for (::tla::Img2colOp op : img2colOps) {
+            if (!op || !op->getBlock())
+                continue;
+            PatternRewriter rewriter(op.getContext());
+            rewriter.setInsertionPoint(op);
+            if (failed(lowerImg2col.matchAndRewrite(op, rewriter)))
                 passFailed = true;
         }
 

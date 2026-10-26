@@ -5127,6 +5127,9 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
         "f4e2m1",
         "f4e1m2",
     ),
+    # NC1HWC0 feature map: the same tree on both sides, so this is a run of
+    # contiguous C1 slices rather than a re-layout. It is what feeds tla.experimental.img2col.
+    ("gm", "zNUnAlign", "l1", "zNUnAlign"): ("f32", "f16", "bf16"),
     ("gm", "RowMajorMxScaleA", "l1", "zZMxScale"): ("f8e8m0",),
     ("gm", "ColMajorMxScaleA", "l1", "zZMxScale"): ("f8e8m0",),
     ("gm", "RowMajorMxScaleB", "l1", "nNMxScale"): ("f8e8m0",),

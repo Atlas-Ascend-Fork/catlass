@@ -34,10 +34,19 @@ CORE_API_PATH = PACKAGE_ROOT / "catlass" / "core_api.py"
 CORE_API_QUALNAME_PREFIX = "catlass.core_api."
 TENSOR_API_PATH = PACKAGE_ROOT / "catlass" / "tla" / "tensor.py"
 TYPING_API_PATH = PACKAGE_ROOT / "catlass" / "base_dsl" / "typing.py"
+EXPERIMENTAL_API_PATH = (
+    PACKAGE_ROOT / "catlass" / "tla" / "experimental" / "__init__.py"
+)
 OUTPUT_PATH = PACKAGE_ROOT / "docs" / "en" / "api" / "kernel_api_reference.md"
 GENERATED_BY = "python/tla_dsl/tools/generate_kernel_api_reference.py"
 
 DIRECTORY_SECTIONS: list[tuple[str, str]] = [
+    (
+        "Experimental APIs",
+        "APIs under `tla.experimental` may change or be removed without "
+        "backward-compatibility guarantees. Use the ordinary `tla.kernel` and "
+        "`tla.jit` decorators; this namespace does not select another compiler.",
+    ),
     (
         "Basic Data Types and Operations",
         "Construction and views for front-end structured values such as "
@@ -659,6 +668,16 @@ def parse_core_api(path: Path) -> dict[str, APIEntry]:
             path, {"VectorSSA"}, label="VectorSSA", module="catlass.core_api"
         )
     )
+    experimental_tree = ast.parse(EXPERIMENTAL_API_PATH.read_text(encoding="utf-8"))
+    for node in experimental_tree.body:
+        if isinstance(node, ast.FunctionDef) and has_dsl_user_op(node.decorator_list):
+            name = f"experimental.{node.name}"
+            entries[name] = function_entry(
+                name,
+                node,
+                qualified_name=f"catlass.tla.experimental.{node.name}",
+                source_path=EXPERIMENTAL_API_PATH,
+            )
     _apply_doc_hooks(entries)
     return entries
 

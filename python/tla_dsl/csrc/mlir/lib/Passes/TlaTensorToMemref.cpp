@@ -790,6 +790,18 @@ std::string getCopyRouteCallee(
             return {};
         return Twine("copy_ub_RowMajor_to_gm_RowMajor_").concat(suffix).str();
     }
+    // NC1HWC0 feature map, GM -> L1: the same tree on both sides, which is what
+    // makes it a run of contiguous C1 slices rather than a re-layout. This is the
+    // load that feeds tla.img2col.
+    if (*srcSpace == hivm::AddressSpace::GM && *dstSpace == hivm::AddressSpace::L1 &&
+        srcLayout == LayoutTag::zNUnAlign && dstLayout == LayoutTag::zNUnAlign) {
+        if (srcElementType != dstElem)
+            return {};
+        StringRef suffix = copyRuntimeElemSuffix(srcElementType);
+        if (suffix.empty())
+            return {};
+        return Twine("copy_gm_zNUnAlign_to_l1_zNUnAlign_").concat(suffix).str();
+    }
     // Packed fp4 GM -> L1. The source is a plain byte buffer -- the host has no
     // fp4 type, so GM holds packed bytes -- while the destination tile is
     // logically i4. This is the one route where src and dst element types
@@ -1056,6 +1068,9 @@ static bool isAicTemplateRuntimeCall(StringRef name)
         return true;
     // L1 -> L0 loads that also attach the e8m0 scale block.
     if (name.starts_with("copy_mx_l1_"))
+        return true;
+    // The img2col L1 -> L0A load, and the NC1HWC0 feature-map copy that feeds it.
+    if (name.starts_with("img2col_l1_") || name.starts_with("copy_gm_zNUnAlign_to_l1_zNUnAlign_"))
         return true;
     // fp4 operands are packed two-per-byte, so their GM -> L1 routes are named by
     // the fp4 encoding rather than by a storage type suffix.

@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// Memory-to-memory data movement: copy, copy_mx and fill, plus the parameter
+// Memory-to-memory data movement: copy, copy_mx, img2col and fill, plus the parameter
 // bundle tla.copy takes on the L0C->dst path.
 //
 // tla.load / tla.store are not here: they move UB <-> vector register and are
@@ -78,6 +78,61 @@ def Tla_CopyMxOp : Tla_Op<"copy_mx", []> {
   let assemblyFormat = [{
     $dst `,` $src `,` $scale attr-dict `:`
     qualified(type($dst)) `,` qualified(type($src)) `,` qualified(type($scale))
+  }];
+  let hasVerifier = 1;
+}
+
+def Tla_Img2colOp : Tla_Op<"img2col", []> {
+  let summary = "img2col L1->L0 load";
+  let description = [{
+    Load a tile from an L1 feature map into L0A (or L0B), expanding it on the way
+    with the hardware's img2col unit (``load3dv2`` / ``img2colv2_cbuf_to_ca``).
+    Must be nested inside a ``tla.cube`` region.
+
+    This is the only conv-specific instruction in the dialect. It turns an
+    ``(hi, wi)`` feature-map window into the implicit-GEMM matrix
+    ``(M, K) = (ho * wo, cin1 * kh * kw * C0)``, applying padding, stride and
+    dilation as it goes; what comes out of it is an ordinary L0 operand that
+    ``tla.mmad`` consumes with no knowledge that a convolution is happening.
+    Convolution is therefore a property of the *load*, not of the matmul.
+
+    ``dst`` is the L0 tile and gives ``mExtension``/``kExtension`` through its
+    shape and ``mStartPt``/``kStartPt`` through its coordinate -- so M and K of
+    the implicit GEMM can be tiled by re-issuing this op into a different window
+    of the same L1 tile, with no extra L1 traffic.
+
+    ``src`` is the L1 feature-map tile. The feature-map extent
+    (``fmap_h``/``fmap_w``, the ``set_fmatrix`` operands) is passed explicitly
+    rather than read off the tile, because the L1 tile is a flat NC1HWC0 run of
+    bytes whose logical rows are ``hi * wi``, not a 4-D spatial view.
+
+    ``pad_*`` is the padding of *this* block, not of the whole problem: a tiled
+    convolution pads only the blocks that touch the feature-map border, so these
+    are runtime values. Padding is filled with ``pad_value``.
+
+    Geometry operands are ``index``. Filter extents must be constants in
+    1..511; source channels and destination K extent/coordinate must be static.
+    The source descriptor supplies channelSize independently of the K window.
+    K extents and coordinates span whole C1 slices (filter_h * filter_w * C0)
+    and must stay within the source channel/filter extent. Channel count and
+    K extent fit in 1..65535, and the K coordinate in 0..65535. Feature-map
+    extent, padding, stride and dilation may be runtime values.
+  }];
+  let arguments = (ins Tla_TensorType:$dst, Tla_TensorType:$src,
+                       Index:$fmap_h, Index:$fmap_w,
+                       Index:$filter_h, Index:$filter_w,
+                       Index:$stride_h, Index:$stride_w,
+                       Index:$dilation_h, Index:$dilation_w,
+                       Index:$pad_left, Index:$pad_right,
+                       Index:$pad_top, Index:$pad_bottom,
+                       I32Attr:$pad_value);
+  let assemblyFormat = [{
+    $dst `,` $src `,` `fmap` `(` $fmap_h `,` $fmap_w `)`
+    `filter` `(` $filter_h `,` $filter_w `)`
+    `stride` `(` $stride_h `,` $stride_w `)`
+    `dilation` `(` $dilation_h `,` $dilation_w `)`
+    `pad` `(` $pad_left `,` $pad_right `,` $pad_top `,` $pad_bottom `)`
+    attr-dict `:` qualified(type($dst)) `,` qualified(type($src))
   }];
   let hasVerifier = 1;
 }

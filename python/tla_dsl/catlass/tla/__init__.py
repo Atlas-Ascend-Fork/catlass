@@ -24,6 +24,7 @@ from .tensor import (
 from .typing import Tensor, TypedTensor
 
 _EXPLICIT_EXPORTS = (
+    "experimental",
     "Tensor",
     "TypedTensor",
     "DlpackBridgeError",
@@ -108,6 +109,11 @@ __all__ = list(_EXPLICIT_EXPORTS) + list(_PARENT_EXPORTS)
 
 
 def __getattr__(name: str) -> Any:
+    if name == "experimental":
+        from importlib import import_module
+
+        return import_module(".experimental", __name__)
+
     if name in (
         "kernel",
         "jit",

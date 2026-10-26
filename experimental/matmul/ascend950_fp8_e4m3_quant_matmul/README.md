@@ -30,8 +30,8 @@ experimental
 ```text
 # 编译指定用例
 bash scripts/build.sh ascend950_fp8_e4m3_quant_matmul -DCATLASS_ARCH=3510
-# 生成测试样例（在 examples/ascend950_fp8_e4m3_quant_matmul/data 下生成 input/ 与 golden/）
-python3 examples/ascend950_fp8_e4m3_quant_matmul/gen_data.py 256 256 128
+# 生成测试样例（在 experimental/matmul/ascend950_fp8_e4m3_quant_matmul/data 下生成 input/ 与 golden/）
+python3 experimental/matmul/ascend950_fp8_e4m3_quant_matmul/gen_data.py 256 256 128
 # 可选：--data-root <DIR> 指定在 DIR/data/ 下生成（默认在脚本所在目录下生成）
 # 输入参数分别对应 m, n, k
 # 在 output/bin 中执行，以匹配示例读取数据的相对路径

@@ -36,4 +36,5 @@ Compare success.
 ## 模板推荐场景
 
 本样例与 `00_basic_matmul` 为同一模板的 TLA 抽象实现，无 Padding/Preload/切K 等优化，为各优化样例的公共基线。
-推荐 MNK 范围：`M ≥ 256、N ≥ 256、256 < K ≤ 3072`，且 K、N 均 512B 对齐，具体以 `102_dynamic_optimized_matmul` 泛化工程的路由结论为准。
+
+推荐 MNK 范围：`1 ≤ K ≤ 6144`；`formatA`/`formatB` 仅 `false`。具体以 `102_dynamic_optimized_matmul` 泛化工程的路由结论为准。

@@ -8,7 +8,7 @@
 // Included by Dialect/Tla/IR/Tla.td, the file mlir-tblgen is run on.
 //===----------------------------------------------------------------------===//
 
-def Tla_CopyL0C2DstParamsOp : Tla_Op<"CopyL0C2DstParams", [Pure]> {
+def Tla_CopyL0C2DstParamsOp : Tla_Op<"CopyL0C2DstParams", [Pure, AttrSizedOperandSegments]> {
   let summary = "CopyL0C2DstParams op";
   let arguments = (ins
   // attributes
@@ -17,7 +17,9 @@ def Tla_CopyL0C2DstParamsOp : Tla_Op<"CopyL0C2DstParams", [Pure]> {
     Tla_QuantModeAttr:$quant_mode,
     Tla_L0C2UBModeAttr:$l0c2ub_mode,
   // operands
-    Optional<AnyTypeOf<[F32, Tla_TensorType]>>:$quant_scale_or_tensor
+    Optional<F32>:$quant_scale,
+    Optional<I32>:$quant_offset,
+    Optional<Tla_TensorType>:$quant_tensor
   );
   let results = (outs Tla_CopyL0C2DstParamsType:$params);
 }

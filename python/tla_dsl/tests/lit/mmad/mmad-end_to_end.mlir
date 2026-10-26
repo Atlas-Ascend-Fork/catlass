@@ -73,7 +73,7 @@ module attributes {tla.module_exec_units = "cube"} {
 // CHECK-SAME: hacc.always_inline
 // CHECK-SAME: hivm.func_core_type = #hivm.func_core_type<AIC>
 // CHECK-SAME: llvm.emit_c_interface
-// CHECK: func.func private @copy_l0c_to_gm_RowMajor_float
+// CHECK: func.func private @copy_l0c_to_gm_RowMajor_float_float
 // CHECK-SAME: hacc.always_inline
 // CHECK-SAME: hivm.func_core_type = #hivm.func_core_type<AIC>
 // CHECK-SAME: llvm.emit_c_interface
@@ -109,7 +109,7 @@ module attributes {tla.module_exec_units = "cube"} {
 // CHECK: memref.cast{{.*}}memref<1024xf32, #hivm.address_space<cb>> to memref<?xf32, strided<[?], offset: ?>, #hivm.address_space<cb>>
 // CHECK: call @copy_l1_zN_to_l0b_nZ_float
 // CHECK: call @mmad_float_float_float
-// CHECK: call @copy_l0c_to_gm_RowMajor_float
+// CHECK: call @copy_l0c_to_gm_RowMajor_float_float
 // CHECK: hivm.hir.pipe_barrier[<PIPE_ALL>]
 // CHECK-NOT: "tla.mmad"
 // CHECK-NOT: "tla.copy"

@@ -11,10 +11,7 @@
 """What the L0C -> GM fixpipe routes do and do not accept.
 
 The ColumnMajor GM destination is the transposing (nz2dn) store. These pin its
-parity with the RowMajor (nz2nd) store, and pin the one place the two C++
-templates are NOT at parity -- quantization -- as currently unreachable for
-BOTH, so that enabling it for one layout without the other is a test failure
-rather than a surprise.
+parity with the RowMajor (nz2nd) store.
 """
 
 from __future__ import annotations
@@ -22,7 +19,6 @@ from __future__ import annotations
 import pytest
 
 from catlass.core_api import _SUPPORTED_CUBE_FIXPIPE_ROUTES
-from catlass.params import QuantMode
 
 _GM_KEY_NO_RELU = ("gm", "{layout}", "-", "NO_QUANT", False)
 _GM_KEY_RELU = ("gm", "{layout}", "-", "NO_QUANT", True)
@@ -49,24 +45,4 @@ def test_column_major_matches_row_major_dtypes(relu):
     assert col == row, (
         "the ColumnMajor GM fixpipe route must accept exactly the dtypes the "
         f"RowMajor one does; row={row} col={col}"
-    )
-
-
-def test_fixpipe_quant_is_unreachable_for_every_layout():
-    """Quant has C++ templates for RowMajor only -- keep it unreachable for both.
-
-    copy_l0c_to_gm.hpp carries PER_TENSOR / PER_CHANNEL specializations for
-    RowMajor with no ColumnMajor counterpart. No .bc symbol is registered for
-    either, so today the asymmetry is invisible. If quant is ever opened up,
-    this test fires: write the ColumnMajor specialization too, or the
-    transposing store silently loses a feature the straight store has.
-    """
-    quantized = [
-        key
-        for key in _SUPPORTED_CUBE_FIXPIPE_ROUTES
-        if key[3] != str(QuantMode.NO_QUANT)
-    ]
-    assert not quantized, (
-        "a quantized fixpipe route was enabled; check that copy_l0c_to_gm.hpp "
-        f"has a matching ColumnMajor specialization: {quantized}"
     )

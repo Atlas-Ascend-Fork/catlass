@@ -262,6 +262,7 @@ class CopyL0C2DstParams(CopyParams):
     relu_enable: bool = False
     quant_mode: QuantMode = QuantMode.NO_QUANT
     quant_scale: float | None = None
+    quant_offset: int | None = None
     quant_tensor: TlaTensor | None = None
     l0c2ub_mode: L0C2UBMode = L0C2UBMode.NO_SPLIT_VEC_0
     atomic_mode: AtomicMode = AtomicMode.NONE
@@ -290,10 +291,21 @@ class CopyL0C2DstParams(CopyParams):
                 f"{cls_name}.l0c2ub_mode must be a {L0C2UBMode}, got {type(self.l0c2ub_mode).__name__}"
             )
         if self.quant_mode == QuantMode.PER_TENSOR:
-            if not isinstance(self.quant_scale, float):
+            if self.quant_scale is None:
                 raise TlaLoweringError(
-                    f"{cls_name}.quant_scale must be a `float` temporarily, got {type(self.quant_scale).__name__}"
+                    f"{cls_name}.quant_scale is required when quant_mode is PER_TENSOR"
                 )
+            if self.quant_offset is not None:
+                if isinstance(self.quant_offset, int):
+                    if not -256 <= self.quant_offset <= 255:
+                        raise ValueError(
+                            f"{cls_name}.quant_offset must fit the 9-bit signed "
+                            f"Offset field [-256, 255], got {self.quant_offset}"
+                        )
+        elif self.quant_offset is not None:
+            raise TlaLoweringError(
+                f"{cls_name}.quant_offset is only meaningful with QuantMode.PER_TENSOR"
+            )
         if self.quant_mode == QuantMode.PER_CHANNEL:
             if _category(self.quant_tensor) != "tensor":
                 raise TlaLoweringError(

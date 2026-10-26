@@ -677,22 +677,41 @@ static StringRef copyRuntimeElemSuffix(Type elementType)
 // independently restricted by isLegalFixpipeElementType below.
 
 // Whether fixpipe can carry this L0C element type out to the given destination
-// type. An fp32 accumulator (the float MMAD routes) may be narrowed to f16/bf16
-// on the way out, or land unchanged as f32; an i32 accumulator (the int8 MMAD
-// route) has no narrowing path and must land as i32.
+// type.
+//
+// Without a scale the fixpipe only moves the accumulator or narrows it to
+// another float: f32 -> f32/f16/bf16, and i32 -> i32. The per-tensor (PRE) quant
+// modes go further and narrow straight into the 8-bit destinations, so the
+// legal set depends on the quant mode.
 //
 // Both sides are enumerated deliberately. Accepting any destination for an f32
 // accumulator would be safe only for as long as copyRuntimeElemSuffix had no
 // mapping for the other types: the route would resolve to an empty suffix and be
-// rejected further down. Once a new element type gains a suffix -- as fp8 does --
-// that accidental guard disappears and the route instead resolves to a callee
-// name with no REGISTER_L0C_TO_* behind it, which fails at link time rather than
-// as a diagnostic here.
-static bool isLegalFixpipeElementType(Type srcElementType, Type dstElementType)
+// rejected further down. fp8 already has a suffix -- the vector staging routes
+// need it -- so that accidental guard is gone: an fp8 destination accepted here
+// would resolve to a callee name with no REGISTER_L0C_TO_* behind it and fail at
+// link time instead of as a diagnostic here.
+//
+// fp8 destinations are not supported for now. Of the two fp8 encodings, the
+// on-the-fly quant supports e4m3fn; e5m2 has no quant route at all. Neither is
+// in the legal set, and no REGISTER_L0C_TO_* is instantiated for either.
+static bool isLegalFixpipeElementType(Type srcElementType, Type dstElementType, bool isQuantMode)
 {
-    if (srcElementType.isF32())
-        return dstElementType.isF32() || dstElementType.isF16() || dstElementType.isBF16();
-    return srcElementType.isSignlessInteger(32) && dstElementType.isSignlessInteger(32);
+    if (!isQuantMode) {
+        // NO_QUANT: f32->f32/f16/bf16 or i32->i32
+        if (srcElementType.isF32())
+            return dstElementType.isF32() || dstElementType.isF16() || dstElementType.isBF16();
+        return srcElementType.isSignlessInteger(32) && dstElementType.isSignlessInteger(32);
+    } else {
+        // PER_TENSOR/PER_CHANNEL: f32->f32/f16/bf16/i8/u8 or i32->f16/bf16/i8/u8
+        if (srcElementType.isF32())
+            return dstElementType.isF32() || dstElementType.isF16() || dstElementType.isBF16() ||
+                   dstElementType.isSignlessInteger(8) || dstElementType.isUnsignedInteger(8);
+        if (srcElementType.isSignlessInteger(32))
+            return dstElementType.isF16() || dstElementType.isBF16() || dstElementType.isSignlessInteger(8) ||
+                   dstElementType.isUnsignedInteger(8);
+    }
+    return false;
 }
 
 std::string getCopyRouteCallee(
@@ -897,58 +916,62 @@ std::string getCopyRouteCallee(
             return {};
         return Twine("copy_l1_VectorLayout_to_biasbuf_VectorLayout_").concat(suffix).str();
     }
+    // The per-tensor (PRE) quant modes reach narrower destinations than the
+    // plain route, so the legal (src, dst) set depends on the quant mode that
+    // extraDesc carries.
+    const bool isQuantMode =
+        extraDesc.find("pertensor_") != StringRef::npos || extraDesc.find("perchannel_") != StringRef::npos;
+    // L0C -> dst: the runtime symbol carries *both* operand types. The
+    // destination alone does not identify the wrapper template: f32 -> f16 and
+    // i32 -> f16 both exist, so the source type has to be part of the name.
+    auto l0cToDstCallee = [&](StringRef prefix) -> std::string {
+        StringRef srcSuffix = copyRuntimeElemSuffix(srcElementType);
+        StringRef dstSuffix = copyRuntimeElemSuffix(dstElem);
+        if (srcSuffix.empty() || dstSuffix.empty())
+            return {};
+        return (Twine(prefix) + extraDesc + srcSuffix + "_" + dstSuffix).str();
+    };
     // L0C -> GM row-major: an fp32 acc may narrow to f32 / f16 / bf16 on fixpipe;
     // an i32 acc (int8 MMAD) stays i32.
     if (*srcSpace == hivm::AddressSpace::L0C && *dstSpace == hivm::AddressSpace::GM &&
         srcLayout == LayoutTag::L0Clayout && dstLayout == LayoutTag::RowMajor) {
-        if (!isLegalFixpipeElementType(srcElementType, dstElem))
+        if (!isLegalFixpipeElementType(srcElementType, dstElem, isQuantMode))
             return {};
-        StringRef suffix = copyRuntimeElemSuffix(dstElem);
-        if (suffix.empty())
-            return {};
-        return Twine("copy_l0c_to_gm_RowMajor_").concat(extraDesc).concat(suffix).str();
+        return l0cToDstCallee("copy_l0c_to_gm_RowMajor_");
     }
     // L0C -> GM col-major: the fixpipe NZ2DN path transposes the tile on the way
     // out, so the mirrored store needs no UB staging.
     if (*srcSpace == hivm::AddressSpace::L0C && *dstSpace == hivm::AddressSpace::GM &&
         srcLayout == LayoutTag::L0Clayout && dstLayout == LayoutTag::ColumnMajor) {
-        if (!isLegalFixpipeElementType(srcElementType, dstElem))
+        if (!isLegalFixpipeElementType(srcElementType, dstElem, isQuantMode))
             return {};
-        StringRef suffix = copyRuntimeElemSuffix(dstElem);
-        if (suffix.empty())
-            return {};
-        return Twine("copy_l0c_to_gm_ColumnMajor_").concat(extraDesc).concat(suffix).str();
+        return l0cToDstCallee("copy_l0c_to_gm_ColumnMajor_");
     }
-    // L0C (fp32 MMAD acc) -> UB row-major: dst may be f32 / f16 / bf16 (narrowing on fixpipe).
+    // L0C (fp32 MMAD acc) -> UB row-major: dst may be f32 / f16 / bf16 (narrowing
+    // on fixpipe). Per-tensor quant is not wired up on this route yet, so it
+    // stays on the NO_QUANT element set, but the symbol is spelled the same way
+    // as every other L0C route: both operand types. One rule for the whole
+    // family beats a per-route exception, and the extra type costs nothing.
     if (*srcSpace == hivm::AddressSpace::L0C && *dstSpace == hivm::AddressSpace::UB &&
         srcLayout == LayoutTag::L0Clayout && dstLayout == LayoutTag::RowMajor) {
-        if (!isLegalFixpipeElementType(srcElementType, dstElem))
+        if (!isLegalFixpipeElementType(srcElementType, dstElem, /*isQuantMode=*/false))
             return {};
-        StringRef suffix = copyRuntimeElemSuffix(dstElem);
-        if (suffix.empty())
-            return {};
-        return Twine("copy_l0c_to_ub_RowMajor_").concat(extraDesc).concat(suffix).str();
+        return l0cToDstCallee("copy_l0c_to_ub_RowMajor_");
     }
-    // L0C (fp32 MMAD acc) -> UB col-major: dst may be f32 / f16 / bf16 (narrowing on fixpipe).
+    // L0C (fp32 MMAD acc) -> UB col-major: as row-major above, NO_QUANT only.
     if (*srcSpace == hivm::AddressSpace::L0C && *dstSpace == hivm::AddressSpace::UB &&
         srcLayout == LayoutTag::L0Clayout && dstLayout == LayoutTag::ColumnMajor) {
-        if (!isLegalFixpipeElementType(srcElementType, dstElem))
+        if (!isLegalFixpipeElementType(srcElementType, dstElem, /*isQuantMode=*/false))
             return {};
-        StringRef suffix = copyRuntimeElemSuffix(dstElem);
-        if (suffix.empty())
-            return {};
-        return Twine("copy_l0c_to_ub_ColumnMajor_").concat(extraDesc).concat(suffix).str();
+        return l0cToDstCallee("copy_l0c_to_ub_ColumnMajor_");
     }
     // L0C -> L1 zN: an fp32 acc may narrow to f32 / f16 / bf16 on fixpipe; an i32
     // acc (int8 MMAD) stays i32.
     if (*srcSpace == hivm::AddressSpace::L0C && *dstSpace == hivm::AddressSpace::L1 &&
         srcLayout == LayoutTag::L0Clayout && dstLayout == LayoutTag::zN) {
-        if (!isLegalFixpipeElementType(srcElementType, dstElem))
+        if (!isLegalFixpipeElementType(srcElementType, dstElem, isQuantMode))
             return {};
-        StringRef suffix = copyRuntimeElemSuffix(dstElem);
-        if (suffix.empty())
-            return {};
-        return Twine("copy_l0c_to_l1_zN_").concat(extraDesc).concat(suffix).str();
+        return l0cToDstCallee("copy_l0c_to_l1_zN_");
     }
     return {};
 }
@@ -1038,7 +1061,8 @@ static bool isAicTemplateRuntimeCall(StringRef name)
     if (!(name.starts_with("copy_")))
         return false;
     if (!(name.ends_with("_float") || name.ends_with("_half") || name.ends_with("_bf16") || name.ends_with("_int8_t") ||
-          name.ends_with("_int32_t") || name.ends_with("_fp8_e4m3fn_t") || name.ends_with("_fp8_e5m2_t")))
+          name.ends_with("_uint8_t") || name.ends_with("_int32_t") || name.ends_with("_fp8_e4m3fn_t") ||
+          name.ends_with("_fp8_e5m2_t")))
         return false;
 
     return name.starts_with("copy_gm_RowMajor_to_l1_zN_") || name.starts_with("copy_gm_ColumnMajor_to_l1_nZ_") ||

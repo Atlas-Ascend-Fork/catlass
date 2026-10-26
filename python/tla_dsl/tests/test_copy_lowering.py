@@ -1,13 +1,13 @@
-from catlass.tla.runtime import make_fake_tensor
-
 import pathlib
 import re
 import subprocess
 
 import pytest
 
-import catlass.tla as tla
 import catlass.runtime as runtime_mod
+import catlass.tla as tla
+from catlass.execution_lowering import TlaLoweringError
+from catlass.tla.runtime import make_fake_tensor
 
 
 def _require_hivm_tla_compile() -> pathlib.Path:
@@ -271,7 +271,7 @@ def test_split_m_dynamic_RowMajor_stride_uses_child_n_extent(tmp_path) -> None:
     )
 
     call_match = re.search(
-        r"call @copy_l0c_to_ub_RowMajor_splitm_float\(([^)]*)\)",
+        r"call @copy_l0c_to_ub_RowMajor_splitm_float_float\(([^)]*)\)",
         result.stdout,
     )
     assert call_match is not None, result.stdout
@@ -856,7 +856,11 @@ def test_frontend_copy_ub_to_ub_transpose_accepts_every_registered_dtype(dtype) 
 def test_frontend_copy_ub_to_ub_transpose_is_its_own_route() -> None:
     """The transposing copy must not be served by the straight route's callee."""
     mem = make_fake_tensor(
-        tla.Float32, (64, 64), (64, 1), origin_shape=(64, 64), layout_tag=tla.arch.RowMajor
+        tla.Float32,
+        (64, 64),
+        (64, 1),
+        origin_shape=(64, 64),
+        layout_tag=tla.arch.RowMajor,
     )
     mlir = _ub_to_ub_transpose_kernel(tla.Float32, 64, 64).dump_mlir(type_args=(mem,))
     assert "tla.copy" in mlir
@@ -865,7 +869,9 @@ def test_frontend_copy_ub_to_ub_transpose_is_its_own_route() -> None:
     assert "ColumnMajor" in mlir
 
 
-def test_frontend_copy_ub_to_ub_transpose_refuses_a_shape_the_metaop_cannot_do() -> None:
+def test_frontend_copy_ub_to_ub_transpose_refuses_a_shape_the_metaop_cannot_do() -> (
+    None
+):
     """A tile that is not a whole number of VNCHWCONV blocks is refused.
 
     16 rows by C0 columns is the block, so a 24x40 f16 tile is neither a whole
@@ -873,7 +879,208 @@ def test_frontend_copy_ub_to_ub_transpose_refuses_a_shape_the_metaop_cannot_do()
     the tile's edges.
     """
     mem = make_fake_tensor(
-        tla.Float16, (24, 40), (40, 1), origin_shape=(24, 40), layout_tag=tla.arch.RowMajor
+        tla.Float16,
+        (24, 40),
+        (40, 1),
+        origin_shape=(24, 40),
+        layout_tag=tla.arch.RowMajor,
     )
     with pytest.raises(Exception, match="multiple of"):
         _ub_to_ub_transpose_kernel(tla.Float16, 24, 40).dump_mlir(type_args=(mem,))
+
+
+# --- fixpipe PER_TENSOR (on-the-fly) quant frontend checks ---
+def _fp_tensor(dtype: object, layout_tag: object) -> object:
+    return make_fake_tensor(
+        dtype,
+        (32, 32),
+        (32, 1),
+        origin_shape=(32, 32),
+        layout_tag=layout_tag,
+    )
+
+
+@tla.kernel
+def copy_l0c_to_gm_pertensor_kernel(gm_c: tla.Tensor) -> None:
+    """L0C -> GM with PER_TENSOR quant; dtype-c comes from ``gm_c``."""
+    gm_tile = tla.tile_view(gm_c, tla.make_shape(32, 32), tla.make_coord(0, 0))
+    l0c = tla.make_tensor_like(
+        tla.allocate((32, 32), tla.Float32, tla.AddressSpace.l0c, 512),
+        gm_tile,
+        tla.arch.L0Clayout,
+    )
+    with tla.cube():
+        tla.copy(
+            gm_tile,
+            l0c,
+            tla.params.CopyL0C2DstParams(
+                quant_mode=tla.params.QuantMode.PER_TENSOR,
+                quant_scale=1.0,
+            ),
+        )
+
+
+@tla.kernel
+def copy_l0c_to_gm_pertensor_no_scale_kernel(gm_c: tla.Tensor) -> None:
+    """PER_TENSOR without a quant_scale operand."""
+    gm_tile = tla.tile_view(gm_c, tla.make_shape(32, 32), tla.make_coord(0, 0))
+    l0c = tla.make_tensor_like(
+        tla.allocate((32, 32), tla.Float32, tla.AddressSpace.l0c, 512),
+        gm_tile,
+        tla.arch.L0Clayout,
+    )
+    with tla.cube():
+        tla.copy(
+            gm_tile,
+            l0c,
+            tla.params.CopyL0C2DstParams(
+                quant_mode=tla.params.QuantMode.PER_TENSOR,
+            ),
+        )
+
+
+def test_frontend_accepts_l0c_to_gm_pertensor_f16() -> None:
+    """f32 accumulator -> f16 GM with PER_TENSOR quant is a supported route."""
+    gm = _fp_tensor(tla.Float16, tla.arch.RowMajor)
+    mlir = copy_l0c_to_gm_pertensor_kernel.dump_mlir(type_args=(gm,))
+    assert "quant_mode = #tla.quant_mode<PER_TENSOR>" in mlir
+
+
+def test_frontend_accepts_l0c_to_gm_pertensor_int8() -> None:
+    """f32 accumulator -> int8 GM is admitted by the PER_TENSOR route table."""
+    gm = _fp_tensor(tla.Int8, tla.arch.RowMajor)
+    mlir = copy_l0c_to_gm_pertensor_kernel.dump_mlir(type_args=(gm,))
+    assert "quant_mode = #tla.quant_mode<PER_TENSOR>" in mlir
+
+
+def test_frontend_rejects_pertensor_without_quant_scale() -> None:
+    """PER_TENSOR requires a quant_scale operand."""
+    gm = _fp_tensor(tla.Float16, tla.arch.RowMajor)
+    with pytest.raises(
+        TlaLoweringError,
+        match=r"quant_scale is required when quant_mode is PER_TENSOR",
+    ):
+        copy_l0c_to_gm_pertensor_no_scale_kernel.dump_mlir(type_args=(gm,))
+
+
+def test_frontend_rejects_pertensor_unsupported_dst_dtype() -> None:
+    """fp8 is not a PER_TENSOR quant destination in the fixpipe route table.
+
+    e5m2 is the encoding to test: it has no quant route in any quant mode, so
+    this rejection holds even if e4m3fn is enabled later.
+    """
+    gm = _fp_tensor(tla.Float8E5M2, tla.arch.RowMajor)
+    with pytest.raises(
+        runtime_mod.TlaCoreAPIError,
+        match=r"unsupported fixpipe route",
+    ):
+        copy_l0c_to_gm_pertensor_kernel.dump_mlir(type_args=(gm,))
+
+
+@tla.kernel
+def copy_l0c_to_gm_pertensor_offset_kernel(gm_c: tla.Tensor) -> None:
+    """PER_TENSOR quant with a runtime-style int quant_offset."""
+    gm_tile = tla.tile_view(gm_c, tla.make_shape(32, 32), tla.make_coord(0, 0))
+    l0c = tla.make_tensor_like(
+        tla.allocate((32, 32), tla.Float32, tla.AddressSpace.l0c, 512),
+        gm_tile,
+        tla.arch.L0Clayout,
+    )
+    with tla.cube():
+        tla.copy(
+            gm_tile,
+            l0c,
+            tla.params.CopyL0C2DstParams(
+                quant_mode=tla.params.QuantMode.PER_TENSOR,
+                quant_scale=1.0,
+                quant_offset=3,
+            ),
+        )
+
+
+def test_frontend_accepts_pertensor_int_offset() -> None:
+    """quant_offset accepts a Python int (8-bit destinations only)."""
+    gm = _fp_tensor(tla.Int8, tla.arch.RowMajor)
+    mlir = copy_l0c_to_gm_pertensor_offset_kernel.dump_mlir(type_args=(gm,))
+    assert "quant_mode = #tla.quant_mode<PER_TENSOR>" in mlir
+
+
+@tla.kernel
+def copy_l0c_to_gm_pertensor_i32_offset_kernel(gm_c: tla.Tensor) -> None:
+    """PER_TENSOR quant with an explicit Int32 quant_offset."""
+    gm_tile = tla.tile_view(gm_c, tla.make_shape(32, 32), tla.make_coord(0, 0))
+    l0c = tla.make_tensor_like(
+        tla.allocate((32, 32), tla.Float32, tla.AddressSpace.l0c, 512),
+        gm_tile,
+        tla.arch.L0Clayout,
+    )
+    with tla.cube():
+        tla.copy(
+            gm_tile,
+            l0c,
+            tla.params.CopyL0C2DstParams(
+                quant_mode=tla.params.QuantMode.PER_TENSOR,
+                quant_scale=1.0,
+                quant_offset=tla.Int32(3),
+            ),
+        )
+
+
+def test_frontend_accepts_pertensor_i32_offset() -> None:
+    """An explicit Int32 is passed through as the operand's own type."""
+    gm = _fp_tensor(tla.Int8, tla.arch.RowMajor)
+    mlir = copy_l0c_to_gm_pertensor_i32_offset_kernel.dump_mlir(type_args=(gm,))
+    assert "i32" in mlir
+    assert "quant_mode = #tla.quant_mode<PER_TENSOR>" in mlir
+
+
+def _pertensor_offset_kernel(offset: object):
+    """Build a kernel whose quant_offset is ``offset``.
+
+    The operand is a fixed I32, so anything else has to be rejected by the
+    frontend; letting it through only moves the failure to the verifier, which
+    reports "operand #1 must be 32-bit signless integer" with no hint that the
+    offset was the problem.
+    """
+
+    @tla.kernel
+    def kernel(gm_c: tla.Tensor) -> None:
+        gm_tile = tla.tile_view(gm_c, tla.make_shape(32, 32), tla.make_coord(0, 0))
+        l0c = tla.make_tensor_like(
+            tla.allocate((32, 32), tla.Float32, tla.AddressSpace.l0c, 512),
+            gm_tile,
+            tla.arch.L0Clayout,
+        )
+        with tla.cube():
+            tla.copy(
+                gm_tile,
+                l0c,
+                tla.params.CopyL0C2DstParams(
+                    quant_mode=tla.params.QuantMode.PER_TENSOR,
+                    quant_scale=1.0,
+                    quant_offset=offset,
+                ),
+            )
+
+    return kernel
+
+
+@pytest.mark.parametrize(
+    ("label", "offset"),
+    [
+        ("int16", tla.Int16(3)),
+        ("int64", tla.Int64(3)),
+        ("uint32", tla.UInt32(3)),
+        ("bool", True),
+    ],
+)
+def test_frontend_rejects_pertensor_offset_that_is_not_i32(
+    label: str, offset: object
+) -> None:
+    """A non-I32 quant_offset is refused before the IR reaches the verifier."""
+    gm = _fp_tensor(tla.Int8, tla.arch.RowMajor)
+    with pytest.raises(
+        runtime_mod.TlaCoreAPIError,
+        match=r"quant_offset.*expected int or Int32",
+    ):
+        _pertensor_offset_kernel(offset).dump_mlir(type_args=(gm,))

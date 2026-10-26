@@ -31,6 +31,19 @@ MMAD_TRIPLES = (
 MMAD_MNK = ("--m", "333", "--n", "444", "--k", "555")
 MMAD_ROW_ROW = ("--layout-a", "row", "--layout-b", "row")
 
+# per-tensor and per-channel shares the same dtype map
+FIXPIPE_QUANT_SRC_DST = (
+    ("f32", "f32"),
+    ("f32", "f16"),
+    ("f32", "bf16"),
+    ("f32", "i8"),
+    ("f32", "u8"),
+    ("i32", "f16"),
+    ("i32", "bf16"),
+    ("i32", "i8"),
+    ("i32", "u8"),
+)
+
 VADD_DTYPES = ("i8", "i16", "i32", "f16", "f32")
 VADD_MODES = ("", "--use-mutex", "--use-mutex-with", "--use-atomic-add")
 
@@ -256,6 +269,31 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     # basic_mmad_l0c2l1: cube-only E=(A@B)@D, L0C->L1 (fixpipe) staging reused
     # as the second mmad's LHS; single static tile (M=50/N=60/K=64).
     yield ("mmad-l0c2l1", [["basic_mmad/basic_matmul_l0c2l1.py", *dev]])
+
+    # --- basic_mmad fixpipe per-tensor quant, with and without relu ---
+    # `--dtype-ab` picks the accumulator (f32 -> f32, i8 -> i32) and with it the
+    # legal `--dtype-c` set. `--layout-c col` stores the result ColumnMajor: the
+    # fixpipe transposes the tile (nz2dn) on its way out of L0C and applies the
+    # per-tensor quant -- and the relu, when enabled -- to that transposed store.
+    # RowMajor and ColumnMajor pick different runtime wrappers, so both layouts
+    # run for every (accumulator, destination) pair.
+    for src, dst in FIXPIPE_QUANT_SRC_DST:
+        # The example names the accumulator by its operands: f32 MMAD is
+        # `--dtype-ab f32`, the i32 MMAD is `--dtype-ab i8` (i8 x i8 -> i32).
+        dtype_ab = "f32" if src == "f32" else "i8"
+        for layout_c in ("row", "col"):
+            for relu in (0, 1):
+                yield (
+                    f"mmad-fixpipe-per-tensor-{layout_c}-{src}-{dst}-relu{relu}",
+                    [[
+                        "basic_mmad/basic_matmul_fixpipe_per_tensor.py",
+                        *MMAD_MNK,
+                        "--dtype-ab", dtype_ab, "--dtype-c", dst,
+                        "--relu-enable", str(relu),
+                        "--layout-c", layout_c,
+                        *dev,
+                    ]],
+                )
 
     # --- basic_vadd: every dtype under each sync mode ---
     for mode in VADD_MODES:

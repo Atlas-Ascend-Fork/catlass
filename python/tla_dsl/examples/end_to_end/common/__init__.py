@@ -15,7 +15,7 @@ from .elem_types import (
     elem_spec,
     make_operand_tensors,
 )
-from .golden import compare, tolerance
+from .golden import compare, tolerance, compute_error_metrics
 from .params import TilingParams, SwizzleParams
 from .utils import (
     UB_ALLOC_ALIGN_BYTES,
@@ -44,4 +44,5 @@ __all__ = [
     # golden compare
     "compare",
     "tolerance",
+    "compute_error_metrics",
 ]

@@ -490,8 +490,7 @@ static LogicalResult collectInstructionPlans(
             if (Value params = copy.getParams()) {
                 if (auto copyParams = params.getDefiningOp<::tla::CopyL0C2DstParamsOp>()) {
                     unitFlagEnabled = copyParams.getUnitFlag() == 3;
-                    if (Value quant = copyParams.getQuantScaleOrTensor();
-                        quant && isa<::tla::TlaTensorType>(quant.getType()))
+                    if (Value quant = copyParams.getQuantTensor(); quant && isa<::tla::TlaTensorType>(quant.getType()))
                         plan.resources.push_back(resolver.resolve(quant));
                 }
             }

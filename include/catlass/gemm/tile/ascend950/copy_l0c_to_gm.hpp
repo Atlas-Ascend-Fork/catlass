@@ -204,6 +204,7 @@ struct CopyL0CToGmTla<
 
     struct Params {
         float scale = 1.0;
+        int32_t offset = 0;
 
         CATLASS_HOST_DEVICE
         Params() = default;
@@ -212,6 +213,13 @@ struct CopyL0CToGmTla<
         Params(float scalar)
         {
             scale = scalar;
+        }
+
+        CATLASS_HOST_DEVICE
+        Params(float scalar, int32_t offset_)
+        {
+            scale = scalar;
+            offset = offset_;
         }
     };
     Params params;
@@ -233,14 +241,26 @@ struct CopyL0CToGmTla<
         AscendC::FixpipeParamsC310 intriParams;
 
         // Fixpipe layout information
-        intriParams.nSize = tla::get<1>(dstTensor.shape());
-        intriParams.mSize = tla::get<0>(dstTensor.shape());
+        intriParams.nSize = tla::get<1>(dstTensor.originShape());
+        intriParams.mSize = tla::get<0>(dstTensor.originShape());
         intriParams.srcStride = tla::get<1, 1>(srcTensor.stride()) / tla::get<0, 0>(srcTensor.stride());
         intriParams.dstStride = tla::get<0>(dstTensor.stride());
 
         // Fixpipe auxiliary arguments
         intriParams.quantPre = quantPre;
-        intriParams.deqScalar = static_cast<uint64_t>(*reinterpret_cast<int32_t*>(&params.scale));
+        uint64_t quantBits = static_cast<uint64_t>(*reinterpret_cast<uint32_t*>(&params.scale));
+        if constexpr (std::is_same_v<ElementDst, int8_t>) {
+            constexpr uint64_t signBit = (1ULL << 46); // 1: int8_t, 0: uint8_t
+            quantBits |= signBit;
+        }
+        // QUANT_PRE[45:37] carries a 9-bit signed Offset, added to the rounded,
+        // scaled value before saturation. It takes effect for the int8_t/uint8_t ElementDst.
+        // offset valid range [-256, 255]
+        if constexpr (std::is_same_v<ElementDst, int8_t> || std::is_same_v<ElementDst, uint8_t>) {
+            constexpr uint64_t offsetMask = 0x1FFULL; // 9 bits
+            quantBits |= (static_cast<uint64_t>(params.offset) & offsetMask) << 37;
+        }
+        intriParams.deqScalar = quantBits;
         intriParams.reluEn = reluEn;
         intriParams.unitFlag = unitFlag;
 
@@ -249,6 +269,94 @@ struct CopyL0CToGmTla<
 
         // Call AscendC Fixpipe
         AscendC::Fixpipe<ElementDst, ElementSrc, AscendC::CFG_ROW_MAJOR>(
+            dstTensor.data()[dstOffset], srcTensor.data()[srcOffset], intriParams);
+    }
+};
+
+template <class TensorSrc_, class ElementDst_, class LayoutDst_, class CoordDst_, bool ReluEnable_>
+struct CopyL0CToGmTla<
+    Catlass::Arch::Ascend950, TensorSrc_,
+    tla::Tensor<AscendC::GlobalTensor<ElementDst_>, LayoutDst_, CoordDst_, AscendC::TPosition::GM>,
+    ScaleGranularity::PER_TENSOR, ReluEnable_, std::enable_if_t<tla::detail::isColumnMajor<LayoutDst_>::value>> {
+    using ArchTag = Catlass::Arch::Ascend950;
+    using ElementDst = ElementDst_;
+    using ElementSrc = typename TensorSrc_::Element;
+    static constexpr auto quantPre =
+        CopyL0CToDstQuantMode<ArchTag, ElementSrc, ElementDst, ScaleGranularity::PER_TENSOR>::VALUE;
+    static constexpr auto reluEn = ReluEnable_;
+
+    struct Params {
+        float scale = 1.0;
+        int32_t offset = 0;
+
+        CATLASS_HOST_DEVICE
+        Params() = default;
+
+        CATLASS_HOST_DEVICE
+        Params(float scalar)
+        {
+            scale = scalar;
+        }
+
+        CATLASS_HOST_DEVICE
+        Params(float scalar, int32_t offset_)
+        {
+            scale = scalar;
+            offset = offset_;
+        }
+    };
+    Params params;
+
+    CATLASS_DEVICE
+    CopyL0CToGmTla() = default;
+
+    CATLASS_DEVICE
+    CopyL0CToGmTla(Params const& params_) : params(params_) {};
+
+    template <class TensorDst, class TensorSrc>
+    CATLASS_DEVICE void operator()(TensorDst const& dstTensor, TensorSrc const& srcTensor, uint8_t unitFlag = 0)
+    {
+        static_assert(
+            tla::detail::isColumnMajor<typename TensorDst::Layout>::value &&
+                TensorSrc::position == AscendC::TPosition::CO1 && TensorDst::position == AscendC::TPosition::GM,
+            "The input parameters do not match. TensorSrc must be L0C, while TensorDst must be GM and ColumnMajor");
+
+        AscendC::FixpipeParamsC310<AscendC::CO2Layout::COLUMN_MAJOR> intriParams;
+
+        // Fixpipe layout information
+        intriParams.nSize = tla::get<1>(dstTensor.originShape());
+        intriParams.mSize = tla::get<0>(dstTensor.originShape());
+        intriParams.srcStride = tla::get<1, 1>(srcTensor.stride()) / tla::get<0, 0>(srcTensor.stride());
+        intriParams.dstStride = tla::get<1>(dstTensor.stride());
+        intriParams.params = AscendC::Nz2DnParams(
+            1,  // dnNum
+            0,  // srcNzMatrixStride
+            0,  // dstDnMatrixStride
+            1); // srcNzC0Stride
+
+        // Fixpipe auxiliary arguments
+        intriParams.quantPre = quantPre;
+        uint64_t quantBits = static_cast<uint64_t>(*reinterpret_cast<uint32_t*>(&params.scale));
+        if constexpr (std::is_same_v<ElementDst, int8_t>) {
+            constexpr uint64_t signBit = (1ULL << 46); // 1: int8_t, 0: uint8_t
+            quantBits |= signBit;
+        }
+        // QUANT_PRE[45:37] carries a 9-bit signed Offset, added to the rounded,
+        // scaled value before saturation. It takes effect for the int8_t/uint8_t ElementDst.
+        // offset valid range [-256, 255]
+        if constexpr (std::is_same_v<ElementDst, int8_t> || std::is_same_v<ElementDst, uint8_t>) {
+            constexpr uint64_t offsetMask = 0x1FFULL; // 9 bits
+            quantBits |= (static_cast<uint64_t>(params.offset) & offsetMask) << 37;
+        }
+        intriParams.deqScalar = quantBits;
+        intriParams.reluEn = reluEn;
+        intriParams.unitFlag = unitFlag;
+
+        auto dstOffset = dstTensor.layout()(dstTensor.coord());
+        auto srcOffset = srcTensor.layout()(srcTensor.coord());
+
+        // Call AscendC Fixpipe
+        AscendC::Fixpipe<ElementDst, ElementSrc, AscendC::CFG_COLUMN_MAJOR>(
             dstTensor.data()[dstOffset], srcTensor.data()[srcOffset], intriParams);
     }
 };
@@ -357,6 +465,7 @@ struct CopyL0CToGm<
 
     struct Params {
         float scale = 1.0;
+        int32_t offset = 0;
 
         CATLASS_HOST_DEVICE
         Params() = default;
@@ -365,6 +474,13 @@ struct CopyL0CToGm<
         Params(float scalar)
         {
             scale = scalar;
+        }
+
+        CATLASS_HOST_DEVICE
+        Params(float scalar, int32_t offset_)
+        {
+            scale = scalar;
+            offset = offset_;
         }
     };
     Params params;
@@ -390,7 +506,19 @@ struct CopyL0CToGm<
 
         // Fixpipe auxiliary arguments
         intriParams.quantPre = quantPre;
-        intriParams.deqScalar = static_cast<uint64_t>(*reinterpret_cast<int32_t*>(&params.scale));
+        uint64_t quantBits = static_cast<uint64_t>(*reinterpret_cast<uint32_t*>(&params.scale));
+        if constexpr (std::is_same_v<ElementDst, int8_t>) {
+            constexpr uint64_t signBit = (1ULL << 46); // 1: int8_t, 0: uint8_t
+            quantBits |= signBit;
+        }
+        // QUANT_PRE[45:37] carries a 9-bit signed Offset, added to the rounded,
+        // scaled value before saturation. It takes effect for the int8_t/uint8_t ElementDst.
+        // offset valid range [-256, 255]
+        if constexpr (std::is_same_v<ElementDst, int8_t> || std::is_same_v<ElementDst, uint8_t>) {
+            constexpr uint64_t offsetMask = 0x1FFULL; // 9 bits
+            quantBits |= (static_cast<uint64_t>(params.offset) & offsetMask) << 37;
+        }
+        intriParams.deqScalar = quantBits;
         intriParams.reluEn = reluEn;
         intriParams.unitFlag = unitFlag;
 

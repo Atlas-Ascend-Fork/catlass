@@ -96,6 +96,7 @@ BASIC_MMAD_PTR_REL="examples/end_to_end/basic_mmad/basic_mmad_ptr.py"
 BASIC_MMAD_L0C2L1_REL="examples/end_to_end/basic_mmad/basic_matmul_l0c2l1.py"
 BASIC_MMAD_BIAS_REL="examples/end_to_end/basic_mmad/basic_matmul_bias.py"
 MX_MMAD_BIAS_REL="examples/end_to_end/mx_mmad/mx_matmul_bias.py"
+BASIC_MMAD_FIXPIPE_PER_TENSOR_REL="examples/end_to_end/basic_mmad/basic_matmul_fixpipe_per_tensor.py"
 BASIC_SYRK_REL="examples/end_to_end/basic_syrk/basic_syrk.py"
 BASIC_VADD_REL="examples/end_to_end/basic_vadd/basic_vadd.py"
 EXTERN_VECADD_REL="examples/end_to_end/extern_op/extern_vecadd.py"
@@ -415,6 +416,10 @@ if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_BIAS_REL}" ]]; then
 fi
 if [[ ! -f "${CATLASS_DSL_DIR}/${MX_MMAD_BIAS_REL}" ]]; then
     echo "error: missing ${MX_MMAD_BIAS_REL} under ${CATLASS_DSL_DIR}" >&2
+    exit 1
+fi
+if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_FIXPIPE_PER_TENSOR_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_FIXPIPE_PER_TENSOR_REL} under ${CATLASS_DSL_DIR}" >&2
     exit 1
 fi
 if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_SYRK_REL}" ]]; then

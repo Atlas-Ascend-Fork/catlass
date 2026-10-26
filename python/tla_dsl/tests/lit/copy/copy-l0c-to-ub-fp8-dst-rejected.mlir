@@ -4,7 +4,7 @@
 // This has to be rejected here, in the route resolution, rather than relied upon
 // to fail elsewhere: fp8 has a copyRuntimeElemSuffix mapping (it needs one for
 // the GM->L1 and L1->L0 routes), so an unguarded f32 accumulator would resolve
-// this copy to @copy_l0c_to_ub_RowMajor_nosplit_fp8_e4m3fn_t -- a well-formed name
+// this copy to @copy_l0c_to_ub_RowMajor_nosplit_float_fp8_e4m3fn_t -- a well-formed name
 // with no implementation behind it, which surfaces as a link failure instead of
 // a diagnostic. The DSL frontend also blocks this, but the compiler must not
 // depend on the frontend for IR it did not produce.

@@ -46,14 +46,14 @@ module attributes {tla.module_exec_units = "cube"} {
 }
 
 // The fixpipe meta-ops are declared AIC-side and emitted with a C interface.
-// CHECK-DAG: func.func private @copy_l0c_to_gm_ColumnMajor_float
-// CHECK-DAG: func.func private @copy_l0c_to_gm_ColumnMajor_half
+// CHECK-DAG: func.func private @copy_l0c_to_gm_ColumnMajor_float_float
+// CHECK-DAG: func.func private @copy_l0c_to_gm_ColumnMajor_float_half
 
 // CHECK-LABEL: func.func @copy_l0c2gm_col_f32
-// CHECK: call @copy_l0c_to_gm_ColumnMajor_float
+// CHECK: call @copy_l0c_to_gm_ColumnMajor_float_float
 
 // CHECK-LABEL: func.func @copy_l0c2gm_col_f16
-// CHECK: call @copy_l0c_to_gm_ColumnMajor_half
+// CHECK: call @copy_l0c_to_gm_ColumnMajor_float_half
 
 // Nothing of the tla copy survives the lowering.
 // CHECK-NOT: "tla.copy"

@@ -5193,6 +5193,11 @@ _SUPPORTED_CUBE_FIXPIPE_ROUTES = {
 
     ("ub", "RowMajor", "nosplit", "NO_QUANT", True): {"f32": ("f32", "f16", "bf16"), "i32": ("i32",)},
     ("ub", "ColumnMajor", "nosplit", "NO_QUANT", True): {"f32": ("f32", "f16", "bf16"), "i32": ("i32",)},
+
+    ("gm", "RowMajor", "-", "PER_TENSOR", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
+    ("gm", "RowMajor", "-", "PER_TENSOR", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
+    ("gm", "ColumnMajor", "-", "PER_TENSOR", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
+    ("gm", "ColumnMajor", "-", "PER_TENSOR", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
 }
 # fmt: on
 
@@ -5753,18 +5758,50 @@ def copy(
         l0c2ub_mode_attr = mlir_ir.Attribute.parse(
             f"#tla.l0c2ub_mode<{params.l0c2ub_mode}>", context=ctx
         )
-        quant_scale_or_tensor = None
+        quant_scale = None
+        quant_offset = None
+        quant_tensor = None
         if params.quant_mode == QuantMode.PER_TENSOR:
-            quant_scale_or_tensor = _const_f32(params.quant_scale)
+            if not isinstance(params.quant_scale, (float, Float32)):
+                _op_error(
+                    "CopyL0C2DstParams",
+                    "invalid argument 'quant_scale' (position 3): "
+                    f"expected float or Float32, got {type(params.quant_scale)}",
+                )
+            quant_scale = _as_value(params.quant_scale)
+            if params.quant_offset is not None:
+                if dst_dtype not in ("i8", "u8"):
+                    _op_error(
+                        "copy",
+                        "CopyL0C2DstParams.quant_offset only support i8/u8 dstDtype",
+                    )
+                # The op's operand is a fixed I32, so only int / Int32 can be
+                # passed through. A wider or narrower integer would be accepted
+                # here and then rejected by the verifier ("operand #1 must be
+                # 32-bit signless integer"), long after the user's mistake.
+                if isinstance(params.quant_offset, bool) or not isinstance(
+                    params.quant_offset, (int, Int32)
+                ):
+                    _op_error(
+                        "CopyL0C2DstParams",
+                        "invalid argument 'quant_offset' (position 4): "
+                        f"expected int or Int32, got {type(params.quant_offset).__name__}",
+                    )
+                quant_offset = _as_value(params.quant_offset)
         elif params.quant_mode == QuantMode.PER_CHANNEL:
-            quant_scale_or_tensor = _as_value(params.quant_tensor)
+            _require_category(
+                "CopyL0C2DstParams", "quant_tensor", params.quant_tensor, "tensor", 5
+            )
+            quant_tensor = _as_value(params.quant_tensor)
         params_value = _tla_ops_gen.CopyL0C2DstParams(
             _tla_type_bridge.copy_l0c2dst_params_type_get(ctx),
             params.unit_flag,
             params.relu_enable,
             quant_mode_attr,
             l0c2ub_mode_attr,
-            quant_scale_or_tensor=quant_scale_or_tensor,
+            quant_scale=quant_scale,
+            quant_offset=quant_offset,
+            quant_tensor=quant_tensor,
         )
     else:
         if not same_dtype:

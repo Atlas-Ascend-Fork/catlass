@@ -68,6 +68,20 @@ CATLASS_DEVICE void copyL0CToGM(
 
 // L0C holds fp32 MMAD accumulator; ElementDst may be f32/f16/bf16 (Ascend950 fixpipe).
 template <class ArchTag, LayoutTag DstLayout, typename ElementSrc, typename ElementDst, bool ReluEnable = false>
+CATLASS_DEVICE void copyL0CToGMQuantPerTensor(
+    memref_t<__cc__ ElementSrc, 1>* src, memref_t<__gm__ ElementDst, 2>* dst, const TensorDesc& srcDesc,
+    const TensorDesc& dstDesc, uint8_t unitFlag, float quantScale, int32_t quantOffset)
+{
+    auto srcTensor = makeL0CTensor<LayoutTag::L0Clayout, ElementSrc>(src, srcDesc);
+    auto dstTensor = makeGMTensor<DstLayout, ElementDst>(dst, dstDesc);
+    using CopyL0CToGmTla = Catlass::Gemm::Tile::CopyL0CToGmTla<
+        ArchTag, decltype(srcTensor), decltype(dstTensor), Catlass::Gemm::Tile::ScaleGranularity::PER_TENSOR,
+        ReluEnable>;
+    typename CopyL0CToGmTla::Params params(quantScale, quantOffset);
+    CopyL0CToGmTla{params}(dstTensor, srcTensor, unitFlag);
+}
+
+template <class ArchTag, LayoutTag DstLayout, typename ElementSrc, typename ElementDst, bool ReluEnable = false>
 CATLASS_DEVICE void copyL0CToL1(
     memref_t<__cc__ ElementSrc, 1>* src, memref_t<__cbuf__ ElementDst, 1>* dst, const TensorDesc& srcDesc,
     const TensorDesc& dstDesc, uint8_t unitFlag)
@@ -404,44 +418,70 @@ REGISTER_L1_TO_L0B_MX_FP4(zN, float4_e1m2x2_t)
 REGISTER_L1_TO_L0B_MX_FP4(nZ, float4_e2m1x2_t)
 REGISTER_L1_TO_L0B_MX_FP4(nZ, float4_e1m2x2_t)
 
-#define REGISTER_L0C_TO_GM_NORELU(LayoutDst, DTypeSrc, DTypeDst)                                       \
-    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_gm_##LayoutDst##_##DTypeDst( \
-        memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__gm__ DTypeDst, 2>* dst, DESC_ABI_PARAMS(src),    \
-        DESC_ABI_PARAMS(dst), uint8_t unitFlag)                                                        \
-    {                                                                                                  \
-        copyL0CToGM<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, false>(        \
-            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag);                             \
+#define REGISTER_L0C_TO_GM_NORELU(LayoutDst, DTypeSrc, DTypeDst)                                                    \
+    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_gm_##LayoutDst##_##DTypeSrc##_##DTypeDst( \
+        memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__gm__ DTypeDst, 2>* dst, DESC_ABI_PARAMS(src),                 \
+        DESC_ABI_PARAMS(dst), uint8_t unitFlag)                                                                     \
+    {                                                                                                               \
+        copyL0CToGM<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, false>(                     \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag);                                          \
     }
 
-#define REGISTER_L0C_TO_GM_RELU(LayoutDst, DTypeSrc, DTypeDst)                                              \
-    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_gm_##LayoutDst##_relu_##DTypeDst( \
-        memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__gm__ DTypeDst, 2>* dst, DESC_ABI_PARAMS(src),         \
-        DESC_ABI_PARAMS(dst), uint8_t unitFlag)                                                             \
-    {                                                                                                       \
-        copyL0CToGM<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, true>(              \
-            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag);                                  \
+#define REGISTER_L0C_TO_GM_RELU(LayoutDst, DTypeSrc, DTypeDst)                                                      \
+    [aicore]                                                                                                        \
+        __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_gm_##LayoutDst##_relu_##DTypeSrc##_##DTypeDst( \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__gm__ DTypeDst, 2>* dst, DESC_ABI_PARAMS(src),             \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag)                                                                 \
+    {                                                                                                               \
+        copyL0CToGM<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, true>(                      \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag);                                          \
     }
 
 #define REGISTER_L0C_TO_GM(LayoutDst, DTypeSrc, DTypeDst)    \
     REGISTER_L0C_TO_GM_NORELU(LayoutDst, DTypeSrc, DTypeDst) \
     REGISTER_L0C_TO_GM_RELU(LayoutDst, DTypeSrc, DTypeDst)
 
-#define REGISTER_L0C_TO_L1_NORELU(LayoutDst, DTypeSrc, DTypeDst)                                       \
-    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_l1_##LayoutDst##_##DTypeDst( \
-        memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__cbuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),  \
-        DESC_ABI_PARAMS(dst), uint8_t unitFlag)                                                        \
-    {                                                                                                  \
-        copyL0CToL1<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, false>(        \
-            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag);                             \
+#define REGISTER_L0C_TO_GM_PER_TENSOR_NORELU(LayoutDst, DTypeSrc, DTypeDst)                                   \
+    [aicore] __attribute__((always_inline)) void                                                              \
+        _mlir_ciface_copy_l0c_to_gm_##LayoutDst##_pertensor_##DTypeSrc##_##DTypeDst(                          \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__gm__ DTypeDst, 2>* dst, DESC_ABI_PARAMS(src),       \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, float quantScale, int32_t quantOffset)                    \
+    {                                                                                                         \
+        copyL0CToGMQuantPerTensor<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, false>( \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag, quantScale, quantOffset);           \
     }
 
-#define REGISTER_L0C_TO_L1_RELU(LayoutDst, DTypeSrc, DTypeDst)                                              \
-    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_l1_##LayoutDst##_relu_##DTypeDst( \
-        memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__cbuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),       \
-        DESC_ABI_PARAMS(dst), uint8_t unitFlag)                                                             \
-    {                                                                                                       \
-        copyL0CToL1<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, true>(              \
-            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag);                                  \
+#define REGISTER_L0C_TO_GM_PER_TENSOR_RELU(LayoutDst, DTypeSrc, DTypeDst)                                    \
+    [aicore] __attribute__((always_inline)) void                                                             \
+        _mlir_ciface_copy_l0c_to_gm_##LayoutDst##_pertensor_relu_##DTypeSrc##_##DTypeDst(                    \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__gm__ DTypeDst, 2>* dst, DESC_ABI_PARAMS(src),      \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, float quantScale, int32_t quantOffset)                   \
+    {                                                                                                        \
+        copyL0CToGMQuantPerTensor<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, true>( \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag, quantScale, quantOffset);          \
+    }
+
+#define REGISTER_L0C_TO_GM_PER_TENSOR(LayoutDst, DTypeSrc, DTypeDst)    \
+    REGISTER_L0C_TO_GM_PER_TENSOR_NORELU(LayoutDst, DTypeSrc, DTypeDst) \
+    REGISTER_L0C_TO_GM_PER_TENSOR_RELU(LayoutDst, DTypeSrc, DTypeDst)
+
+#define REGISTER_L0C_TO_L1_NORELU(LayoutDst, DTypeSrc, DTypeDst)                                                    \
+    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_l1_##LayoutDst##_##DTypeSrc##_##DTypeDst( \
+        memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__cbuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),               \
+        DESC_ABI_PARAMS(dst), uint8_t unitFlag)                                                                     \
+    {                                                                                                               \
+        copyL0CToL1<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, false>(                     \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag);                                          \
+    }
+
+#define REGISTER_L0C_TO_L1_RELU(LayoutDst, DTypeSrc, DTypeDst)                                                      \
+    [aicore]                                                                                                        \
+        __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_l1_##LayoutDst##_relu_##DTypeSrc##_##DTypeDst( \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__cbuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),           \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag)                                                                 \
+    {                                                                                                               \
+        copyL0CToL1<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, true>(                      \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag);                                          \
     }
 
 #define REGISTER_L0C_TO_L1(LayoutDst, DTypeSrc, DTypeDst)    \
@@ -449,23 +489,25 @@ REGISTER_L1_TO_L0B_MX_FP4(nZ, float4_e1m2x2_t)
     REGISTER_L0C_TO_L1_RELU(LayoutDst, DTypeSrc, DTypeDst)
 
 #define REGISTER_L0C_TO_UB_NORELU(LayoutDst, mode, MODE, DTypeSrc, DTypeDst)                                      \
-    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_ub_##LayoutDst##_##mode##_##DTypeDst(   \
-        memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__ubuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),             \
-        DESC_ABI_PARAMS(dst), uint8_t unitFlag, uint8_t subBlockId)                                               \
+    [aicore] __attribute__((always_inline)) void                                                                  \
+        _mlir_ciface_copy_l0c_to_ub_##LayoutDst##_##mode##_##DTypeSrc##_##DTypeDst(                               \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__ubuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),         \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, uint8_t subBlockId)                                           \
     {                                                                                                             \
         copyL0CToUB<                                                                                              \
             Catlass::Arch::Ascend950, LayoutTag::LayoutDst, Catlass::Gemm::Tile::CopyL0CToUBMode::MODE, DTypeSrc, \
             DTypeDst>(src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag, subBlockId);                  \
     }
 
-#define REGISTER_L0C_TO_UB_RELU(LayoutDst, mode, MODE, DTypeSrc, DTypeDst)                                           \
-    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l0c_to_ub_##LayoutDst##_##mode##_relu_##DTypeDst( \
-        memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__ubuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),                \
-        DESC_ABI_PARAMS(dst), uint8_t unitFlag, uint8_t subBlockId)                                                  \
-    {                                                                                                                \
-        copyL0CToUB<                                                                                                 \
-            Catlass::Arch::Ascend950, LayoutTag::LayoutDst, Catlass::Gemm::Tile::CopyL0CToUBMode::MODE, DTypeSrc,    \
-            DTypeDst, true>(src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag, subBlockId);               \
+#define REGISTER_L0C_TO_UB_RELU(LayoutDst, mode, MODE, DTypeSrc, DTypeDst)                                        \
+    [aicore] __attribute__((always_inline)) void                                                                  \
+        _mlir_ciface_copy_l0c_to_ub_##LayoutDst##_##mode##_relu_##DTypeSrc##_##DTypeDst(                          \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__ubuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),         \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, uint8_t subBlockId)                                           \
+    {                                                                                                             \
+        copyL0CToUB<                                                                                              \
+            Catlass::Arch::Ascend950, LayoutTag::LayoutDst, Catlass::Gemm::Tile::CopyL0CToUBMode::MODE, DTypeSrc, \
+            DTypeDst, true>(src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag, subBlockId);            \
     }
 
 // ReLU rides only on the no-split fixpipe variants, so the split registrations
@@ -488,6 +530,26 @@ REGISTER_L0C_TO_GM(ColumnMajor, float, float)
 REGISTER_L0C_TO_GM(ColumnMajor, float, half)
 REGISTER_L0C_TO_GM(ColumnMajor, float, bf16)
 REGISTER_L0C_TO_GM(ColumnMajor, int32_t, int32_t)
+
+// PER_TENSOR Quant
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, float)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, half)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, bf16)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, int8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, uint8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, int32_t, half)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, int32_t, bf16)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, int32_t, int8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, int32_t, uint8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, float)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, half)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, bf16)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, int8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, uint8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, int32_t, half)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, int32_t, bf16)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, int32_t, int8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, int32_t, uint8_t)
 
 REGISTER_L0C_TO_L1(zN, float, float)
 REGISTER_L0C_TO_L1(zN, float, half)

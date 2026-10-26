@@ -516,6 +516,77 @@ struct LowerTlaCopyPattern : public OpRewritePattern<::tla::CopyOp> {
           loweredMemrefByValue(loweredMemrefByValue)
     {}
 
+    struct L0C2DstInfo {
+        uint8_t unitFlag = 0;
+        bool relu_enable = false;
+        QuantMode quantMode = QuantMode::NO_QUANT;
+        L0C2UBMode l0c2UbMode = L0C2UBMode::NO_SPLIT_VEC_0;
+        uint8_t subBlockId = 0;
+        Value quantScale;
+        Value quantOffset;
+        Value quantTensor;
+    };
+
+    /// Decode the tla.CopyL0C2DstParams operand of an L0C-source copy.
+    ///
+    /// Fills the fixpipe knobs the runtime call takes (unit flag, sub-block id)
+    /// and appends the fragment that carries quant mode / relu to the runtime
+    /// symbol name, in the order those names expect. The element types follow
+    /// that fragment: the L0C routes carry *both* operands, because the
+    /// destination alone does not identify the wrapper template (f32 -> f16
+    /// and i32 -> f16 both exist).
+    ///   l0c -> gm/l1 : {quantMode}_{relu}_{srcDtype}_{dstDtype}
+    ///   l0c -> ub    : {splitMode}_{quantMode}_{relu}_{srcDtype}_{dstDtype}
+    LogicalResult parseL0C2DstParams(
+        ::tla::CopyOp op, StringRef dstAddrspace, const TensorDescriptor& srcDesc, const TensorDescriptor& dstDesc,
+        L0C2DstInfo& info, std::string& extraDesc) const
+    {
+        auto params = op->getOperand(2);
+        auto l0c2DstParamsOp = dyn_cast<::tla::CopyL0C2DstParamsOp>(params.getDefiningOp());
+        if (!l0c2DstParamsOp) {
+            op.emitError() << "expected tla.CopyL0C2DstParams as third operand";
+            return failure();
+        }
+        info.unitFlag = static_cast<uint8_t>(l0c2DstParamsOp.getUnitFlag());
+        info.relu_enable = l0c2DstParamsOp.getReluEnable();
+        info.quantMode = l0c2DstParamsOp.getQuantMode().getQuantMode();
+        if (dstAddrspace == "ub") {
+            info.l0c2UbMode = l0c2DstParamsOp.getL0c2ubMode().getL0c2ubMode();
+            if (info.l0c2UbMode == L0C2UBMode::NO_SPLIT_VEC_0) {
+                extraDesc += "nosplit_";
+            } else if (info.l0c2UbMode == L0C2UBMode::NO_SPLIT_VEC_1) {
+                info.subBlockId = 1;
+                extraDesc += "nosplit_";
+            } else if (info.l0c2UbMode == L0C2UBMode::SPLIT_M) {
+                extraDesc += "splitm_";
+            } else if (info.l0c2UbMode == L0C2UBMode::SPLIT_N) {
+                extraDesc += "splitn_";
+            }
+            if ((info.l0c2UbMode == L0C2UBMode::SPLIT_M || info.l0c2UbMode == L0C2UBMode::SPLIT_N) &&
+                (srcDesc.elementType != dstDesc.elementType)) {
+                op->emitError("When copy l0c to ub with split mode, src and dst type must be same");
+                return failure();
+            }
+        }
+        if (info.quantMode == QuantMode::PER_TENSOR) {
+            extraDesc += "pertensor_";
+            info.quantScale = l0c2DstParamsOp.getQuantScale();
+            if (!info.quantScale) {
+                op->emitError("PER_TENSOR copy requires a non-null quant_scale operand");
+                return failure();
+            }
+            // quant_offset is optional: it only acts on the 8-bit destinations
+            // and defaults to 0 at the runtime-call site below.
+            info.quantOffset = l0c2DstParamsOp.getQuantOffset();
+        } else if (info.quantMode == QuantMode::PER_CHANNEL) {
+            extraDesc += "perchannel_";
+        }
+        if (info.relu_enable) {
+            extraDesc += "relu_";
+        }
+        return success();
+    }
+
     LogicalResult matchAndRewrite(::tla::CopyOp op, PatternRewriter& rewriter) const override
     {
         if ((op->getNumOperands() != 2 && op->getNumOperands() != 3) || op->getNumResults() != 0) {
@@ -571,61 +642,10 @@ struct LowerTlaCopyPattern : public OpRewritePattern<::tla::CopyOp> {
         };
 
         std::string extraDesc = "";
-        struct L0C2DstInfo {
-            uint8_t unitFlag = 0;
-            bool relu_enable = false;
-            QuantMode quantMode = QuantMode::NO_QUANT;
-            L0C2UBMode l0c2UbMode = L0C2UBMode::NO_SPLIT_VEC_0;
-            uint8_t subBlockId = 0;
-        } l0c2DstInfo;
+        L0C2DstInfo l0c2DstInfo;
         if (srcAddrspace == "l0c") {
-            auto params = op->getOperand(2);
-            auto l0c2DstParamsOp = dyn_cast<::tla::CopyL0C2DstParamsOp>(params.getDefiningOp());
-            if (!l0c2DstParamsOp) {
-                op.emitError() << "expected tla.CopyL0C2DstParams as third operand";
+            if (failed(parseL0C2DstParams(op, dstAddrspace, srcDesc, dstDesc, l0c2DstInfo, extraDesc)))
                 return failure();
-            }
-            l0c2DstInfo.unitFlag = static_cast<uint8_t>(l0c2DstParamsOp.getUnitFlag());
-            l0c2DstInfo.relu_enable = l0c2DstParamsOp.getReluEnable();
-            l0c2DstInfo.quantMode = l0c2DstParamsOp.getQuantMode().getQuantMode();
-            // l0c to ub: {splitMode}_{quantMode}_{relu}_dstDtype
-            // l0c to gm/l1 {quantMode}_{relu}_dstDtype
-            if (dstAddrspace == "ub") {
-                l0c2DstInfo.l0c2UbMode = l0c2DstParamsOp.getL0c2ubMode().getL0c2ubMode();
-                switch (l0c2DstInfo.l0c2UbMode) {
-                    case L0C2UBMode::NO_SPLIT_VEC_0:
-                        extraDesc += "nosplit_";
-                        break;
-                    case L0C2UBMode::NO_SPLIT_VEC_1:
-                        l0c2DstInfo.subBlockId = 1;
-                        extraDesc += "nosplit_";
-                        break;
-                    case L0C2UBMode::SPLIT_M:
-                        extraDesc += "splitm_";
-                        break;
-                    case L0C2UBMode::SPLIT_N:
-                        extraDesc += "splitn_";
-                        break;
-                }
-                if ((l0c2DstInfo.l0c2UbMode == L0C2UBMode::SPLIT_M || l0c2DstInfo.l0c2UbMode == L0C2UBMode::SPLIT_N) &&
-                    (srcDesc.elementType != dstDesc.elementType)) {
-                    op->emitError("When copy l0c to ub with split mode, src and dst type must be same");
-                    return failure();
-                }
-            }
-            switch (l0c2DstInfo.quantMode) {
-                case QuantMode::NO_QUANT:
-                    break;
-                case QuantMode::PER_TENSOR:
-                    extraDesc += "pertensor_";
-                    break;
-                case QuantMode::PER_CHANNEL:
-                    extraDesc += "perchannel_";
-                    break;
-            }
-            if (l0c2DstInfo.relu_enable) {
-                extraDesc += "relu_";
-            }
         }
 
         std::string calleeName = ::tla::getCopyRouteCallee(
@@ -652,6 +672,17 @@ struct LowerTlaCopyPattern : public OpRewritePattern<::tla::CopyOp> {
                     auto subBlockIdVal = rewriter.create<arith::ConstantIntOp>(op.getLoc(), l0c2DstInfo.subBlockId, 8);
                     operandTypes.push_back(i8Type);
                     operands.push_back(subBlockIdVal);
+                }
+                if (l0c2DstInfo.quantMode == QuantMode::PER_TENSOR) {
+                    operandTypes.push_back(rewriter.getF32Type());
+                    operands.push_back(l0c2DstInfo.quantScale);
+                    // quant_offset is optional; the runtime ABI always takes an
+                    // i32 offset, so default it to 0 when absent.
+                    Value quantOffset = l0c2DstInfo.quantOffset;
+                    if (!quantOffset)
+                        quantOffset = rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 32);
+                    operandTypes.push_back(rewriter.getI32Type());
+                    operands.push_back(quantOffset);
                 }
             }
             auto callee = ::tla::getOrCreateRuntimeCall(op->getParentOfType<ModuleOp>(), calleeName, operandTypes);

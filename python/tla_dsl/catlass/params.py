@@ -127,7 +127,12 @@ class StoreParams:
 
 @dataclass
 class NormalStoreParams(StoreParams):
-    """Default aligned vector store (``post_update_stride`` in elements)."""
+    """Default aligned vector store (``post_update_stride`` in elements).
+
+    With ``post_mode=update``, ``post_update_stride=0`` (default) means advance
+    by ``tile_extent`` (``origin_shape``); an explicit value keeps fill /
+    stride-advance decoupling.
+    """
 
     store_dist: str = StoreDist.DIST_NORM
     post_mode: str = PostMode.POST_MODE_NORMAL
@@ -136,7 +141,13 @@ class NormalStoreParams(StoreParams):
 
 @dataclass
 class UnalignStoreParams(StoreParams):
-    """Unaligned UB vector store (lowers with ``unaligned_ub_access``)."""
+    """Unaligned UB vector store (lowers with ``unaligned_ub_access``).
+
+    With ``post_mode=update``, leave ``post_update_stride`` at default ``0``:
+    HIVM ``$eleSize`` / pointer advance use ``tile_extent`` (``origin_shape``;
+    dense only). Passing an explicit ``post_update_stride`` is rejected.
+    Returned ``next_ptr`` is the HW post-update pointer.
+    """
 
     post_mode: str = PostMode.POST_MODE_NORMAL
     post_update_stride: Any = 0
@@ -180,7 +191,12 @@ class LoadParams:
 
 @dataclass
 class NormalLoadParams(LoadParams):
-    """Default aligned vector load (``post_update_stride`` in elements)."""
+    """Default aligned vector load (``post_update_stride`` in elements).
+
+    With ``post_mode=update``, ``post_update_stride=0`` (default) means advance
+    by ``tile_extent`` (``origin_shape``); an explicit value keeps fill /
+    stride-advance decoupling.
+    """
 
     load_dist: str = LoadDist.DIST_NORM
     post_mode: str = PostMode.POST_MODE_NORMAL
@@ -189,9 +205,14 @@ class NormalLoadParams(LoadParams):
 
 @dataclass
 class UnalignLoadParams(LoadParams):
-    """Unaligned UB vector load (lowers with ``unaligned_ub_access``)."""
+    """Unaligned UB vector load (lowers with ``unaligned_ub_access``).
 
-    is_pre: bool = False
+    With ``post_mode=update``, leave ``post_update_stride`` at default ``0``:
+    HIVM ``$cceVL`` / pointer advance use ``tile_extent`` (``origin_shape``;
+    dense only). Passing an explicit ``post_update_stride`` is rejected.
+    Returned ``next_ptr`` is the HW post-update pointer.
+    """
+
     post_mode: str = PostMode.POST_MODE_NORMAL
     post_update_stride: Any = 0
 

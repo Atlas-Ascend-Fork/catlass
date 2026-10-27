@@ -216,6 +216,10 @@ private:
             return resolveImpl(loadUpdate.getSource(), assumptions, visiting);
         if (auto storeUpdate = value.getDefiningOp<::tla::StoreUpdateOp>())
             return resolveImpl(storeUpdate.getDest(), assumptions, visiting);
+        if (auto loadUnalignUpdate = value.getDefiningOp<::tla::LoadUnalignUpdateOp>())
+            return resolveImpl(loadUnalignUpdate.getSource(), assumptions, visiting);
+        if (auto storeUnalignUpdate = value.getDefiningOp<::tla::StoreUnalignUpdateOp>())
+            return resolveImpl(storeUnalignUpdate.getDest(), assumptions, visiting);
         if (auto ptrToInt = value.getDefiningOp<::tla::PtrToIntOp>())
             return resolveImpl(ptrToInt.getPtr(), assumptions, visiting);
         if (auto intToPtr = value.getDefiningOp<::tla::IntToPtrOp>()) {
@@ -625,10 +629,14 @@ static LogicalResult collectInstructionPlans(
                     plan.resources.push_back(resolver.resolve(load.getSource()));
                 else if (auto loadUpdate = dyn_cast<::tla::LoadUpdateOp>(nested))
                     plan.resources.push_back(resolver.resolve(loadUpdate.getSource()));
+                else if (auto loadUnalignUpdate = dyn_cast<::tla::LoadUnalignUpdateOp>(nested))
+                    plan.resources.push_back(resolver.resolve(loadUnalignUpdate.getSource()));
                 else if (auto store = dyn_cast<::tla::StoreOp>(nested))
                     plan.resources.push_back(resolver.resolve(store.getDest()));
                 else if (auto storeUpdate = dyn_cast<::tla::StoreUpdateOp>(nested))
                     plan.resources.push_back(resolver.resolve(storeUpdate.getDest()));
+                else if (auto storeUnalignUpdate = dyn_cast<::tla::StoreUnalignUpdateOp>(nested))
+                    plan.resources.push_back(resolver.resolve(storeUnalignUpdate.getDest()));
                 else if (auto gather = dyn_cast<::tla::GatherOp>(nested)) {
                     // Reg→Reg gather has no UB storage operand.
                     if (isa<::tla::TlaTensorType>(gather.getX().getType()))

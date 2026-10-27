@@ -706,3 +706,49 @@ def Tla_StoreUpdateOp : Tla_Op<"store_update", [AttrSizedOperandSegments]> {
   }];
   let hasVerifier = 1;
 }
+
+// UnAlign UPDATE (dense tile_extent): each op is self-contained dual-instr
+// (load: vldas + vldus.post; store: empty ureg + vstus.post + vstas). No
+// cross-trip ureg SSA / stream Pre-Empty. HIVM ``$cceVL``/``$eleSize`` =
+// ``post_update_stride×sizeof(T)``; TLA ``next_ptr`` is the HW ``newPtr``.
+def Tla_LoadUnalignUpdateOp : Tla_Op<"load_unalign_update", []> {
+  let summary = "LoadUnAlign POST_MODE_UPDATE (vldas + vldus.post; HW next_ptr)";
+  let description = [{
+    Loads one unaligned window. ``post_update_stride`` is an element count
+    (AscendC ``postUpdateStride``; frontend fills it from tile ``origin_shape``).
+    Lowering passes ``stride×sizeof(T)`` as HIVM ``$cceVL`` and returns the HW
+    ``newPtr``. Each op emits a local ``vldas`` (no carried ureg).
+  }];
+  let arguments = (ins Tla_TensorType:$source,
+                       Tla_IntegerOrIndexType:$post_update_stride);
+  let results = (outs Tla_VectorSSAType:$result,
+                      Tla_PtrType:$next_ptr);
+  let assemblyFormat = [{
+    $source `post_update_stride` $post_update_stride attr-dict `:`
+    type($source)
+    `post_update_stride` qualified(type($post_update_stride))
+    `->` qualified(type($result)) `,` qualified(type($next_ptr))
+  }];
+  let hasVerifier = 1;
+}
+
+def Tla_StoreUnalignUpdateOp : Tla_Op<"store_unalign_update", []> {
+  let summary = "StoreUnAlign POST_MODE_UPDATE (empty ureg + vstus.post + vstas; HW next_ptr)";
+  let description = [{
+    Stores one unaligned window. ``post_update_stride`` is an element count
+    (AscendC ``postUpdateStride``; frontend fills it from tile ``origin_shape``).
+    Same HIVM ``$eleSize`` / HW ``newPtr`` rule as ``load_unalign_update``.
+    Each op emits empty ureg + ``vstus.post`` + ``vstas`` (no carried ureg).
+  }];
+  let arguments = (ins Tla_TensorType:$dest,
+                       Tla_VectorSSAType:$source,
+                       Tla_IntegerOrIndexType:$post_update_stride);
+  let results = (outs Tla_PtrType:$next_ptr);
+  let assemblyFormat = [{
+    $dest `,` $source `post_update_stride` $post_update_stride attr-dict `:`
+    type($dest) `,` qualified(type($source))
+    `post_update_stride` qualified(type($post_update_stride))
+    `->` qualified(type($next_ptr))
+  }];
+  let hasVerifier = 1;
+}

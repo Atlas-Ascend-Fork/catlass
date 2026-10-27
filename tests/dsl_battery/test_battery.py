@@ -87,7 +87,7 @@ def _mmad_cases(
     **kwargs,
 ) -> Iterator[tuple[str, list[list[str]]]]:
     """Matmul-like cases generator
-    
+
     Iterate over all shapes, layouts, dtype triples and relu_enable
     """
     for m, n, k in kwargs.get("shapes", MMAD_SHAPES):
@@ -456,9 +456,9 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     yield (
         "grouped-matmul-slice-m",
         [["grouped_matmul_slice_m/grouped_matmul_slice_m.py", *dev],
-         ["grouped_matmul_slice_m/grouped_matmul_slice_m.py", 
+         ["grouped_matmul_slice_m/grouped_matmul_slice_m.py",
             "--groups", "3", "--m", "768", "--n", "333", "--k", "333", *dev]]
-    ) 
+    )
 
     # --- basic_mmad_epilogue: multiple epilogue examples ---
     for op in EVG_OPS:
@@ -678,6 +678,39 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     yield (
         "vector-load-store-block-update",
         [["vector_ops/load_store_block_update.py", "add", "--shape", "400", *dev]],
+    )
+    yield (
+        "vector-load-store-unalign",
+        [[
+            "vector_ops/load_store_unalign.py",
+            "add",
+            "--dtype",
+            "f32",
+            "--offset",
+            "1",
+            "--mode",
+            "update",
+            *dev,
+        ]],
+    )
+    yield (
+        "vector-load-store-unalign-once",
+        [[
+            "vector_ops/load_store_unalign.py",
+            "add",
+            "--dtype",
+            "f16",
+            "--offset",
+            "1",
+            "--mode",
+            "once",
+            *dev,
+        ]],
+    )
+    # Align UPDATE: stride≠VL (overlap + hole); UnAlign is dense-only now.
+    yield (
+        "vector-load-store-update-stride-geoms",
+        [["vector_ops/load_store_update.py", "--stride-geoms", *dev]],
     )
 
     # --- tensor_index ---

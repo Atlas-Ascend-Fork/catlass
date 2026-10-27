@@ -909,7 +909,7 @@ Vector 拷贝通路
 
 ### `Tensor.load`
 
-**源码：** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L503)
+**源码：** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L533)
 功能说明：
 
 将本 UB tensor tile 载入 vector 或 mask SSA（`tile.load`）。
@@ -955,13 +955,14 @@ tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[Vecto
 - 掩码载入字节偏移对齐（UB 字节地址 `base + offset×sizeof(T)`）：
   `DIST_NORM` → `VL/8`；`DIST_US` → `VL/16`；`DIST_DS` → `min(32, VL/4)`。
   VL=256 时为 32B / 16B / 32B。
-- `post_mode=update` 要求 `post_update_stride > 0`（编译期 `int` 或运行期
-  `Numeric` / index）、rank-1 tile、`DIST_NORM`，且元素类型为
-  `f16` / `bf16` / `f32`。UPDATE `load` 前后勿用其它名字别名同一窗口。调用返回
-  `(vector, next_tile)`；在 `tla.vec.func` 内须用 `tla.range` 赋回
-  `next_tile`（`while` 尚不支持嵌在 `vec.func` 内），循环才把它收成 SCF
-  游标。UPDATE 要求窗口已是原点窗（`coord=0`）；用 `tile_view`（或等价方式）
-  切出所需 tile，环内外均不自动折非零坐标。
+- `post_mode=update` 要求 rank-1 连续 tile、`DIST_NORM`，且元素类型为
+  `f16` / `bf16` / `f32`。Align：`post_update_stride=0`（默认）按 `tile_extent`
+  （`origin_shape`）推进；显式值保留填充与 stride 解耦。UnAlign：保持默认 `0`
+  （显式传入会拒绝；emit 始终用 `origin_shape`），每趟自含双指令（`vldas` +
+  `vldus.post`）。UPDATE `load` 前后勿用其它名字别名同一窗口。调用返回
+  `(vector, next_tile)`。在 `tla.vec.func` 内须用 `tla.range` 赋回 `next_tile`
+  （`while` 尚不支持嵌在 `vec.func` 内），循环才把它收成 SCF 游标。UPDATE 要求窗口已是原点窗（`coord=0`）；
+  用 `tile_view`（或等价方式）切出所需 tile，环内外均不自动折非零坐标。
 
 调用示例：
 
@@ -980,7 +981,6 @@ with tla.vec.func(mode="simd"):
         x_reg, x_ub = x_ub.load(
             tla.params.NormalLoadParams(
                 post_mode=tla.params.PostMode.POST_MODE_UPDATE,
-                post_update_stride=64,
             )
         )
 ```
@@ -989,7 +989,7 @@ with tla.vec.func(mode="simd"):
 
 ### `Tensor.store`
 
-**源码：** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L937)
+**源码：** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L989)
 功能说明：
 
 将 vector 或 mask SSA 写回本 UB tensor tile（`tile.store`）。
@@ -1018,10 +1018,12 @@ tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mas
 - 须在 `tla.vec.func()` 内调用；目标 tile 须位于 UB。
 - first-element 模式要求被写值与目标 tile 的元素宽度匹配后缀
   （b8 → 1 字节，b16 → 2 字节，b32 → 4 字节）；传入谓词 `mask` 会报错。
-- `post_mode=update` 要求 `post_update_stride > 0`（编译期 `int` 或运行期
-  `Numeric` / index）、rank-1 tile、`DIST_NORM`，且元素类型为
-  `f16` / `bf16` / `f32`。UPDATE `store` 前后勿用其它名字别名同一窗口。在
-  `tla.vec.func` 内须用 `tla.range` 赋回返回的 tile（`while` 尚不支持嵌在
+- `post_mode=update` 要求 rank-1 连续 tile、`DIST_NORM`，且元素类型为
+  `f16` / `bf16` / `f32`。Align：`post_update_stride=0`（默认）按 `tile_extent`
+  （`origin_shape`）推进；显式值保留填充/stride 解耦。UnAlign：保持默认 `0`
+  （显式传入会拒绝；emit 始终用 `origin_shape`），每趟自含双指令（空 ureg +
+  `vstus.post` + `vstas`）。UPDATE `store` 前后勿用其它名字别名同一窗口。
+  在 `tla.vec.func` 内须用 `tla.range` 赋回返回的 tile（`while` 尚不支持嵌在
   `vec.func` 内），循环才把它收成和其它携带的 tile 一样的 tensor。与
   UPDATE `load` 相同：调用前须为原点窗（`coord=0`）。
 
@@ -1038,7 +1040,6 @@ with tla.vec.func(mode="simd"):
             y_reg,
             tla.params.NormalStoreParams(
                 post_mode=tla.params.PostMode.POST_MODE_UPDATE,
-                post_update_stride=64,
             ),
         )
 ```
@@ -3103,7 +3104,7 @@ with tla.vector():
 
 ### `Tensor.fill`
 
-**源码：** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1181)
+**源码：** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1254)
 功能说明：
 
 用给定值填充整个 L1 zN/nZ tile。填充区域即该 tile 自身：在逻辑二维

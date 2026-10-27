@@ -21,12 +21,8 @@ from catlass.execution_lowering import TlaLoweringError, UnsupportedExecutionLow
 from catlass.params import NormalLoadParams, NormalStoreParams, PostMode
 from catlass.tla.runtime import make_fake_tensor
 
-_LOAD_UPD = NormalLoadParams(
-    post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=64
-)
-_STORE_UPD = NormalStoreParams(
-    post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=64
-)
+_LOAD_UPD = NormalLoadParams(post_mode=PostMode.POST_MODE_UPDATE)
+_STORE_UPD = NormalStoreParams(post_mode=PostMode.POST_MODE_UPDATE)
 
 
 def _ub_tensor(
@@ -45,11 +41,12 @@ def _ub_tensor(
 
 @tla.kernel
 def load_post_mode_update_kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
+    """Align UPDATE with default stride (= origin_shape); unpack ``(vec, next)``."""
     src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
     dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
     with tla.vector():
         with tla.vec.func(mode="simd"):
-            x_reg = src_tile.load(
+            x_reg, _src_tile = src_tile.load(
                 NormalLoadParams(post_mode=PostMode.POST_MODE_UPDATE)
             )
             dst_tile.store(x_reg)
@@ -97,12 +94,8 @@ def load_post_mode_update_local_params_kernel(
         with tla.vec.func(mode="simd"):
             src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
             dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
-            load_params = NormalLoadParams(
-                post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=64
-            )
-            store_params = NormalStoreParams(
-                post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=64
-            )
+            load_params = NormalLoadParams(post_mode=PostMode.POST_MODE_UPDATE)
+            store_params = NormalStoreParams(post_mode=PostMode.POST_MODE_UPDATE)
             for _ in tla.range(2):
                 x_reg, src_tile = src_tile.load(load_params)
                 dst_tile = dst_tile.store(x_reg, store_params)
@@ -227,21 +220,29 @@ def load_post_mode_update_dynamic_stride_kernel(
                 )
 
 
-@pytest.mark.parametrize(
-    ("kernel", "match"),
-    [
-        (load_post_mode_update_kernel, "post_update_stride"),
-        (load_post_update_stride_kernel, "post_update_stride"),
-    ],
-)
-def test_load_update_rejects_illegal_params(
-    compiler_tlair: Any, kernel: Any, match: str
+def test_load_update_default_stride_uses_origin_shape(
+    compiler_tlair: Any,
+) -> None:
+    """Align UPDATE with default post_update_stride=0 advances by origin_shape."""
+    mlir = compiler_tlair(
+        load_post_mode_update_kernel,
+        type_args=(_ub_tensor(), _ub_tensor()),
+    )
+    assert "tla.load_update" in mlir
+    assert "64 : i32" in mlir or "%c64" in mlir or "64 : index" in mlir
+
+
+def test_load_update_rejects_stride_without_update_mode(
+    compiler_tlair: Any,
 ) -> None:
     with pytest.raises(
         (TlaLoweringError, UnsupportedExecutionLowering, NotImplementedError),
-        match=match,
+        match="post_update_stride",
     ):
-        compiler_tlair(kernel, type_args=(_ub_tensor(), _ub_tensor()))
+        compiler_tlair(
+            load_post_update_stride_kernel,
+            type_args=(_ub_tensor(), _ub_tensor()),
+        )
 
 
 def test_load_post_mode_update_outside_loop_emits_tlair(compiler_tlair: Any) -> None:

@@ -121,6 +121,103 @@ static FailureOr<Value> emitVstsx1Post(
     return castToLiveUbPtr(b, loc, op->getResult(0), ubPtrTy);
 }
 
+static Type uregVectorType(OpBuilder& b)
+{
+    return VectorType::get({32}, b.getI8Type());
+}
+
+static Type dataVectorType(OpBuilder& b, Type elemType)
+{
+    if (elemType.isF32())
+        return VectorType::get({64}, b.getF32Type());
+    if (elemType.isF16())
+        return VectorType::get({128}, b.getF16Type());
+    if (elemType.isBF16())
+        return VectorType::get({128}, b.getBF16Type());
+    return {};
+}
+
+/// Emit load-side UnAlignReg Pre (AscendC ``LoadUnAlignPre`` / ``vldas``).
+/// Self-contained UPDATE: each ``load_unalign_update`` emits its own local Pre.
+static FailureOr<Value> emitVldas(OpBuilder& b, Location loc, Value ptr)
+{
+    auto op = b.create<hivm_regbaseintrins::VldasInstrOp>(loc, uregVectorType(b), ptr);
+    return op.getResult();
+}
+
+/// Empty store ureg (AscendC ``UnalignRegForStore`` — no ``vldas`` / Pre).
+/// HIVM ``hivm.init.vector.align.data``; same as AVE unaligned store path.
+static Value emitEmptyStoreUreg(OpBuilder& b, Location loc)
+{
+    return b.create<hivm_regbaseintrins::InitVectorAlignDataInstrOp>(loc, uregVectorType(b)).getResult();
+}
+
+static Value getVectorHelperStorageIdentity(Value source);
+
+/// Emit ``vldus.post`` and return ``{vec, newUreg, newPtr}``.
+///
+/// ``$cceVL`` is the AscendC ``postUpdateStride`` in **bytes**
+/// (``stride_elems × sizeof(T)``, same as Align UPDATE). HW ``newPtr`` is the
+/// TLA ``next_ptr`` — no software pointer arithmetic. Each UPDATE stays
+/// self-contained (local ``vldas``); ureg is not carried across ops.
+static FailureOr<std::tuple<Value, Value, Value>> emitVldusPost(
+    OpBuilder& b, Location loc, Value ptr, Value ureg, Value countBytes, Type elemType)
+{
+    Type vecTy = dataVectorType(b, elemType);
+    if (!vecTy)
+        return failure();
+    Type structTy =
+        LLVM::LLVMStructType::getLiteral(b.getContext(), {vecTy, uregVectorType(b), getUbPtrType(b.getContext())});
+    Operation* op = nullptr;
+    if (elemType.isF32())
+        op = b.create<hivm_regbaseintrins::VldusPostF32InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    else if (elemType.isF16())
+        op = b.create<hivm_regbaseintrins::VldusPostF16InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    else if (elemType.isBF16())
+        op = b.create<hivm_regbaseintrins::VldusPostBF16InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    else
+        return failure();
+    Value vec = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
+    Value newUreg = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 1);
+    Value newPtr =
+        castToLiveUbPtr(b, loc, b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 2), getUbPtrType(b.getContext()));
+    return std::make_tuple(vec, newUreg, newPtr);
+}
+
+/// Emit ``vstus.post`` and return ``{newUreg, newPtr}``.
+///
+/// ``$eleSize`` is ``postUpdateStride`` in bytes (same rule as ``emitVldusPost``).
+static FailureOr<std::pair<Value, Value>> emitVstusPost(
+    OpBuilder& b, Location loc, Value src, Value ptr, Value ureg, Value countBytes, Type elemType)
+{
+    Type structTy = LLVM::LLVMStructType::getLiteral(b.getContext(), {uregVectorType(b), getUbPtrType(b.getContext())});
+    Operation* op = nullptr;
+    if (elemType.isF32())
+        op = b.create<hivm_regbaseintrins::VstusPostF32InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    else if (elemType.isF16())
+        op = b.create<hivm_regbaseintrins::VstusPostF16InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    else if (elemType.isBF16())
+        op = b.create<hivm_regbaseintrins::VstusPostBF16InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    else
+        return failure();
+    Value newUreg = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
+    Value newPtr =
+        castToLiveUbPtr(b, loc, b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 1), getUbPtrType(b.getContext()));
+    return std::make_pair(newUreg, newPtr);
+}
+
+static LogicalResult emitVstas(OpBuilder& b, Location loc, Value ureg, Value ptr)
+{
+    // ``hivm.vstas`` args: (data, base, offset, postUpdateEnable).
+    // Non-post flush of the align ureg: offset=0, postUpdateEnable=0 (pointer
+    // advance already done by ``vstus.post``). Same as AscendC ``vstar`` /
+    // ``__builtin_cce_vstas_*(..., 0, 0 /* pre */)`` and HIVM ``buildVstasOp``.
+    // Do not pass postUpdateEnable=1 here — that belongs to ``hivm.vstas.post``.
+    Value zero = b.create<arith::ConstantIntOp>(loc, /*value=*/0, /*width=*/32);
+    b.create<hivm_regbaseintrins::VstasInstrOp>(loc, ureg, ptr, zero, zero);
+    return success();
+}
+
 static hivmave::VFPgeOp createAvePgeMask(OpBuilder& b, Location loc, VectorType maskType, hivmave::PgePattern pattern)
 {
     return b.create<hivmave::VFPgeOp>(loc, maskType, pattern);
@@ -1618,6 +1715,45 @@ static void mapUpdateNextPtrI64(Value tlaNextPtr, Value asI64, DenseMap<Value, V
     }
 }
 
+/// Lower a ``!tla.ptr`` SCF carrier to helper ``i64`` (or nullptr on failure).
+///
+/// ``valueMap`` may still hold an abstract ``!tla.ptr`` for a TensorDesc /
+/// make_tensor base that UPDATE has not yet rewritten via
+/// ``mapUpdateNextPtrI64``. Chase ``tla.inttoptr`` / mapped llvm.ptr / i64
+/// instead of treating that as a hard error (master used to keep going with
+/// the abstract type until a later silent failure).
+static Value materializeTlaPtrCarrierAsI64(OpBuilder& b, Location loc, Value tlaPtr, DenseMap<Value, Value>& valueMap)
+{
+    Type i64Ty = b.getI64Type();
+    auto asI64 = [&](Value v) -> Value {
+        if (!v)
+            return nullptr;
+        if (v.getType().isInteger(64))
+            return v;
+        if (isa<IndexType>(v.getType()))
+            return b.create<arith::IndexCastOp>(loc, i64Ty, v).getResult();
+        if (isa<LLVM::LLVMPointerType>(v.getType()))
+            return b.create<LLVM::PtrToIntOp>(loc, i64Ty, v).getResult();
+        return nullptr;
+    };
+
+    if (Value mapped = valueMap.lookup(tlaPtr)) {
+        if (Value ok = asI64(mapped))
+            return ok;
+        // Still ``!tla.ptr`` (or other abstract): fall through to defining op.
+    }
+
+    if (auto intToPtr = tlaPtr.getDefiningOp<::tla::IntToPtrOp>()) {
+        Value addr = lookupOrCloneScalarValue(b, intToPtr.getAddr(), valueMap);
+        if (Value ok = asI64(addr)) {
+            valueMap[tlaPtr] = ok;
+            return ok;
+        }
+    }
+
+    return nullptr;
+}
+
 // Materialize the descriptor-defined valid-lane count for an omitted store.
 // `origin_shape` describes the logical tile extent even when the addressable UB
 // subview is a full physical register wide.
@@ -2293,6 +2429,39 @@ static LogicalResult lowerLoadUpdate(
     valueMap[loadOp.getResult()] = emitted->first;
     mapUpdateNextPtrI64(
         loadOp.getNextPtr(), b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), emitted->second), valueMap);
+    return success();
+}
+
+static LogicalResult lowerLoadUnalignUpdate(
+    ::tla::LoadUnalignUpdateOp op, OpBuilder& b, DenseMap<Value, Value>& valueMap)
+{
+    Location loc = op.getLoc();
+    // AscendC: HIVM $cceVL = postUpdateStride×sizeof(T); next_ptr = HW newPtr.
+    Value postUpdateStride = valueMap.lookup(op.getPostUpdateStride());
+    if (!postUpdateStride)
+        postUpdateStride = lookupOrCloneScalarValue(b, op.getPostUpdateStride(), valueMap);
+    if (!postUpdateStride)
+        return op.emitError("failed to materialize post_update_stride"), failure();
+    auto ptrOr = resolveEffectiveUbPtr(op.getSource(), b, loc, valueMap);
+    if (failed(ptrOr))
+        return op.emitError("load_unalign_update requires a live UB address"), failure();
+    Value source = valueMap.lookup(op.getSource());
+    auto sourceType = dyn_cast_or_null<MemRefType>(source ? source.getType() : Type());
+    if (!sourceType)
+        return failure();
+    Type elemType = sourceType.getElementType();
+    Value countBytes = strideElemsToByteOffI32(b, loc, postUpdateStride, elemType);
+    // Dual instr: local vldas + vldus.post (self-contained; Pre not carried).
+    FailureOr<Value> localUreg = emitVldas(b, loc, *ptrOr);
+    if (failed(localUreg))
+        return op.emitError("failed to emit vldas for unalign UPDATE"), failure();
+    FailureOr<std::tuple<Value, Value, Value>> emitted =
+        emitVldusPost(b, loc, *ptrOr, *localUreg, countBytes, elemType);
+    if (failed(emitted))
+        return op.emitError("unsupported element type for tla.load_unalign_update"), failure();
+    valueMap[op.getResult()] = std::get<0>(*emitted);
+    mapUpdateNextPtrI64(
+        op.getNextPtr(), b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), std::get<2>(*emitted)), valueMap);
     return success();
 }
 
@@ -3094,9 +3263,42 @@ static LogicalResult lowerStoreUpdate(
     return success();
 }
 
+static LogicalResult lowerStoreUnalignUpdate(
+    ::tla::StoreUnalignUpdateOp op, OpBuilder& b, DenseMap<Value, Value>& valueMap)
+{
+    Location loc = op.getLoc();
+    Value src = valueMap.lookup(op.getSource());
+    if (!src)
+        return failure();
+    // AscendC: HIVM $eleSize = postUpdateStride×sizeof(T); next_ptr = HW newPtr.
+    Value postUpdateStride = valueMap.lookup(op.getPostUpdateStride());
+    if (!postUpdateStride)
+        postUpdateStride = lookupOrCloneScalarValue(b, op.getPostUpdateStride(), valueMap);
+    if (!postUpdateStride)
+        return op.emitError("failed to materialize post_update_stride"), failure();
+    auto ptrOr = resolveEffectiveUbPtr(op.getDest(), b, loc, valueMap);
+    if (failed(ptrOr))
+        return op.emitError("store_unalign_update requires a live UB address"), failure();
+    auto srcTy = dyn_cast<VectorType>(src.getType());
+    if (!srcTy)
+        return failure();
+    Type elemType = srcTy.getElementType();
+    Value countBytes = strideElemsToByteOffI32(b, loc, postUpdateStride, elemType);
+    // AscendC ABAB store: empty UnalignRegForStore + vstus.post + vstas (no vldas).
+    Value localUreg = emitEmptyStoreUreg(b, loc);
+    FailureOr<std::pair<Value, Value>> emitted = emitVstusPost(b, loc, src, *ptrOr, localUreg, countBytes, elemType);
+    if (failed(emitted))
+        return op.emitError("unsupported element type for tla.store_unalign_update"), failure();
+    // Flush ureg at HW ptr after post-update (AscendC StoreUnAlignPost(..., 0)).
+    if (failed(emitVstas(b, loc, emitted->first, emitted->second)))
+        return op.emitError("failed to emit vstas for unalign store UPDATE"), failure();
+    mapUpdateNextPtrI64(op.getNextPtr(), b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), emitted->second), valueMap);
+    return success();
+}
+
 /// scf.for: rebuild the loop, including loop-carried iter_args, and lower its
 /// body. Init args and the scf.yield operands may be register, index, or
-/// scalar SSA values threaded through the helper (e.g. the tail counter produced by tla.update_mask).
+/// scalar SSA values threaded through the helper.
 static LogicalResult lowerScfFor(
     scf::ForOp forOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
     AutoFullPredicateCache& fullMasks)
@@ -3117,21 +3319,45 @@ static LogicalResult lowerScfFor(
     Type i64Ty = b.getIntegerType(64);
     auto regionIterArgs = forOp.getRegionIterArgs();
     SmallVector<bool> wasIndex(regionIterArgs.size(), false);
-    SmallVector<Value> initArgs;
+    SmallVector<bool> wasPtr(regionIterArgs.size(), false);
+    SmallVector<Value> mappedInits;
     for (auto [idx, init] : llvm::enumerate(forOp.getInitArgs())) {
-        Value mapped = lookupOrCloneScalarValue(b, init, valueMap);
+        Value mapped = valueMap.lookup(init);
         if (!mapped)
-            return failure();
-        if (isa<IndexType>(mapped.getType())) {
-            wasIndex[idx] = true;
+            mapped = lookupOrCloneScalarValue(b, init, valueMap);
+        if (!mapped)
+            return forOp.emitError("failed to map scf.for init_arg #") << idx << " (type " << init.getType() << ")",
+                   failure();
+        wasIndex[idx] = isa<IndexType>(init.getType());
+        wasPtr[idx] = isa<::tla::PtrType>(init.getType());
+        if (wasIndex[idx] && isa<IndexType>(mapped.getType()))
             mapped = b.create<arith::IndexCastOp>(loc, i64Ty, mapped);
+        // !tla.ptr carriers: helper carries i64. UPDATE lowering maps next_ptr
+        // to i64; IntToPtr inits may still be !llvm.ptr — normalize so
+        // init/yield types match. If valueMap still holds abstract !tla.ptr
+        // (e.g. TensorDesc base not yet rewritten), rematerialize instead of
+        // hard-failing the common path.
+        if (wasPtr[idx]) {
+            if (isa<::tla::PtrType>(mapped.getType())) {
+                mapped = materializeTlaPtrCarrierAsI64(b, loc, init, valueMap);
+                if (!mapped)
+                    return forOp.emitError("scf.for !tla.ptr init_arg #")
+                               << idx << " could not materialize to i64 (!llvm.ptr / inttoptr addr)",
+                           failure();
+            } else if (isa<LLVM::LLVMPointerType>(mapped.getType())) {
+                mapped = b.create<LLVM::PtrToIntOp>(loc, i64Ty, mapped);
+            } else if (!mapped.getType().isInteger(64)) {
+                return forOp.emitError("scf.for !tla.ptr init_arg #") << idx << " must lower to i64 or !llvm.ptr",
+                       failure();
+            }
+            valueMap[init] = mapped;
         }
-        initArgs.push_back(mapped);
+        mappedInits.push_back(mapped);
     }
 
     LogicalResult bodyStatus = success();
     auto newFor = b.create<scf::ForOp>(
-        loc, lb, ub, step, initArgs, [&](OpBuilder& nb, Location nloc, Value iv, ValueRange iterArgs) {
+        loc, lb, ub, step, mappedInits, [&](OpBuilder& nb, Location nloc, Value iv, ValueRange iterArgs) {
             DenseMap<Value, Value> nestedMap = valueMap;
             nestedMap[forOp.getInductionVar()] = iv;
             for (size_t i = 0; i < regionIterArgs.size(); ++i) {
@@ -3148,13 +3374,30 @@ static LogicalResult lowerScfFor(
             auto oldYield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
             SmallVector<Value> yielded;
             for (auto [i, v] : llvm::enumerate(oldYield.getOperands())) {
-                Value mapped = lookupOrCloneScalarValue(nb, v, nestedMap);
+                Value mapped = nestedMap.lookup(v);
+                if (!mapped)
+                    mapped = lookupOrCloneScalarValue(nb, v, nestedMap);
                 if (!mapped) {
                     bodyStatus = failure();
                     break;
                 }
                 if (wasIndex[i] && isa<IndexType>(mapped.getType()))
                     mapped = nb.create<arith::IndexCastOp>(nloc, i64Ty, mapped);
+                if (wasPtr[i]) {
+                    if (isa<::tla::PtrType>(mapped.getType())) {
+                        mapped = materializeTlaPtrCarrierAsI64(nb, nloc, v, nestedMap);
+                        if (!mapped) {
+                            bodyStatus = failure();
+                            break;
+                        }
+                    } else if (isa<LLVM::LLVMPointerType>(mapped.getType())) {
+                        mapped = nb.create<LLVM::PtrToIntOp>(nloc, i64Ty, mapped);
+                    } else if (!mapped.getType().isInteger(64)) {
+                        bodyStatus = failure();
+                        break;
+                    }
+                    nestedMap[v] = mapped;
+                }
                 yielded.push_back(mapped);
             }
             if (failed(bodyStatus)) {
@@ -3200,8 +3443,6 @@ static LogicalResult lowerScfIf(
         if (!newBlock->empty() && newBlock->back().hasTrait<OpTrait::IsTerminator>())
             newBlock->back().erase();
         OpBuilder branchBuilder = OpBuilder::atBlockEnd(newBlock);
-        // Do not thread loop ureg through scf.if (both branches would mutate one
-        // carrier during lowering). UnAlign UPDATE inside if uses oneshot framing.
         if (failed(lowerNestedVectorBlock(oldBlock, branchBuilder, module, branchMap, fullMasks)))
             return failure();
 
@@ -3280,6 +3521,12 @@ static LogicalResult lowerNestedVectorOp(
 
     if (auto loadUpdateOp = dyn_cast<::tla::LoadUpdateOp>(op))
         return lowerLoadUpdate(loadUpdateOp, b, module, valueMap, fullMasks);
+
+    if (auto loadUnalignUpdateOp = dyn_cast<::tla::LoadUnalignUpdateOp>(op))
+        return lowerLoadUnalignUpdate(loadUnalignUpdateOp, b, valueMap);
+
+    if (auto storeUnalignUpdateOp = dyn_cast<::tla::StoreUnalignUpdateOp>(op))
+        return lowerStoreUnalignUpdate(storeUnalignUpdateOp, b, valueMap);
 
     // Preserve local-memory ordering while outlining a vec.func into its AVE
     // helper. Every operation in the source region must be recreated explicitly;
@@ -3539,8 +3786,9 @@ static LogicalResult lowerNestedVectorBlock(
         if (op.hasTrait<OpTrait::IsTerminator>())
             continue;
         if (failed(lowerNestedVectorOp(op, b, module, valueMap, fullMasks))) {
-            op.emitOpError() << "unsupported op while outlining tla.vec.func into vector helper: " << op.getName();
-            return failure();
+            // Avoid emitOpError: printing a half-rewritten op can assert in AsmPrinter.
+            return op.emitError("unsupported op while outlining tla.vec.func into vector helper: ") << op.getName(),
+                   failure();
         }
     }
     return success();
@@ -3622,6 +3870,46 @@ static Value getVectorHelperStorageIdentity(Value source)
     DenseSet<Value> visited;
     while (visited.insert(source).second) {
         source = stripHelperAddressCasts(source);
+        // Tile SSA carried across ``scf.for`` / ``scf.while`` (iter_arg or result)
+        // must share the seed identity with the init window. Otherwise a
+        // once→for→once UnAlign stream registers the post-loop tile as a new
+        // helper operand whose ``inttoptr`` addr is an in-region ``ptrtoint`` of
+        // the live next_ptr — dominate check rejects the outline (silent
+        // legalize failure). Same chase as ``chaseScfCarrierInit`` but on the
+        // tensor/ptr carrier itself, not only the i64 address.
+        if (auto ba = dyn_cast<BlockArgument>(source)) {
+            Operation* parent = ba.getOwner()->getParentOp();
+            if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+                unsigned argNum = ba.getArgNumber();
+                if (argNum > 0 && argNum - 1 < forOp.getNumRegionIterArgs()) {
+                    source = forOp.getInitArgs()[argNum - 1];
+                    continue;
+                }
+            } else if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
+                unsigned argNum = ba.getArgNumber();
+                if (argNum < whileOp.getInits().size()) {
+                    source = whileOp.getInits()[argNum];
+                    continue;
+                }
+            }
+            break;
+        }
+        if (auto forOp = source.getDefiningOp<scf::ForOp>()) {
+            unsigned idx = cast<OpResult>(source).getResultNumber();
+            if (idx < forOp.getNumRegionIterArgs()) {
+                source = forOp.getInitArgs()[idx];
+                continue;
+            }
+            break;
+        }
+        if (auto whileOp = source.getDefiningOp<scf::WhileOp>()) {
+            unsigned idx = cast<OpResult>(source).getResultNumber();
+            if (idx < whileOp.getInits().size()) {
+                source = whileOp.getInits()[idx];
+                continue;
+            }
+            break;
+        }
         if (auto descOp = source.getDefiningOp<::tla::TensorDescOp>()) {
             source = descOp.getBase();
             continue;
@@ -3646,12 +3934,24 @@ static Value getVectorHelperStorageIdentity(Value source)
             source = loadUpdate.getSource();
             continue;
         }
+        if (auto loadUnalignUpdate = source.getDefiningOp<::tla::LoadUnalignUpdateOp>()) {
+            source = loadUnalignUpdate.getSource();
+            continue;
+        }
         if (auto storeUpdate = source.getDefiningOp<::tla::StoreUpdateOp>()) {
             source = storeUpdate.getDest();
             continue;
         }
+        if (auto storeUnalignUpdate = source.getDefiningOp<::tla::StoreUnalignUpdateOp>()) {
+            source = storeUnalignUpdate.getDest();
+            continue;
+        }
         if (auto ptrToInt = source.getDefiningOp<::tla::PtrToIntOp>()) {
             source = ptrToInt.getPtr();
+            continue;
+        }
+        if (auto llvmPtrToInt = source.getDefiningOp<LLVM::PtrToIntOp>()) {
+            source = llvmPtrToInt.getArg();
             continue;
         }
         if (auto intToPtr = source.getDefiningOp<::tla::IntToPtrOp>()) {
@@ -3659,6 +3959,22 @@ static Value getVectorHelperStorageIdentity(Value source)
             Value addr = chaseScfCarrierInit(intToPtr.getAddr());
             if (auto fromPtr = addr.getDefiningOp<::tla::PtrToIntOp>()) {
                 source = fromPtr.getPtr();
+                continue;
+            }
+            if (auto fromPtr = addr.getDefiningOp<LLVM::PtrToIntOp>()) {
+                source = fromPtr.getArg();
+                continue;
+            }
+            return addr;
+        }
+        if (auto llvmIntToPtr = source.getDefiningOp<LLVM::IntToPtrOp>()) {
+            Value addr = chaseScfCarrierInit(llvmIntToPtr.getArg());
+            if (auto fromPtr = addr.getDefiningOp<::tla::PtrToIntOp>()) {
+                source = fromPtr.getPtr();
+                continue;
+            }
+            if (auto fromPtr = addr.getDefiningOp<LLVM::PtrToIntOp>()) {
+                source = fromPtr.getArg();
                 continue;
             }
             return addr;
@@ -3745,12 +4061,20 @@ static LogicalResult collectVectorHelperOperands(
             addVectorHelperOperand(loadUpdateOp.getSource(), operands, aliases);
             continue;
         }
+        if (auto loadUnalignUpdateOp = dyn_cast<::tla::LoadUnalignUpdateOp>(op)) {
+            addVectorHelperOperand(loadUnalignUpdateOp.getSource(), operands, aliases);
+            continue;
+        }
         if (auto storeOp = dyn_cast<::tla::StoreOp>(op)) {
             addVectorHelperOperand(storeOp.getDest(), operands, aliases);
             continue;
         }
         if (auto storeUpdateOp = dyn_cast<::tla::StoreUpdateOp>(op)) {
             addVectorHelperOperand(storeUpdateOp.getDest(), operands, aliases);
+            continue;
+        }
+        if (auto storeUnalignUpdateOp = dyn_cast<::tla::StoreUnalignUpdateOp>(op)) {
+            addVectorHelperOperand(storeUnalignUpdateOp.getDest(), operands, aliases);
             continue;
         }
         if (auto gatherOp = dyn_cast<::tla::GatherOp>(op)) {
@@ -4011,11 +4335,15 @@ public:
         SmallVector<Operation*, 4> computeOps;
         SmallVector<::tla::StoreOp, 2> stores;
         SmallVector<::tla::StoreUpdateOp, 2> storeUpdates;
+        SmallVector<Value, 4> unalignLoads;
+        int unalignStores = 0;
         vecFuncOp->walk([&](Operation* op) {
             if (auto load = dyn_cast<::tla::LoadOp>(op)) {
                 loads.push_back(load);
             } else if (auto loadUpdate = dyn_cast<::tla::LoadUpdateOp>(op)) {
                 loadUpdates.push_back(loadUpdate);
+            } else if (auto loadUnalignUpdate = dyn_cast<::tla::LoadUnalignUpdateOp>(op)) {
+                unalignLoads.push_back(loadUnalignUpdate.getResult());
             } else if (auto full = dyn_cast<::tla::FullOp>(op)) {
                 fulls.push_back(full);
             } else if (auto createMask = dyn_cast<::tla::CreateMaskOp>(op)) {
@@ -4028,19 +4356,21 @@ public:
                 stores.push_back(store);
             } else if (auto storeUpdate = dyn_cast<::tla::StoreUpdateOp>(op)) {
                 storeUpdates.push_back(storeUpdate);
+            } else if (isa<::tla::StoreUnalignUpdateOp>(op)) {
+                ++unalignStores;
             } else if (isVectorComputeOp(op)) {
                 computeOps.push_back(op);
             }
             return WalkResult::advance();
         });
-        if (stores.empty() && storeUpdates.empty()) {
+        if (stores.empty() && storeUpdates.empty() && unalignStores == 0) {
             // Scalar-only (or empty) VF cannot be outlined as a BiSheng helper — that
             // path requires tla.store or tla.store_update. If there is also no tile
             // load/compute, inline the body into the parent (same as tla.vector
             // flattening) so scalar_load/store + scf stay legal for later
             // convert-scf-to-cf.
-            if (!loads.empty() || !loadUpdates.empty() || !fulls.empty() || !createMasks.empty() ||
-                !updateMasks.empty() || !aranges.empty() || !computeOps.empty())
+            if (!loads.empty() || !loadUpdates.empty() || !unalignLoads.empty() || !fulls.empty() ||
+                !createMasks.empty() || !updateMasks.empty() || !aranges.empty() || !computeOps.empty())
                 return rewriter.notifyMatchFailure(
                     vecFuncOp, "expected tla.vec.func body with a tla.store or tla.store_update");
             rewriter.inlineBlockBefore(body, vecFuncOp->getBlock(), vecFuncOp->getIterator());
@@ -4058,6 +4388,8 @@ public:
         }
         for (::tla::LoadUpdateOp loadUpdate : loadUpdates)
             producedValues.insert(loadUpdate.getResult());
+        for (Value unalignLoad : unalignLoads)
+            producedValues.insert(unalignLoad);
         for (::tla::FullOp full : fulls)
             producedValues.insert(full.getResult());
         for (::tla::CreateMaskOp createMask : createMasks)
@@ -4280,8 +4612,28 @@ public:
             auto itp = ptr.getDefiningOp<::tla::IntToPtrOp>();
             if (!itp)
                 return rewriter.notifyMatchFailure(vecFuncOp, "expected pointer lowered to tla.inttoptr boundary");
-            // ``inttoptr`` addr is i64; SCF chase stays on that address SSA.
-            Value callAddr = stripHelperAddressCasts(chaseScfCarrierInit(itp.getAddr()));
+            // Prefer storage-identity seed (AllocPtr / outside ptr_add): SCF +
+            // UPDATE next_ptr chase. Fall back to the inttoptr addr only when
+            // identity itself is still an address SSA.
+            Value identity = getVectorHelperStorageIdentity(tensor);
+            Value callAddr = identity;
+            if (!dominanceInfo.dominates(callAddr, vecFuncOp.getOperation())) {
+                callAddr = stripHelperAddressCasts(chaseScfCarrierInit(itp.getAddr()));
+                // Peel in-region ptrtoint of a live next_ptr back toward seed.
+                DenseSet<Value> peelVisited;
+                while (peelVisited.insert(callAddr).second &&
+                       !dominanceInfo.dominates(callAddr, vecFuncOp.getOperation())) {
+                    if (auto p2i = callAddr.getDefiningOp<::tla::PtrToIntOp>()) {
+                        callAddr = getVectorHelperStorageIdentity(p2i.getPtr());
+                        continue;
+                    }
+                    if (auto p2i = callAddr.getDefiningOp<LLVM::PtrToIntOp>()) {
+                        callAddr = getVectorHelperStorageIdentity(p2i.getArg());
+                        continue;
+                    }
+                    break;
+                }
+            }
             if (!dominanceInfo.dominates(callAddr, vecFuncOp.getOperation()))
                 return rewriter.notifyMatchFailure(
                     vecFuncOp,
@@ -4327,8 +4679,26 @@ public:
                 // iter_arg addresses are rebound inside the helper via
                 // materializeTensorDescParameteri / resolveEffectiveUbPtr.
                 if (auto itp = ptr.getDefiningOp<::tla::IntToPtrOp>()) {
-                    Value seedAddr = stripHelperAddressCasts(chaseScfCarrierInit(itp.getAddr()));
-                    if (seedAddr != stripHelperAddressCasts(itp.getAddr())) {
+                    Value liveAddr = stripHelperAddressCasts(itp.getAddr());
+                    Value seedAddr = stripHelperAddressCasts(chaseScfCarrierInit(liveAddr));
+                    // Once→for→once UnAlign: live addr may be in-region ptrtoint of
+                    // next_ptr; peel to a dominating seed (same as outline check).
+                    if (!dominanceInfo.dominates(seedAddr, vecFuncOp.getOperation())) {
+                        Value identity = getVectorHelperStorageIdentity(tensor);
+                        if (dominanceInfo.dominates(identity, vecFuncOp.getOperation())) {
+                            OpBuilder::InsertionGuard guard(rewriter);
+                            rewriter.setInsertionPoint(vecFuncOp);
+                            if (identity.getType().isInteger(64) || isa<IndexType>(identity.getType()))
+                                seedAddr = identity;
+                            else if (isa<::tla::PtrType>(identity.getType()))
+                                seedAddr = rewriter.create<::tla::PtrToIntOp>(
+                                    vecFuncOp.getLoc(), rewriter.getI64Type(), identity);
+                            else if (isa<LLVM::LLVMPointerType>(identity.getType()))
+                                seedAddr = rewriter.create<LLVM::PtrToIntOp>(
+                                    vecFuncOp.getLoc(), rewriter.getI64Type(), identity);
+                        }
+                    }
+                    if (seedAddr != liveAddr) {
                         // Seed is the dominating i64 carrier init; rebuild inttoptr
                         // at the call site (addr SSA is never itself an inttoptr).
                         OpBuilder::InsertionGuard guard(rewriter);

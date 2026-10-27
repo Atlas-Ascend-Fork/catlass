@@ -475,6 +475,24 @@ static Value chasePtrToIntToPtrBoundary(Value ptr)
             }
             return {};
         }
+        if (auto loadUnalignUpdate = ptr.getDefiningOp<::tla::LoadUnalignUpdateOp>()) {
+            if (auto desc = loadUnalignUpdate.getSource().getDefiningOp<::tla::TensorDescOp>()) {
+                if (llvm::isa<::tla::PtrType>(desc.getBase().getType())) {
+                    ptr = desc.getBase();
+                    continue;
+                }
+            }
+            return {};
+        }
+        if (auto storeUnalignUpdate = ptr.getDefiningOp<::tla::StoreUnalignUpdateOp>()) {
+            if (auto desc = storeUnalignUpdate.getDest().getDefiningOp<::tla::TensorDescOp>()) {
+                if (llvm::isa<::tla::PtrType>(desc.getBase().getType())) {
+                    ptr = desc.getBase();
+                    continue;
+                }
+            }
+            return {};
+        }
         return {};
     }
     return {};

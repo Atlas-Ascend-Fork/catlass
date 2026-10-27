@@ -1050,7 +1050,7 @@ Supported vector copy routes
 
 ### `Tensor.load`
 
-**Source:** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L513)
+**Source:** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L533)
 
 Description:
 
@@ -1104,15 +1104,17 @@ Constraints:
   base + offset×sizeof(T)): ``DIST_NORM`` → ``VL/8``;
   ``DIST_US`` → ``VL/16``; ``DIST_DS`` → ``min(32, VL/4)``.
   On VL=256 this is 32B / 16B / 32B.
-- `post_mode=update` on `NormalLoadParams` requires
-  `post_update_stride > 0` (int or runtime Numeric/index),
-  rank-1 contiguous tile (all layout strides == 1), `DIST_NORM`,
-  and element type in `{f16, bf16, f32}`; returns
-  `(vector, next_tile)`.
-  Inside `tla.vec.func`, assign `next_tile` back with `tla.range`
-  (`while` is not supported nested in `vec.func`). The window must
-  already be an origin tile (`coord=0`); cut it with `tile_view`
-  (or equivalent). UPDATE never automatically folds non-zero coordinates.
+- `post_mode=update` on `NormalLoadParams`: `post_update_stride=0`
+  (default) advances by `tile_extent` (`origin_shape`); an explicit
+  stride keeps fill / stride-advance decoupling.
+  `UnalignLoadParams` must leave `post_update_stride` at 0 (emit
+  always uses `origin_shape`; dense only). Rank-1 contiguous tile,
+  `DIST_NORM`, element type in `{f16, bf16, f32}`; returns
+  `(vector, next_tile)`. Inside `tla.vec.func`, assign `next_tile`
+  back with `tla.range` (`while` is not supported nested in
+  `vec.func`). The window must already be an origin tile
+  (`coord=0`); cut it with `tile_view` (or equivalent). UPDATE
+  never automatically folds non-zero coordinates.
 
 Example:
 
@@ -1133,7 +1135,7 @@ with tla.vec.func(mode="simd"):
 
 ### `Tensor.store`
 
-**Source:** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L937)
+**Source:** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L989)
 
 Description:
 
@@ -1166,13 +1168,13 @@ Constraints:
 - First-element modes require the stored value and the dest tile to
   use the suffix-matching element width (b8 → 1-byte, b16 → 2-byte,
   b32 → 4-byte); passing a predicate mask raises an error.
-- `post_mode=update` on `NormalStoreParams` requires
-  `post_update_stride > 0` (int or runtime Numeric/index),
-  rank-1 contiguous tile (all layout strides == 1), `DIST_NORM`,
-  and element type in `{f16, bf16, f32}`; returns the next tile.
-  Inside `tla.vec.func`, assign it back with `tla.range`
-  (`while` is not supported nested in `vec.func`). Same
-  origin window (`coord=0`) contract as UPDATE `load`.
+- `post_mode=update` on `NormalStoreParams`: default
+  `post_update_stride=0` advances by `tile_extent` (`origin_shape`);
+  explicit stride is decoupled. `UnalignStoreParams` must leave
+  stride at 0 (emit uses `origin_shape`). Rank-1 contiguous tile,
+  `DIST_NORM`, element type in `{f16, bf16, f32}`; returns the next
+  tile. Inside `tla.vec.func`, assign it back with `tla.range`.
+  Same origin window (`coord=0`) contract as UPDATE `load`.
 
 Example:
 
@@ -1188,7 +1190,7 @@ with tla.vec.func(mode="simd"):
 
 ### `Tensor.__getitem__`
 
-**Source:** [`catlass.tla.tensor._Tensor.__getitem__`](../../../catlass/tla/tensor.py#L1284)
+**Source:** [`catlass.tla.tensor._Tensor.__getitem__`](../../../catlass/tla/tensor.py#L1367)
 
 Description:
 
@@ -1241,7 +1243,7 @@ with tla.vec.func(mode="simt", thread_block_dim=256):
 
 ### `Tensor.__setitem__`
 
-**Source:** [`catlass.tla.tensor._Tensor.__setitem__`](../../../catlass/tla/tensor.py#L1403)
+**Source:** [`catlass.tla.tensor._Tensor.__setitem__`](../../../catlass/tla/tensor.py#L1486)
 
 Description:
 
@@ -3789,7 +3791,7 @@ with tla.vector():
 
 ### `Tensor.fill`
 
-**Source:** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1171)
+**Source:** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1254)
 
 Description:
 

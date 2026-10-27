@@ -1324,6 +1324,42 @@ mlir::LogicalResult StoreUpdateOp::verify()
     return verifyMaskMatchesVector(getOperation(), getMask(), getSource().getType());
 }
 
+static mlir::LogicalResult verifyUnalignUbTensor(mlir::Operation* op, mlir::Value tensor, llvm::StringRef name)
+{
+    if (!hasEnclosingRegion<VecFuncOp>(op))
+        return op->emitOpError("must be nested inside a tla.vec.func region");
+    auto tensorType = mlir::dyn_cast<TlaTensorType>(tensor.getType());
+    if (!tensorType)
+        return op->emitOpError() << name << " must be !tla.tensor";
+    if (tensorType.getPtr().getAddrspace() != AddressSpace::ub)
+        return op->emitOpError() << name << " !tla.tensor must be in ub address space";
+    return mlir::success();
+}
+
+mlir::LogicalResult LoadUnalignUpdateOp::verify()
+{
+    if (failed(verifyUnalignUbTensor(getOperation(), getSource(), "source")))
+        return mlir::failure();
+    if (!mlir::isa<VectorSSAType>(getResult().getType()))
+        return emitOpError("result must be !tla.vector");
+    if (failed(verifyUpdateStride(getOperation(), getPostUpdateStride())))
+        return mlir::failure();
+    auto sourceType = mlir::cast<TlaTensorType>(getSource().getType());
+    return verifyUpdatePtr(getOperation(), getNextPtr(), sourceType.getPtr().getPointee());
+}
+
+mlir::LogicalResult StoreUnalignUpdateOp::verify()
+{
+    if (failed(verifyUnalignUbTensor(getOperation(), getDest(), "dest")))
+        return mlir::failure();
+    if (!mlir::isa<VectorSSAType>(getSource().getType()))
+        return emitOpError("source must be !tla.vector");
+    if (failed(verifyUpdateStride(getOperation(), getPostUpdateStride())))
+        return mlir::failure();
+    auto destType = mlir::cast<TlaTensorType>(getDest().getType());
+    return verifyUpdatePtr(getOperation(), getNextPtr(), destType.getPtr().getPointee());
+}
+
 static mlir::LogicalResult verifyConstantScalarIndexInBounds(mlir::Operation* op, mlir::Value index, int64_t length)
 {
     if (length == mlir::ShapedType::kDynamic)

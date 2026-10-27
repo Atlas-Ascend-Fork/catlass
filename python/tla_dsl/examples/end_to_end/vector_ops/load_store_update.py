@@ -12,6 +12,8 @@
 
 ``add`` — full trips unmasked; when ``VECTOR_ELE % VL != 0``, one epilogue
 ``update_mask(tail)``. ``--dynamic-extent`` — tile extent is a kernel ``index``.
+``--stride-geoms`` — Align decoupling: overlap (``stride < VL``) and hole
+(``stride > VL``); expects VL-fill with ``post_update_stride`` advance.
 """
 
 from __future__ import annotations
@@ -35,19 +37,18 @@ from vector_op_harness import (
 
 VECTOR_ELE = 400
 VL_ELE = 64
+STRIDE_ELE = 64
+GEOM_LOOPS = 3
 LOOPS = (VECTOR_ELE + VL_ELE - 1) // VL_ELE
 ALL_DTYPES = ("f32",)
+SENTINEL = -7.0
 
 _KERNEL_DTYPE = tla.Float32
 _KERNEL_ELEMENT_BYTES = 4
 _KERNEL_SHAPE = (VECTOR_ELE,)
 
-_LOAD_U = NormalLoadParams(
-    post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=VL_ELE
-)
-_STORE_U = NormalStoreParams(
-    post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=VL_ELE
-)
+_LOAD_U = NormalLoadParams(post_mode=PostMode.POST_MODE_UPDATE)
+_STORE_U = NormalStoreParams(post_mode=PostMode.POST_MODE_UPDATE)
 
 
 @tla.kernel
@@ -137,30 +138,101 @@ def load_store_update_dynamic_extent_op(
         tla.pipe_barrier(tla.pipes.ALL)
 
 
+@tla.kernel
+def load_store_update_stride_geom_op(
+    mem_x: tla.Tensor, mem_y: tla.Tensor, mem_z: tla.Tensor
+) -> None:
+    """Align UPDATE with explicit ``post_update_stride != VL`` (overlap or hole)."""
+    ub_loaded = tla.flag("ub_loaded", tla.arch.MTE2, tla.arch.VECTOR)
+    vec_done = tla.flag("vec_done", tla.arch.VECTOR, tla.arch.MTE3)
+
+    x_gm = tla.tile_view(mem_x, tla.make_shape(VECTOR_ELE), tla.make_coord(0))
+    y_gm = tla.tile_view(mem_y, tla.make_shape(VECTOR_ELE), tla.make_coord(0))
+    z_gm = tla.tile_view(mem_z, tla.make_shape(VECTOR_ELE), tla.make_coord(0))
+
+    x_ub = tla.make_tensor_like(
+        tla.allocate(VECTOR_ELE, _KERNEL_DTYPE, tla.AddressSpace.ub, 256),
+        x_gm,
+        tla.arch.RowMajor,
+    )
+    y_ub = tla.make_tensor_like(
+        tla.allocate(VECTOR_ELE, _KERNEL_DTYPE, tla.AddressSpace.ub, 256),
+        y_gm,
+        tla.arch.RowMajor,
+    )
+    z_ub = tla.make_tensor_like(
+        tla.allocate(VECTOR_ELE, _KERNEL_DTYPE, tla.AddressSpace.ub, 256),
+        z_gm,
+        tla.arch.RowMajor,
+    )
+
+    with tla.vector():
+        tla.copy(x_ub, x_gm)
+        tla.copy(y_ub, y_gm)
+        tla.copy(z_ub, z_gm)
+        tla.set_flag(ub_loaded)
+        tla.wait_flag(ub_loaded)
+        with tla.vec.func(mode="simd"):
+            x_tile = tla.tile_view(x_ub, tla.make_shape(VL_ELE), tla.make_coord(0))
+            y_tile = tla.tile_view(y_ub, tla.make_shape(VL_ELE), tla.make_coord(0))
+            z_tile = tla.tile_view(z_ub, tla.make_shape(VL_ELE), tla.make_coord(0))
+            for _ in tla.range(GEOM_LOOPS):
+                x_reg, x_tile = x_tile.load(_LOAD_U)
+                y_reg, y_tile = y_tile.load(_LOAD_U)
+                z_tile = z_tile.store(tla.add(x_reg, y_reg), _STORE_U)
+        tla.set_flag(vec_done)
+        tla.wait_flag(vec_done)
+        tla.copy(z_gm, z_ub)
+        tla.pipe_barrier(tla.pipes.ALL)
+
+
 def _operator_specs() -> dict[str, dict[str, Any]]:
     return {"add": {"op": "add", "dtypes": ALL_DTYPES, "default_atol": 1e-4}}
 
 
 def _set_kernel_config(
-    op_name: str, dtype_name: str, shape: tuple[int, ...] | None = None
+    op_name: str,
+    dtype_name: str,
+    shape: tuple[int, ...] | None = None,
+    *,
+    stride: int | None = None,
+    geom_loops: int | None = None,
 ) -> tuple[type[Any], Any, float | int]:
-    global VL_ELE, LOOPS, VECTOR_ELE, _KERNEL_DTYPE, _KERNEL_ELEMENT_BYTES
-    global _KERNEL_SHAPE, _LOAD_U, _STORE_U
+    global VL_ELE, STRIDE_ELE, GEOM_LOOPS, LOOPS, VECTOR_ELE
+    global _KERNEL_DTYPE, _KERNEL_ELEMENT_BYTES, _KERNEL_SHAPE, _LOAD_U, _STORE_U
     del op_name
     config = vector_kernel_config(dtype_name, shape, ALL_DTYPES)
     VECTOR_ELE = config.vector_elements
     _KERNEL_SHAPE = shape if shape is not None else (VECTOR_ELE,)
     VL_ELE = config.lanes
+    STRIDE_ELE = VL_ELE if stride is None else stride
+    if geom_loops is not None:
+        GEOM_LOOPS = geom_loops
     LOOPS = config.loops
     _KERNEL_DTYPE = config.tla_dtype
     _KERNEL_ELEMENT_BYTES = config.element_bytes
-    _LOAD_U = NormalLoadParams(
-        post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=VL_ELE
-    )
-    _STORE_U = NormalStoreParams(
-        post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=VL_ELE
-    )
+    if STRIDE_ELE == VL_ELE:
+        _LOAD_U = NormalLoadParams(post_mode=PostMode.POST_MODE_UPDATE)
+        _STORE_U = NormalStoreParams(post_mode=PostMode.POST_MODE_UPDATE)
+    else:
+        _LOAD_U = NormalLoadParams(
+            post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=STRIDE_ELE
+        )
+        _STORE_U = NormalStoreParams(
+            post_mode=PostMode.POST_MODE_UPDATE, post_update_stride=STRIDE_ELE
+        )
     return config.tla_dtype, config.torch_dtype, config.default_sentinel
+
+
+def _expected_stride_geom(x: Any, y: Any, z_sentinel: Any) -> Any:
+    """VL-fill + stride-advance (Align decoupling; LWW on overlap)."""
+    z = z_sentinel.clone()
+    for i in range(GEOM_LOOPS):
+        start = i * STRIDE_ELE
+        z[start : start + VL_ELE] = (
+            x[start : start + VL_ELE] + y[start : start + VL_ELE]
+        )
+    return z
 
 
 def _make_inputs(args: Any, dtype_name: str, torch: Any) -> tuple[Any, Any]:
@@ -194,6 +266,63 @@ HARNESS = DirectVectorOpHarness(
         input_count=2,
     )
 )
+
+
+_STRIDE_GEOM_CASES = (
+    ("overlap", 64, 32, 3),  # stride < VL: later trip LWW-overwrites overlap
+    ("hole", 64, 96, 3),  # stride > VL: gap elements stay at sentinel
+)
+
+
+def _run_stride_geoms(args: argparse.Namespace) -> int:
+    """Align UPDATE overlap (stride<VL) and hole (stride>VL) correctness."""
+    torch = require_torch_npu(args.device, Path(__file__).stem)
+    torch.npu.set_device(args.device)
+    want = args.geom
+    cases = tuple(c for c in _STRIDE_GEOM_CASES if want in ("all", c[0]))
+    if not cases:
+        raise SystemExit(f"unknown --geom {want!r}; choose overlap|hole|all")
+    rc = 0
+    for name, vl, stride, loops in cases:
+        n = (loops - 1) * stride + vl + 64
+        tla_dtype, torch_dt, _ = _set_kernel_config(
+            "add", "f32", (n,), stride=stride, geom_loops=loops
+        )
+        if not (VL_ELE == vl and STRIDE_ELE == stride and STRIDE_ELE != VL_ELE):
+            raise SystemExit(
+                f"stride-geom config mismatch: want vl={vl} stride={stride}, "
+                f"got VL_ELE={VL_ELE} STRIDE_ELE={STRIDE_ELE}"
+            )
+        x = torch.arange(VECTOR_ELE, dtype=torch_dt, device="npu")
+        y = torch.ones(VECTOR_ELE, dtype=torch_dt, device="npu")
+        z = torch.full((VECTOR_ELE,), SENTINEL, dtype=torch_dt, device="npu")
+        expected = _expected_stride_geom(x, y, z)
+        tla_x = make_tla_tensor(x, tla_dtype, _KERNEL_SHAPE)
+        tla_y = make_tla_tensor(y, tla_dtype, _KERNEL_SHAPE)
+        tla_z = make_tla_tensor(z, tla_dtype, _KERNEL_SHAPE)
+        artifact = tla.compile(
+            load_store_update_stride_geom_op,
+            tla_x,
+            tla_y,
+            tla_z,
+            **runtime_kwargs(args),
+        )
+        artifact(tla_x, tla_y, tla_z, block_num=args.block_num)
+        torch.npu.synchronize()
+        ok = bool(torch.equal(z, expected))
+        written = int((z.cpu() != SENTINEL).sum())
+        print(
+            f"--- stride-geom={name} vl={VL_ELE} stride={STRIDE_ELE} "
+            f"loops={GEOM_LOOPS} n={VECTOR_ELE} n_written={written} ok={ok} ---"
+        )
+        if not ok:
+            bad = (z.cpu() != expected.cpu()).nonzero(as_tuple=False)
+            i = int(bad[0].item())
+            print(
+                f"first mismatch index={i} act={float(z[i])} exp={float(expected[i])}"
+            )
+        rc |= 0 if ok else 1
+    return rc
 
 
 def _run_dynamic_extent(args: argparse.Namespace) -> int:
@@ -244,9 +373,9 @@ def _run_dynamic_extent(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    if "--dynamic-extent" in sys.argv:
+    if "--dynamic-extent" in sys.argv or "--stride-geoms" in sys.argv:
         parser = argparse.ArgumentParser(
-            description="UPDATE e2e with dynamic tile extent"
+            description="UPDATE e2e: dynamic extent or Align stride geoms"
         )
         parser.add_argument("op", nargs="?", default="add")
         parser.add_argument("--device", type=int, default=2)
@@ -254,10 +383,23 @@ def main() -> int:
         parser.add_argument("--shape", type=int, nargs="+", default=None)
         parser.add_argument("--atol", type=float, default=1e-4)
         parser.add_argument("--dynamic-extent", action="store_true")
+        parser.add_argument(
+            "--stride-geoms",
+            action="store_true",
+            help="Align UPDATE overlap (stride<VL) and hole (stride>VL)",
+        )
+        parser.add_argument(
+            "--geom",
+            choices=("overlap", "hole", "all"),
+            default="all",
+            help="Which Align stride geom(s) to run with --stride-geoms",
+        )
         parser.add_argument("--sentinel", type=float, default=None)
         args = parser.parse_args()
         if args.shape is not None:
             args.shape = tuple(args.shape)
+        if args.stride_geoms:
+            return _run_stride_geoms(args)
         return _run_dynamic_extent(args)
     return HARNESS.main()
 

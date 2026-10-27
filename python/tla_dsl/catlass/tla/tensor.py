@@ -62,7 +62,11 @@ def _rank1_leaf_or_meta(
 
 
 def _tile_extent_and_elem_coord(tile: _Tensor) -> tuple[Any, Any]:
-    """Return ``(extent, element_coord)`` for a rank-1 UPDATE window tile."""
+    """Return ``(shape_extent, element_coord)`` for a rank-1 UPDATE window tile.
+
+    ``shape_extent`` is the layout/addressing window size. UPDATE HIVM
+    count/advance uses :func:`_tile_origin_extent` (``origin_shape``) instead.
+    """
     from ..core_api import (
         _as_value,
         _flatten_tla_tuple,
@@ -91,7 +95,7 @@ def _tile_extent_and_elem_coord(tile: _Tensor) -> tuple[Any, Any]:
 
 
 def _tile_origin_extent(tile: _Tensor) -> Any:
-    """Rank-1 ``origin_shape`` extent for UPDATE next-window rebuild (scheme A)."""
+    """Rank-1 ``origin_shape`` leaf: UPDATE tile_extent (HIVM count/advance)."""
     from ..core_api import (
         _as_value,
         _flatten_tla_tuple,
@@ -263,6 +267,8 @@ def _validate_post_update_params(params: Any) -> bool:
         LoadDist,
         PostMode,
         StoreDist,
+        UnalignLoadParams,
+        UnalignStoreParams,
     )
 
     # Params without PostMode fields are never UPDATE.
@@ -301,9 +307,10 @@ def _validate_post_update_params(params: Any) -> bool:
             )
         return True
 
+    is_update = params.post_mode == PostMode.POST_MODE_UPDATE
+    is_unalign = isinstance(params, (UnalignLoadParams, UnalignStoreParams))
     stride = params.post_update_stride
     static_stride = None if isinstance(stride, bool) else _const_int_value(stride)
-    is_update = params.post_mode == PostMode.POST_MODE_UPDATE
     if is_update:
         load_dist = getattr(params, "load_dist", None)
         if load_dist is not None and load_dist != LoadDist.DIST_NORM:
@@ -315,8 +322,21 @@ def _validate_post_update_params(params: Any) -> bool:
             raise NotImplementedError(
                 f"post_mode=update with store_dist={store_dist!r} is not supported yet"
             )
-        if static_stride is not None and static_stride <= 0:
-            raise TlaLoweringError("post_mode=update requires post_update_stride > 0")
+        if is_unalign:
+            # Dense-only: HIVM count/advance = tile_extent (origin_shape).
+            # Keep the field for API symmetry with Align, but forbid an
+            # explicit value — emit always uses origin_shape.
+            if static_stride is None or static_stride != 0:
+                raise TlaLoweringError(
+                    "UnAlign post_mode=update derives post_update_stride from "
+                    "tile_extent (origin_shape); do not pass post_update_stride "
+                    "(leave default 0)"
+                )
+        elif static_stride is not None and static_stride < 0:
+            raise TlaLoweringError(
+                "post_mode=update post_update_stride must be >= 0 "
+                "(0 = default to tile_extent / origin_shape)"
+            )
     elif static_stride is None or static_stride != 0:
         raise TlaLoweringError(
             "post_update_stride requires post_mode=update, "
@@ -560,15 +580,17 @@ class _Tensor(TensorABC):
               base + offset×sizeof(T)): ``DIST_NORM`` → ``VL/8``;
               ``DIST_US`` → ``VL/16``; ``DIST_DS`` → ``min(32, VL/4)``.
               On VL=256 this is 32B / 16B / 32B.
-            - `post_mode=update` on `NormalLoadParams` requires
-              `post_update_stride > 0` (int or runtime Numeric/index),
-              rank-1 contiguous tile (all layout strides == 1), `DIST_NORM`,
-              and element type in `{f16, bf16, f32}`; returns
-              `(vector, next_tile)`.
-              Inside `tla.vec.func`, assign `next_tile` back with `tla.range`
-              (`while` is not supported nested in `vec.func`). The window must
-              already be an origin tile (`coord=0`); cut it with `tile_view`
-              (or equivalent). UPDATE never automatically folds non-zero coordinates.
+            - `post_mode=update` on `NormalLoadParams`: `post_update_stride=0`
+              (default) advances by `tile_extent` (`origin_shape`); an explicit
+              stride keeps fill / stride-advance decoupling.
+              `UnalignLoadParams` must leave `post_update_stride` at 0 (emit
+              always uses `origin_shape`; dense only). Rank-1 contiguous tile,
+              `DIST_NORM`, element type in `{f16, bf16, f32}`; returns
+              `(vector, next_tile)`. Inside `tla.vec.func`, assign `next_tile`
+              back with `tla.range` (`while` is not supported nested in
+              `vec.func`). The window must already be an origin tile
+              (`coord=0`); cut it with `tile_view` (or equivalent). UPDATE
+              never automatically folds non-zero coordinates.
 
             Example:
             ```python
@@ -704,12 +726,39 @@ class _Tensor(TensorABC):
             )
 
         if _validate_post_update_params(params):
+            if isinstance(params, UnalignLoadParams):
+                # Dual instr at VectorRegion: local vldas + vldus.post.
+                from ..base_dsl.typing import as_numeric
+
+                window = _require_update_origin_window(self, loc=loc)
+                _require_update_unit_stride(window)
+                source = _as_value(window)
+                source_desc = _tla_tensor_type_for_mlir_value(source)
+                _require_update_supported_dtype(source_desc.element_type)
+                result_type = _coerce_type(
+                    _vector_ssa_type_from_tensor_descriptor(source_desc)
+                )
+                ptr_type = _tla_type_bridge.tensor_ptr_type_get(source.type)
+                extent = _tile_origin_extent(window)
+                vec_val, next_ptr = _tla_ops_gen.load_unalign_update(
+                    result_type,
+                    ptr_type,
+                    source,
+                    _as_value(as_numeric(extent)),
+                    loc=loc,
+                )
+                return VectorSSA(vec_val), _make_update_tile_from_ptr(
+                    next_ptr, window, loc=loc
+                )
             is_block = isinstance(params, BlockLoadParams)
             if not is_block and not isinstance(params, NormalLoadParams):
                 raise TlaLoweringError(
-                    "post_mode=update on tile.load only accepts NormalLoadParams "
-                    f"or BlockLoadParams, got {type(params).__name__}"
+                    "post_mode=update on tile.load only accepts NormalLoadParams, "
+                    f"UnalignLoadParams, or BlockLoadParams, got {type(params).__name__}"
                 )
+            from ..base_dsl.typing import as_numeric
+            from ..core_api import _const_int_value
+
             window = _require_update_origin_window(self, loc=loc)
             if not is_block:
                 _require_update_unit_stride(window)
@@ -724,21 +773,24 @@ class _Tensor(TensorABC):
             load_kwargs: dict[str, Any] = {"loc": loc}
             if is_block:
                 load_kwargs["block_stride"] = _as_value(params.block_stride)
-            update_stride = (
-                params.repeat_stride if is_block else params.post_update_stride
-            )
+                stride_val = _as_value(params.repeat_stride)
+            else:
+                # Default 0 → tile_extent (origin_shape); explicit keeps decoupling.
+                static_stride = _const_int_value(params.post_update_stride)
+                if static_stride == 0:
+                    stride_val = _as_value(as_numeric(_tile_origin_extent(window)))
+                else:
+                    stride_val = _as_value(params.post_update_stride)
             vec_val, next_ptr = _tla_ops_gen.load_update(
                 result_type,
                 ptr_type,
                 source,
-                _as_value(update_stride),
+                stride_val,
                 **load_kwargs,
             )
             return VectorSSA(vec_val), _make_update_tile_from_ptr(
                 next_ptr, window, loc=loc
             )
-        if isinstance(params, UnalignLoadParams) and params.is_pre:
-            raise NotImplementedError(f"currently unsupported is_pre {params.is_pre}")
 
         is_dintlv = (
             isinstance(params, NormalLoadParams)
@@ -965,13 +1017,13 @@ class _Tensor(TensorABC):
             - First-element modes require the stored value and the dest tile to
               use the suffix-matching element width (b8 → 1-byte, b16 → 2-byte,
               b32 → 4-byte); passing a predicate mask raises an error.
-            - `post_mode=update` on `NormalStoreParams` requires
-              `post_update_stride > 0` (int or runtime Numeric/index),
-              rank-1 contiguous tile (all layout strides == 1), `DIST_NORM`,
-              and element type in `{f16, bf16, f32}`; returns the next tile.
-              Inside `tla.vec.func`, assign it back with `tla.range`
-              (`while` is not supported nested in `vec.func`). Same
-              origin window (`coord=0`) contract as UPDATE `load`.
+            - `post_mode=update` on `NormalStoreParams`: default
+              `post_update_stride=0` advances by `tile_extent` (`origin_shape`);
+              explicit stride is decoupled. `UnalignStoreParams` must leave
+              stride at 0 (emit uses `origin_shape`). Rank-1 contiguous tile,
+              `DIST_NORM`, element type in `{f16, bf16, f32}`; returns the next
+              tile. Inside `tla.vec.func`, assign it back with `tla.range`.
+              Same origin window (`coord=0`) contract as UPDATE `load`.
 
             Example:
             ```python
@@ -1071,12 +1123,39 @@ class _Tensor(TensorABC):
                 f"MaskStoreParams, got {type(params).__name__}"
             )
         if _validate_post_update_params(params):
+            if isinstance(params, UnalignStoreParams):
+                # Dual instr at VectorRegion: empty ureg + vstus.post + vstas.
+                from ..base_dsl.typing import as_numeric
+
+                if mask is not None:
+                    raise TlaLoweringError(
+                        "UnalignStoreParams(post_mode=update) does not accept mask="
+                    )
+                window = _require_update_origin_window(self, loc=loc)
+                _require_update_unit_stride(window)
+                dest = _as_value(window)
+                _require_update_supported_dtype(
+                    _tla_tensor_type_for_mlir_value(dest).element_type
+                )
+                ptr_type = _tla_type_bridge.tensor_ptr_type_get(dest.type)
+                extent = _tile_origin_extent(window)
+                next_ptr = _tla_ops_gen.store_unalign_update(
+                    ptr_type,
+                    dest,
+                    value_val,
+                    _as_value(as_numeric(extent)),
+                    loc=loc,
+                )
+                return _make_update_tile_from_ptr(next_ptr, window, loc=loc)
             is_block = isinstance(params, BlockStoreParams)
             if not is_block and not isinstance(params, NormalStoreParams):
                 raise TlaLoweringError(
-                    "post_mode=update on tile.store only accepts NormalStoreParams "
-                    f"or BlockStoreParams, got {type(params).__name__}"
+                    "post_mode=update on tile.store only accepts NormalStoreParams, "
+                    f"UnalignStoreParams, or BlockStoreParams, got {type(params).__name__}"
                 )
+            from ..base_dsl.typing import as_numeric
+            from ..core_api import _const_int_value
+
             mask_val = _as_value(mask) if mask is not None else None
             if mask_val is not None:
                 _require_category("store", "mask", mask, "mask_ssa", 2)
@@ -1093,14 +1172,18 @@ class _Tensor(TensorABC):
             store_kwargs: dict[str, Any] = {"mask": mask_val, "loc": loc}
             if is_block:
                 store_kwargs["block_stride"] = _as_value(params.block_stride)
-            update_stride = (
-                params.repeat_stride if is_block else params.post_update_stride
-            )
+                stride_val = _as_value(params.repeat_stride)
+            else:
+                static_stride = _const_int_value(params.post_update_stride)
+                if static_stride == 0:
+                    stride_val = _as_value(as_numeric(_tile_origin_extent(window)))
+                else:
+                    stride_val = _as_value(params.post_update_stride)
             next_ptr = _tla_ops_gen.store_update(
                 ptr_type,
                 dest,
                 value_val,
-                _as_value(update_stride),
+                stride_val,
                 **store_kwargs,
             )
             return _make_update_tile_from_ptr(next_ptr, window, loc=loc)

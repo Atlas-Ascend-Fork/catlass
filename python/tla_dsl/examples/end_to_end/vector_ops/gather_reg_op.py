@@ -12,6 +12,9 @@
 
 f16 VL (128 lanes): ``dst[i] = src[index[i] % 128]``. Index is u16 bit pattern
 carried as i16 for GM↔UB copy support.
+
+``--mixed`` adds a small cube GM→L1 copy so the kernel is AIC/AIV mix
+(regression for issue #822: ``gather_reg_*`` must carry AIV core type).
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ from typing import Any
 import catlass.tla as tla
 
 VL_ELE = 128  # full VL for f16 / u16
+CUBE_M = 16
+CUBE_N = 16
 
 
 @tla.kernel
@@ -74,6 +79,67 @@ def gather_reg_op(
         tla.pipe_barrier(tla.pipes.ALL)
 
 
+@tla.kernel
+def gather_reg_mixed_op(
+    mem_src: tla.Tensor,
+    mem_idx: tla.Tensor,
+    mem_dst: tla.Tensor,
+    mem_cube: tla.Tensor,
+) -> None:
+    ub_loaded = tla.flag("ub_loaded", tla.arch.MTE2, tla.arch.VECTOR)
+    vec_done = tla.flag("vec_done", tla.arch.VECTOR, tla.arch.MTE3)
+
+    src_gm = tla.tile_view(mem_src, tla.make_shape(VL_ELE), tla.make_coord(0))
+    idx_gm = tla.tile_view(mem_idx, tla.make_shape(VL_ELE), tla.make_coord(0))
+    dst_gm = tla.tile_view(mem_dst, tla.make_shape(VL_ELE), tla.make_coord(0))
+    cube_gm = tla.tile_view(
+        mem_cube, tla.make_shape(CUBE_M, CUBE_N), tla.make_coord(0, 0)
+    )
+
+    src_ub = tla.make_tensor_like(
+        tla.allocate(VL_ELE, tla.Float16, tla.AddressSpace.ub, 256),
+        src_gm,
+        tla.arch.RowMajor,
+    )
+    idx_ub = tla.make_tensor_like(
+        tla.allocate(VL_ELE, tla.Int16, tla.AddressSpace.ub, 256),
+        idx_gm,
+        tla.arch.RowMajor,
+    )
+    dst_ub = tla.make_tensor_like(
+        tla.allocate(VL_ELE, tla.Float16, tla.AddressSpace.ub, 256),
+        dst_gm,
+        tla.arch.RowMajor,
+    )
+    l1 = tla.make_tensor_like(
+        tla.allocate(CUBE_M * CUBE_N, tla.Float16, tla.AddressSpace.l1, 512),
+        cube_gm,
+        tla.arch.zN,
+    )
+
+    with tla.cube():
+        tla.copy(l1, cube_gm)
+
+    with tla.vector():
+        tla.copy(src_ub, src_gm)
+        tla.copy(idx_ub, idx_gm)
+
+        tla.set_flag(ub_loaded)
+        tla.wait_flag(ub_loaded)
+
+        with tla.vec.func(mode="simd"):
+            src_tile = tla.tile_view(src_ub, tla.make_shape(VL_ELE), tla.make_coord(0))
+            idx_tile = tla.tile_view(idx_ub, tla.make_shape(VL_ELE), tla.make_coord(0))
+            dst_tile = tla.tile_view(dst_ub, tla.make_shape(VL_ELE), tla.make_coord(0))
+            dst_tile.store(tla.gather(src_tile.load(), idx_tile.load()))
+
+        tla.set_flag(vec_done)
+        tla.wait_flag(vec_done)
+
+        tla.copy(dst_gm, dst_ub)
+        tla.pipe_barrier(tla.pipes.ALL)
+
+
 def _runtime_tensor(dev_buf: Any) -> Any:
     return tla.from_dlpack(
         dev_buf.contiguous(),
@@ -86,6 +152,11 @@ def main() -> int:
         description="On-device e2e for tla.gather Reg→Reg (vselr)."
     )
     parser.add_argument("--run", action="store_true")
+    parser.add_argument(
+        "--mixed",
+        action="store_true",
+        help="Compile/run AIC/AIV mix kernel (cube GM→L1 + vector gather).",
+    )
     parser.add_argument("--device", type=int, default=0)
     args = parser.parse_args()
     if not args.run:
@@ -106,19 +177,38 @@ def main() -> int:
     tla_idx = _runtime_tensor(idx)
     tla_dst = _runtime_tensor(dst)
 
-    artifact = tla.compile(
-        gather_reg_op,
-        tla_src,
-        tla_idx,
-        tla_dst,
-        options="--npu-arch 3510",
-    )
-    artifact(tla_src, tla_idx, tla_dst, block_num=1)
+    if args.mixed:
+        cube = torch.ones((CUBE_M, CUBE_N), dtype=torch.float16, device="npu")
+        tla_cube = _runtime_tensor(cube)
+        artifact = tla.compile(
+            gather_reg_mixed_op,
+            tla_src,
+            tla_idx,
+            tla_dst,
+            tla_cube,
+            options="--npu-arch 3510",
+        )
+        artifact(tla_src, tla_idx, tla_dst, tla_cube, block_num=1)
+        mode = "mixed"
+    else:
+        artifact = tla.compile(
+            gather_reg_op,
+            tla_src,
+            tla_idx,
+            tla_dst,
+            options="--npu-arch 3510",
+        )
+        artifact(tla_src, tla_idx, tla_dst, block_num=1)
+        mode = "aiv"
+
     torch.npu.synchronize()
 
     expected = src[idx_u.to(torch.long).to(device="npu")]
     ok = bool(torch.isclose(dst, expected, rtol=0.0, atol=1e-3).all())
-    print("compile_ok=True host=torch_npu op=gather dtype=f16 layout=row path=reg")
+    print(
+        f"compile_ok=True host=torch_npu op=gather dtype=f16 layout=row "
+        f"path=reg mode={mode}"
+    )
     print(f"kernel.o path={artifact.kernel_binary_path}")
     print("launch_ok=True")
     print(f"output equals expected gather (reg)? {ok}")

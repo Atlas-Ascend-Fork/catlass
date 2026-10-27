@@ -763,13 +763,16 @@ static func::FuncOp getOrCreateSqueezeLibraryCall(
 static func::FuncOp getOrCreateGatherRegLibraryCall(
     ModuleOp module, Location loc, VectorType srcVecType, VectorType indexVecType, StringRef calleeName)
 {
-    if (auto existing = module.lookupSymbol<func::FuncOp>(calleeName))
+    // Mixed AIC/AIV kernels require hivm.func_core_type on linked AIV bitcode
+    // stubs; without it HIVMC reports "Unknown core type" for gather_reg_*.
+    if (auto existing = module.lookupSymbol<func::FuncOp>(calleeName)) {
+        annotateAivLibraryCall(existing);
         return existing;
+    }
     OpBuilder moduleBuilder(module.getBodyRegion());
     auto fnType = FunctionType::get(module.getContext(), {srcVecType, indexVecType}, {srcVecType});
     auto callee = moduleBuilder.create<func::FuncOp>(loc, calleeName, fnType);
-    callee.setPrivate();
-    callee->setAttr("llvm.emit_c_interface", UnitAttr::get(module.getContext()));
+    annotateAivLibraryCall(callee);
     return callee;
 }
 

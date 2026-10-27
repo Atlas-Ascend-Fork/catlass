@@ -115,7 +115,7 @@ def vector_op(mem_in: tla.Tensor, mem_out: tla.Tensor) -> None:
 | [**`compare_mask.py`**](compare_mask.py) | 比较掩码示例，覆盖 `tla.cmp` 的六种比较模式（lt/le/gt/ge/eq/ne）、向量-标量比较；另含 u8/u16/u32（`VCmpU`，操作数越过有符号边界）。 |
 | [**`cast_multi.py`**](cast_multi.py) | `tla.cast` 类型转换示例，覆盖 `f32` / `f16` / `bf16` / `i32` / `i16` / `i8` 之间的多级类型转换；另含 unsigned `f16↔u8`（值 ≥128 咬住 signed twin）。 |
 | [**`arange_op.py`**](arange_op.py) | `tla.arange` 序列生成示例，在 UB 上生成递增/递减（`increase`/`decrease`）序列。 |
-| [**`gather_reg_op.py`**](gather_reg_op.py) | `tla.gather` Reg→Reg 独立上板样例：`vselr`（源为寄存器）。 |
+| [**`gather_reg_op.py`**](gather_reg_op.py) | `tla.gather` Reg→Reg 独立上板样例：`vselr`（源为寄存器）；`--mixed` 走 AIC/AIV mix（回归 #822）。 |
 | [**`gather_op.py`**](gather_op.py) | `tla.gather` UB→Reg 按索引收集示例（独立脚本），依据索引向量从 UB tile 收集元素。 |
 | [**`interleave_op.py`**](interleave_op.py) | 交错运算示例，基于两路输入分别产出交错后的两路输出。 |
 | [**`load_dintlv_op.py`**](load_dintlv_op.py) |双目的交织加载示例，单次加载拆出偶数/奇数两路寄存器。 |
@@ -193,8 +193,9 @@ python examples/end_to_end/vector_ops/unary_ops.py exp --sweep --dtypes f16 f32 
 # 批量模式（多个算子打包、多核并发）
 python examples/end_to_end/vector_ops/binary_op.py --batch-run add sub mul max
 
-# `gather_reg_op.py` 执行（需显式 `--run` ）
+# `gather_reg_op.py` 执行（需显式 `--run` ；可选 `--mixed`）
 python examples/end_to_end/vector_ops/gather_reg_op.py --run --device 0
+python examples/end_to_end/vector_ops/gather_reg_op.py --run --mixed --device 0
 
 # `gather_op.py` 执行（需显式 `--run` ）
 python examples/end_to_end/vector_ops/gather_op.py --run --device 0

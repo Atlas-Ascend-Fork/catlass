@@ -59,8 +59,8 @@ module {
   }
 }
 
-// CHECK-DAG: func.func private @gather_reg_half
-// CHECK-DAG: func.func private @gather_reg_float
+// CHECK-DAG: func.func private @gather_reg_half({{.*}}hivm.func_core_type = #hivm.func_core_type<AIV>
+// CHECK-DAG: func.func private @gather_reg_float({{.*}}hivm.func_core_type = #hivm.func_core_type<AIV>
 // CHECK: call @gather_reg_half
 // CHECK: call @gather_reg_float
 // CHECK-NOT: _mlir_ciface_gather_reg_

@@ -556,7 +556,7 @@ dst = tla.make_tensor_like(ptr, like=src_tile, layoutTag=tla.arch.RowMajor)
 
 ### `make_ptr`
 
-**Source:** [`catlass.core_api.make_ptr`](../../../catlass/core_api.py#L10008)
+**Source:** [`catlass.core_api.make_ptr`](../../../catlass/core_api.py#L10024)
 
 Description:
 
@@ -591,7 +591,7 @@ ptr = tla.make_ptr(tla.Float16, addr, mem_space=tla.AddressSpace.gm)
 
 ### `recast_ptr`
 
-**Source:** [`catlass.core_api.recast_ptr`](../../../catlass/core_api.py#L10062)
+**Source:** [`catlass.core_api.recast_ptr`](../../../catlass/core_api.py#L10078)
 
 Description:
 
@@ -1297,7 +1297,7 @@ Cube-side matrix multiply-accumulate (`tla.mmad`).
 
 ### `mmad`
 
-**Source:** [`catlass.core_api.mmad`](../../../catlass/core_api.py#L6939)
+**Source:** [`catlass.core_api.mmad`](../../../catlass/core_api.py#L6955)
 
 Description:
 
@@ -1367,7 +1367,7 @@ Supported mmad dtypes
 
 ### `mmad_mx`
 
-**Source:** [`catlass.core_api.mmad_mx`](../../../catlass/core_api.py#L7069)
+**Source:** [`catlass.core_api.mmad_mx`](../../../catlass/core_api.py#L7085)
 
 Description:
 
@@ -1457,7 +1457,7 @@ Mask creation and tail-mask updates.
 
 #### `create_mask`
 
-**Source:** [`catlass.core_api.create_mask`](../../../catlass/core_api.py#L10342)
+**Source:** [`catlass.core_api.create_mask`](../../../catlass/core_api.py#L10358)
 
 Description:
 
@@ -1513,7 +1513,7 @@ with tla.vec.func(mode="simd"):
 
 #### `update_mask`
 
-**Source:** [`catlass.core_api.update_mask`](../../../catlass/core_api.py#L10406)
+**Source:** [`catlass.core_api.update_mask`](../../../catlass/core_api.py#L10422)
 
 Description:
 
@@ -1550,7 +1550,7 @@ Element-wise arithmetic and unary math ops. `VectorSSA` overloads `+` / `-` / `*
 
 #### `exp`
 
-**Source:** [`catlass.core_api.exp`](../../../catlass/core_api.py#L7951)
+**Source:** [`catlass.core_api.exp`](../../../catlass/core_api.py#L7967)
 
 Description:
 
@@ -1588,7 +1588,7 @@ with tla.vec.func(mode="simd"):
 
 #### `log`
 
-**Source:** [`catlass.core_api.log`](../../../catlass/core_api.py#L7978)
+**Source:** [`catlass.core_api.log`](../../../catlass/core_api.py#L7994)
 
 Description:
 
@@ -1626,7 +1626,7 @@ with tla.vec.func(mode="simd"):
 
 #### `sqrt`
 
-**Source:** [`catlass.core_api.sqrt`](../../../catlass/core_api.py#L8005)
+**Source:** [`catlass.core_api.sqrt`](../../../catlass/core_api.py#L8021)
 
 Description:
 
@@ -1673,7 +1673,7 @@ with tla.cube():
 
 #### `abs`
 
-**Source:** [`catlass.core_api.abs`](../../../catlass/core_api.py#L8041)
+**Source:** [`catlass.core_api.abs`](../../../catlass/core_api.py#L8057)
 
 Description:
 
@@ -1711,7 +1711,7 @@ with tla.vec.func(mode="simd"):
 
 #### `neg`
 
-**Source:** [`catlass.core_api.neg`](../../../catlass/core_api.py#L8068)
+**Source:** [`catlass.core_api.neg`](../../../catlass/core_api.py#L8084)
 
 Description:
 
@@ -1744,7 +1744,7 @@ with tla.vec.func(mode="simd"):
 
 #### `add`
 
-**Source:** [`catlass.core_api.add`](../../../catlass/core_api.py#L8433)
+**Source:** [`catlass.core_api.add`](../../../catlass/core_api.py#L8449)
 
 Description:
 
@@ -1785,7 +1785,7 @@ with tla.vec.func(mode="simd"):
 
 #### `sub`
 
-**Source:** [`catlass.core_api.sub`](../../../catlass/core_api.py#L8479)
+**Source:** [`catlass.core_api.sub`](../../../catlass/core_api.py#L8495)
 
 Description:
 
@@ -1823,7 +1823,7 @@ with tla.vec.func(mode="simd"):
 
 #### `mul`
 
-**Source:** [`catlass.core_api.mul`](../../../catlass/core_api.py#L8516)
+**Source:** [`catlass.core_api.mul`](../../../catlass/core_api.py#L8532)
 
 Description:
 
@@ -1862,7 +1862,7 @@ with tla.vec.func(mode="simd"):
 
 #### `max`
 
-**Source:** [`catlass.core_api.max`](../../../catlass/core_api.py#L8650)
+**Source:** [`catlass.core_api.max`](../../../catlass/core_api.py#L8666)
 
 Description:
 
@@ -1901,7 +1901,7 @@ with tla.vec.func(mode="simd"):
 
 #### `min`
 
-**Source:** [`catlass.core_api.min`](../../../catlass/core_api.py#L8651)
+**Source:** [`catlass.core_api.min`](../../../catlass/core_api.py#L8667)
 
 Description:
 
@@ -1940,7 +1940,7 @@ with tla.vec.func(mode="simd"):
 
 #### `div`
 
-**Source:** [`catlass.core_api.div`](../../../catlass/core_api.py#L8655)
+**Source:** [`catlass.core_api.div`](../../../catlass/core_api.py#L8671)
 
 Description:
 
@@ -1982,7 +1982,7 @@ Bitwise and logical ops on Mask / Vector.
 
 #### `shift_left`
 
-**Source:** [`catlass.core_api.shift_left`](../../../catlass/core_api.py#L8325)
+**Source:** [`catlass.core_api.shift_left`](../../../catlass/core_api.py#L8341)
 
 Description:
 
@@ -2022,7 +2022,7 @@ with tla.vec.func(mode="simd"):
 
 #### `shift_right`
 
-**Source:** [`catlass.core_api.shift_right`](../../../catlass/core_api.py#L8361)
+**Source:** [`catlass.core_api.shift_right`](../../../catlass/core_api.py#L8377)
 
 Description:
 
@@ -2064,7 +2064,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_not`
 
-**Source:** [`catlass.core_api.bitwise_not`](../../../catlass/core_api.py#L8399)
+**Source:** [`catlass.core_api.bitwise_not`](../../../catlass/core_api.py#L8415)
 
 Description:
 
@@ -2097,7 +2097,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_and`
 
-**Source:** [`catlass.core_api.bitwise_and`](../../../catlass/core_api.py#L9288)
+**Source:** [`catlass.core_api.bitwise_and`](../../../catlass/core_api.py#L9304)
 
 Description:
 
@@ -2131,7 +2131,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_or`
 
-**Source:** [`catlass.core_api.bitwise_or`](../../../catlass/core_api.py#L9326)
+**Source:** [`catlass.core_api.bitwise_or`](../../../catlass/core_api.py#L9342)
 
 Description:
 
@@ -2165,7 +2165,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_xor`
 
-**Source:** [`catlass.core_api.bitwise_xor`](../../../catlass/core_api.py#L9364)
+**Source:** [`catlass.core_api.bitwise_xor`](../../../catlass/core_api.py#L9380)
 
 Description:
 
@@ -2203,7 +2203,7 @@ Vector compares that produce masks, and masked select.
 
 #### `where`
 
-**Source:** [`catlass.core_api.where`](../../../catlass/core_api.py#L8863)
+**Source:** [`catlass.core_api.where`](../../../catlass/core_api.py#L8879)
 
 Description:
 
@@ -2242,7 +2242,7 @@ with tla.vec.func(mode="simd"):
 
 #### `cmp`
 
-**Source:** [`catlass.core_api.cmp`](../../../catlass/core_api.py#L9211)
+**Source:** [`catlass.core_api.cmp`](../../../catlass/core_api.py#L9227)
 
 Description:
 
@@ -2282,7 +2282,7 @@ Constant fill and lane-index sequence construction.
 
 #### `full`
 
-**Source:** [`catlass.core_api.full`](../../../catlass/core_api.py#L7176)
+**Source:** [`catlass.core_api.full`](../../../catlass/core_api.py#L7192)
 
 Description:
 
@@ -2326,7 +2326,7 @@ with tla.vec.func(mode="simd"):
 
 #### `arange`
 
-**Source:** [`catlass.core_api.arange`](../../../catlass/core_api.py#L7305)
+**Source:** [`catlass.core_api.arange`](../../../catlass/core_api.py#L7321)
 
 Description:
 
@@ -2405,7 +2405,7 @@ with tla.vec.func(mode="simd"):
 
 #### `gather`
 
-**Source:** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9477)
+**Source:** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9493)
 
 Description:
 
@@ -2455,7 +2455,7 @@ Interleave / deinterleave and related lane reshuffles.
 
 #### `interleave`
 
-**Source:** [`catlass.core_api.interleave`](../../../catlass/core_api.py#L8165)
+**Source:** [`catlass.core_api.interleave`](../../../catlass/core_api.py#L8181)
 
 Description:
 
@@ -2489,7 +2489,7 @@ with tla.vec.func(mode="simd"):
 
 #### `deinterleave`
 
-**Source:** [`catlass.core_api.deinterleave`](../../../catlass/core_api.py#L8243)
+**Source:** [`catlass.core_api.deinterleave`](../../../catlass/core_api.py#L8259)
 
 Description:
 
@@ -2529,7 +2529,7 @@ Compress valid lanes under a mask.
 
 #### `squeeze`
 
-**Source:** [`catlass.core_api.squeeze`](../../../catlass/core_api.py#L8895)
+**Source:** [`catlass.core_api.squeeze`](../../../catlass/core_api.py#L8911)
 
 Description:
 
@@ -2693,7 +2693,7 @@ Histogram accumulation on register-vector data.
 
 #### `histograms`
 
-**Source:** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8973)
+**Source:** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8989)
 
 Description:
 
@@ -2797,7 +2797,7 @@ A thread learns which elements are its own from its index within the block and t
 
 #### `arch.thread_idx`
 
-**Source:** [`catlass.core_api.arch_thread_idx`](../../../catlass/core_api.py#L9674)
+**Source:** [`catlass.core_api.arch_thread_idx`](../../../catlass/core_api.py#L9690)
 
 Description:
 
@@ -2841,7 +2841,7 @@ with tla.vec.func(mode="simt", thread_block_dim=256):
 
 #### `arch.thread_block_dim`
 
-**Source:** [`catlass.core_api.arch_thread_block_dim`](../../../catlass/core_api.py#L9775)
+**Source:** [`catlass.core_api.arch_thread_block_dim`](../../../catlass/core_api.py#L9791)
 
 Description:
 
@@ -2891,7 +2891,7 @@ Barrier across the threads of one block. Cross-core and pipe synchronization sta
 
 #### `arch.sync_threads`
 
-**Source:** [`catlass.core_api.arch_sync_threads`](../../../catlass/core_api.py#L9718)
+**Source:** [`catlass.core_api.arch_sync_threads`](../../../catlass/core_api.py#L9734)
 
 Description:
 
@@ -3310,18 +3310,26 @@ Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.cube()` or `tla.vector()`; `pipe` is required.
+- Which pipes are valid depends on the enclosing core: `SCALAR`, `CUBE`,
+  `MTE1`, `MTE2`, `MTE3` and `FIX` inside `tla.cube()`; `SCALAR`,
+  `VECTOR`, `MTE2` and `MTE3` inside `tla.vector()`. `ALL` has no mutex
+  form. A pipe the core does not support is reported when the kernel is
+  compiled, not at this call.
 
 Example:
 
 ```python
 tla.mutex_lock(mtx, pipe=tla.arch.MTE2)
+# Scalar pipe, to guard a buffer the scalar unit reads or writes.
+# `tla.mutex` returns a value with this method form:
+mtx.lock(pipe=tla.arch.SCALAR)
 ```
 
 ---
 
 ### `mutex_unlock`
 
-**Source:** [`catlass.core_api.mutex_unlock`](../../../catlass/core_api.py#L6420)
+**Source:** [`catlass.core_api.mutex_unlock`](../../../catlass/core_api.py#L6428)
 
 Description:
 
@@ -3342,18 +3350,26 @@ Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.cube()` or `tla.vector()`; `pipe` is required.
+- Which pipes are valid depends on the enclosing core: `SCALAR`, `CUBE`,
+  `MTE1`, `MTE2`, `MTE3` and `FIX` inside `tla.cube()`; `SCALAR`,
+  `VECTOR`, `MTE2` and `MTE3` inside `tla.vector()`. `ALL` has no mutex
+  form. A pipe the core does not support is reported when the kernel is
+  compiled, not at this call.
 
 Example:
 
 ```python
 tla.mutex_unlock(mtx, pipe=tla.arch.MTE2)
+# Scalar pipe, to guard a buffer the scalar unit reads or writes.
+# `tla.mutex` returns a value with this method form:
+mtx.unlock(pipe=tla.arch.SCALAR)
 ```
 
 ---
 
 ### `local_mem_bar`
 
-**Source:** [`catlass.core_api.local_mem_bar`](../../../catlass/core_api.py#L6450)
+**Source:** [`catlass.core_api.local_mem_bar`](../../../catlass/core_api.py#L6466)
 
 Description:
 
@@ -3390,7 +3406,7 @@ Architecture attributes on `tla.arch` (layout tags, pipe identifiers, block help
 
 ### `arch`
 
-**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10192)
+**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10208)
 
 Description:
 
@@ -3470,7 +3486,7 @@ On-chip scratch allocation via `allocate`.
 
 ### `allocate`
 
-**Source:** [`catlass.core_api.allocate`](../../../catlass/core_api.py#L9878)
+**Source:** [`catlass.core_api.allocate`](../../../catlass/core_api.py#L9894)
 
 Description:
 
@@ -3562,7 +3578,7 @@ Cube / Vector / `vec.func` regions and kernel-side loop ranges.
 
 ### `range`
 
-**Source:** [`catlass.core_api.range`](../../../catlass/core_api.py#L6502)
+**Source:** [`catlass.core_api.range`](../../../catlass/core_api.py#L6518)
 
 Description:
 
@@ -3596,7 +3612,7 @@ for i in tla.range(0, n, 1):
 
 ### `range_constexpr`
 
-**Source:** [`catlass.core_api.range_constexpr`](../../../catlass/core_api.py#L6552)
+**Source:** [`catlass.core_api.range_constexpr`](../../../catlass/core_api.py#L6568)
 
 Description:
 
@@ -3635,7 +3651,7 @@ for k in tla.range_constexpr(0, 4):
 
 ### `cube`
 
-**Source:** [`catlass.core_api.cube`](../../../catlass/core_api.py#L6603)
+**Source:** [`catlass.core_api.cube`](../../../catlass/core_api.py#L6619)
 
 Description:
 
@@ -3667,7 +3683,7 @@ with tla.cube():
 
 ### `vector`
 
-**Source:** [`catlass.core_api.vector`](../../../catlass/core_api.py#L6625)
+**Source:** [`catlass.core_api.vector`](../../../catlass/core_api.py#L6641)
 
 Description:
 
@@ -3699,7 +3715,7 @@ with tla.vector():
 
 ### `vec.func`
 
-**Source:** [`catlass.core_api._vec_func`](../../../catlass/core_api.py#L6659)
+**Source:** [`catlass.core_api._vec_func`](../../../catlass/core_api.py#L6675)
 
 Description:
 
@@ -3844,7 +3860,7 @@ pad.fill(0)
 
 #### `pack`
 
-**Source:** [`catlass.core_api.pack`](../../../catlass/core_api.py#L8106)
+**Source:** [`catlass.core_api.pack`](../../../catlass/core_api.py#L8122)
 
 Description:
 

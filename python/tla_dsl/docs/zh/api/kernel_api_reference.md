@@ -2678,11 +2678,15 @@ tla.mutex_lock(mutex_value: MutexLike, *, pipe: PipeLike) -> None
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.cube()` 或 `tla.vector()` 内调用；须指定 `pipe`。
+- 可用 `pipe` 取决于所在核：`tla.cube()` 内支持 `SCALAR`、`CUBE`、`MTE1`、`MTE2`、`MTE3`、`FIX`；`tla.vector()` 内支持 `SCALAR`、`VECTOR`、`MTE2`、`MTE3`。`ALL` 无对应 mutex 形式。该核不支持的 pipe 在 kernel 编译时报错，而非在此调用处报错。
 
 调用示例：
 
 ```python
 tla.mutex_lock(mtx, pipe=tla.arch.MTE2)
+# scalar pipe，用于保护标量单元读写的 buffer。
+# `tla.mutex` 返回值提供该方法形式：
+mtx.lock(pipe=tla.arch.SCALAR)
 ```
 
 ---
@@ -2710,11 +2714,15 @@ tla.mutex_unlock(mutex_value: MutexLike, *, pipe: PipeLike) -> None
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.cube()` 或 `tla.vector()` 内调用；须指定 `pipe`。
+- 可用 `pipe` 取决于所在核：`tla.cube()` 内支持 `SCALAR`、`CUBE`、`MTE1`、`MTE2`、`MTE3`、`FIX`；`tla.vector()` 内支持 `SCALAR`、`VECTOR`、`MTE2`、`MTE3`。`ALL` 无对应 mutex 形式。该核不支持的 pipe 在 kernel 编译时报错，而非在此调用处报错。
 
 调用示例：
 
 ```python
 tla.mutex_unlock(mtx, pipe=tla.arch.MTE2)
+# scalar pipe，用于保护标量单元读写的 buffer。
+# `tla.mutex` 返回值提供该方法形式：
+mtx.unlock(pipe=tla.arch.SCALAR)
 ```
 
 ---

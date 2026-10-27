@@ -89,9 +89,13 @@ def Tla_PipeAttr : Tla_EnumAttr<"Pipe", "pipe"> {
     Pipe identifier for tla.set_flag and tla.wait_flag.
 
     Not every value is valid on every op that takes a pipe. The flag and barrier
-    ops accept all eight; tla.mutex_lock / tla.mutex_unlock accept only vector,
-    cube, mte1, mte2, mte3 and fix, because scalar and all have no mutex form --
-    passing either is caught in tla-lower-mutex-to-std, not at the call site.
+    ops accept all eight. tla.mutex_lock / tla.mutex_unlock reject all, which has
+    no mutex form, and otherwise accept a set that depends on the core their
+    enclosing function is classified for: scalar, cube, mte1, mte2, mte3 and fix
+    on AIC, and scalar, vector, mte2 and mte3 on AIV -- so only scalar, mte2 and
+    mte3 are valid on both. This mirrors the pipes ccec accepts for get_buf /
+    rls_buf per core. A rejected pipe is caught in tla-lower-mutex-to-std, not at
+    the call site.
   }];
 }
 

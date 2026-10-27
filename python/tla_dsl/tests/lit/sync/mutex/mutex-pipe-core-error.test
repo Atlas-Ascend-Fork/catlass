@@ -1,0 +1,79 @@
+// RUN: split-file %s %t
+// RUN: not %tla_compile %t/vector-on-cube.mlir -o - 2>&1 | %filecheck %s --check-prefix=VECTOR-ON-CUBE
+// RUN: not %tla_compile %t/cube-on-vector.mlir -o - 2>&1 | %filecheck %s --check-prefix=CUBE-ON-VECTOR
+// RUN: not %tla_compile %t/fix-on-vector.mlir -o - 2>&1 | %filecheck %s --check-prefix=FIX-ON-VECTOR
+// RUN: not %tla_compile %t/mte1-on-vector.mlir -o - 2>&1 | %filecheck %s --check-prefix=MTE1-ON-VECTOR
+// RUN: not %tla_compile %t/all.mlir -o - 2>&1 | %filecheck %s --check-prefix=ALL
+
+// get_buf / rls_buf accept a different pipe set on each core, and the bc stubs
+// mirror that split. An invalid pair used to lower to a call no meta-op bitcode
+// defines, so the mistake only showed up as an unresolved symbol at link time.
+
+// VECTOR-ON-CUBE: pipe 'vector' has no mutex form on AIC; valid pipes there are scalar, cube, mte1, mte2, mte3, fix
+// CUBE-ON-VECTOR: pipe 'cube' has no mutex form on AIV; valid pipes there are scalar, vector, mte2, mte3
+// FIX-ON-VECTOR: pipe 'fix' has no mutex form on AIV; valid pipes there are scalar, vector, mte2, mte3
+// MTE1-ON-VECTOR: pipe 'mte1' has no mutex form on AIV; valid pipes there are scalar, vector, mte2, mte3
+
+// The all pipe has no mutex form on either core, and is still rejected by the
+// pipe-suffix lookup rather than by the per-core check.
+// ALL: unsupported pipe for mutex bitcode call lowering
+
+//--- vector-on-cube.mlir
+module {
+  tla.func @vector_pipe_on_cube() {
+    "tla.cube"() ({
+      %mutex = tla.mutex "res" {id = 1 : i64} -> !tla.mutex
+      tla.mutex_lock %mutex [#tla.pipe<vector>] : !tla.mutex
+      tla.mutex_unlock %mutex [#tla.pipe<vector>] : !tla.mutex
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- cube-on-vector.mlir
+module {
+  tla.func @cube_pipe_on_vector() {
+    "tla.vector"() ({
+      %mutex = tla.mutex "res" {id = 1 : i64} -> !tla.mutex
+      tla.mutex_lock %mutex [#tla.pipe<cube>] : !tla.mutex
+      tla.mutex_unlock %mutex [#tla.pipe<cube>] : !tla.mutex
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- fix-on-vector.mlir
+module {
+  tla.func @fix_pipe_on_vector() {
+    "tla.vector"() ({
+      %mutex = tla.mutex "res" {id = 1 : i64} -> !tla.mutex
+      tla.mutex_lock %mutex [#tla.pipe<fix>] : !tla.mutex
+      tla.mutex_unlock %mutex [#tla.pipe<fix>] : !tla.mutex
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- mte1-on-vector.mlir
+module {
+  tla.func @mte1_pipe_on_vector() {
+    "tla.vector"() ({
+      %mutex = tla.mutex "res" {id = 1 : i64} -> !tla.mutex
+      tla.mutex_lock %mutex [#tla.pipe<mte1>] : !tla.mutex
+      tla.mutex_unlock %mutex [#tla.pipe<mte1>] : !tla.mutex
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- all.mlir
+module {
+  tla.func @all_pipe() {
+    "tla.cube"() ({
+      %mutex = tla.mutex "res" {id = 1 : i64} -> !tla.mutex
+      tla.mutex_lock %mutex [#tla.pipe<all>] : !tla.mutex
+      tla.mutex_unlock %mutex [#tla.pipe<all>] : !tla.mutex
+    }) : () -> ()
+    tla.return
+  }
+}

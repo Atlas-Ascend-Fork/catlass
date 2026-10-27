@@ -20,8 +20,10 @@ module {
     tla.return
   }
 
+  // The vector pipe has a mutex form only on AIV, so this case belongs in a
+  // tla.vector region; mte3 is valid on both cores and rides along here.
   tla.func @mutex_vector_pipe_suffix() {
-    "tla.cube"() ({
+    "tla.vector"() ({
       %mutex = tla.mutex "ub_ping" {id = 6 : i64} -> !tla.mutex
       tla.mutex_lock %mutex [#tla.pipe<vector>] : !tla.mutex
       tla.mutex_unlock %mutex [#tla.pipe<vector>] : !tla.mutex

@@ -4,6 +4,16 @@
 #include <cstdint>
 
 extern "C" {
+__aicore__ __attribute__((always_inline)) void get_buf_s(uint8_t bufid)
+{
+    __builtin_cce_get_buf(PIPE_S, bufid, false);
+}
+
+__aicore__ __attribute__((always_inline)) void rls_buf_s(uint8_t bufid)
+{
+    __builtin_cce_rls_buf(PIPE_S, bufid, false);
+}
+
 __aicore__ __attribute__((always_inline)) void get_buf_v(uint8_t bufid)
 {
     __builtin_cce_get_buf(PIPE_V, bufid, false);

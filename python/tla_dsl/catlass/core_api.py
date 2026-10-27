@@ -6402,10 +6402,18 @@ def mutex_lock(
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.cube()` or `tla.vector()`; `pipe` is required.
+        - Which pipes are valid depends on the enclosing core: `SCALAR`, `CUBE`,
+          `MTE1`, `MTE2`, `MTE3` and `FIX` inside `tla.cube()`; `SCALAR`,
+          `VECTOR`, `MTE2` and `MTE3` inside `tla.vector()`. `ALL` has no mutex
+          form. A pipe the core does not support is reported when the kernel is
+          compiled, not at this call.
 
         Example:
         ```python
         tla.mutex_lock(mtx, pipe=tla.arch.MTE2)
+        # Scalar pipe, to guard a buffer the scalar unit reads or writes.
+        # `tla.mutex` returns a value with this method form:
+        mtx.lock(pipe=tla.arch.SCALAR)
         ```
     """
     _ensure_no_explicit_mutex_access_in_guard()
@@ -6432,10 +6440,18 @@ def mutex_unlock(
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.cube()` or `tla.vector()`; `pipe` is required.
+        - Which pipes are valid depends on the enclosing core: `SCALAR`, `CUBE`,
+          `MTE1`, `MTE2`, `MTE3` and `FIX` inside `tla.cube()`; `SCALAR`,
+          `VECTOR`, `MTE2` and `MTE3` inside `tla.vector()`. `ALL` has no mutex
+          form. A pipe the core does not support is reported when the kernel is
+          compiled, not at this call.
 
         Example:
         ```python
         tla.mutex_unlock(mtx, pipe=tla.arch.MTE2)
+        # Scalar pipe, to guard a buffer the scalar unit reads or writes.
+        # `tla.mutex` returns a value with this method form:
+        mtx.unlock(pipe=tla.arch.SCALAR)
         ```
     """
     _ensure_no_explicit_mutex_access_in_guard()

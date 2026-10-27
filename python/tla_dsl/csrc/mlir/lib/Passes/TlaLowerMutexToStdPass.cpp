@@ -48,6 +48,8 @@ static func::FuncOp getOrCreateRuntimeCall(
 static FailureOr<std::string> getMutexPipeSuffix(PipeAttr pipeAttr)
 {
     switch (pipeAttr.getPipe()) {
+        case Pipe::scalar:
+            return std::string("s");
         case Pipe::vector:
             return std::string("v");
         case Pipe::cube:
@@ -62,6 +64,32 @@ static FailureOr<std::string> getMutexPipeSuffix(PipeAttr pipeAttr)
             return std::string("fix");
         default:
             return failure();
+    }
+}
+
+// get_buf / rls_buf take a different pipe set on each core: ccec accepts
+// [S, M, MTE1, MTE2, MTE3, FIX] for --cce-aicore-arch=dav-c310-cube and
+// [S, V, MTE2, MTE3] for dav-c310-vec, and the bc stubs mirror that split.
+// PIPE_S is the one pipe both cores share, so it is defined in both mutex.cpp
+// files, the same way mte2 and mte3 already are. Without this check a
+// cube-side #tla.pipe<vector> still lowers to a @get_buf_v call, and the
+// mistake surfaces only as an unresolved symbol when the AIC meta-op bitcode
+// is linked.
+static bool isMutexPipeValidOnCore(Pipe pipe, hivm::TFuncCoreType coreType)
+{
+    switch (pipe) {
+        case Pipe::scalar:
+        case Pipe::mte2:
+        case Pipe::mte3:
+            return true;
+        case Pipe::vector:
+            return coreType == hivm::TFuncCoreType::AIV;
+        case Pipe::cube:
+        case Pipe::mte1:
+        case Pipe::fix:
+            return coreType == hivm::TFuncCoreType::AIC;
+        default:
+            return false;
     }
 }
 
@@ -104,6 +132,20 @@ struct LowerMutexAccessPattern : public OpConversionPattern<MutexOpT> {
         FailureOr<std::string> pipeSuffix = getMutexPipeSuffix(op.getPipe());
         if (failed(pipeSuffix)) {
             op.emitError() << "unsupported pipe for mutex bitcode call lowering";
+            return failure();
+        }
+
+        // Only an AIC or AIV classification pins the call to one core. Anything
+        // else -- no attribute, or the AIC_OR_AIV stamped on a callee shared by
+        // both sides -- names no single core, so there is nothing to check.
+        Operation* operation = op.getOperation();
+        std::optional<hivm::TFuncCoreType> coreType = getFunctionCoreType(operation->getParentOfType<func::FuncOp>());
+        if (coreType && (*coreType == hivm::TFuncCoreType::AIC || *coreType == hivm::TFuncCoreType::AIV) &&
+            !isMutexPipeValidOnCore(op.getPipe().getPipe(), *coreType)) {
+            bool isAic = *coreType == hivm::TFuncCoreType::AIC;
+            op.emitError() << "pipe '" << ::stringifyPipe(op.getPipe().getPipe()) << "' has no mutex form on "
+                           << (isAic ? "AIC" : "AIV") << "; valid pipes there are "
+                           << (isAic ? "scalar, cube, mte1, mte2, mte3, fix" : "scalar, vector, mte2, mte3");
             return failure();
         }
 

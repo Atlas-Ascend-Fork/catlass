@@ -63,6 +63,7 @@ target_link_libraries(TlaPasses
     MLIRViewLikeInterface
     MLIRMemRefUtils
     MLIRDLTIDialect
+    MLIRDataLayoutInterfaces
     MLIRLLVMCommonConversion
     MLIRConvertToLLVMInterface
     MLIRLLVMDialect

@@ -1768,7 +1768,7 @@ static FailureOr<Value> getTlaTensorValidLaneCount(
         Value origin1 = lookupOrCloneScalarValue(b, descOp.getOriginShape1(), valueMap);
         if (!origin0 || !origin1)
             return failure();
-        return b.create<arith::MulIOp>(loc, origin0, origin1).getResult();
+        return b.createOrFold<arith::MulIOp>(loc, origin0, origin1);
     }
     return failure();
 }

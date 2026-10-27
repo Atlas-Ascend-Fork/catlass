@@ -2,6 +2,8 @@
 
 #include "PassesCommon.h"
 
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
+
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 
@@ -42,6 +44,109 @@ mlir::Value IndexConstantCache::get(mlir::Operation* anchor, int64_t value, unsi
     return constant;
 }
 
+static bool isConstantOne(mlir::Value value)
+{
+    auto constant = mlir::getConstantIntValue(value);
+    return constant && *constant == 1;
+}
+
+// Look through operations that leave a value unchanged, so that two
+// expressions for the same quantity compare equal. A tile offset typically
+// arrives as index_cast(muli(%iv, 1)) and the loop bound as index_cast(%ub);
+// after unwrapping, they are %iv and %ub.
+//
+// Only multiplication by 1 and casts to index are looked through. A cast is
+// kept when its input is wider than index, because it may truncate the value.
+// The index width comes from the enclosing data layout.
+static mlir::Value unwrapValuePreservingOps(mlir::Value value)
+{
+    while (value) {
+        if (auto cast = value.getDefiningOp<arith::IndexCastOp>()) {
+            if (!mlir::isa<mlir::IndexType>(cast.getType()) || mlir::isa<mlir::IndexType>(cast.getIn().getType()))
+                break;
+            auto indexBitwidth = mlir::DataLayout::closest(cast).getTypeSizeInBits(cast.getType()).getFixedValue();
+            if (cast.getIn().getType().getIntOrFloatBitWidth() > indexBitwidth)
+                break;
+            value = cast.getIn();
+            continue;
+        }
+        if (auto mul = value.getDefiningOp<arith::MulIOp>()) {
+            if (isConstantOne(mul.getRhs())) {
+                value = mul.getLhs();
+                continue;
+            }
+            if (isConstantOne(mul.getLhs())) {
+                value = mul.getRhs();
+                continue;
+            }
+        }
+        break;
+    }
+    return value;
+}
+
+// Return the scf.for enclosing `op` whose induction variable is `inductionVar`,
+// or null if there is none.
+static mlir::scf::ForOp findEnclosingLoopCountingWith(mlir::Operation* op, mlir::BlockArgument inductionVar)
+{
+    for (mlir::Operation* parent = op->getParentOp(); parent; parent = parent->getParentOp()) {
+        auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(parent);
+        if (forOp && forOp.getInductionVar() == inductionVar)
+            return forOp;
+    }
+    return {};
+}
+
+// With a positive constant step, `inductionVar < upperBound` holds on every
+// iteration.
+static bool countsUpwards(mlir::scf::ForOp forOp)
+{
+    auto step = mlir::getConstantIntValue(forOp.getStep());
+    return step && *step > 0;
+}
+
+// Return true if `extent - offset >= 1` is guaranteed at `op`. This holds when
+// `offset` is the induction variable of an enclosing loop that counts up to
+// `extent`. In every other case, return false.
+static bool subtractingOffsetLeavesAtLeastOneElement(mlir::Operation* op, mlir::Value extent, mlir::Value offset)
+{
+    // Step 1: the offset must be a loop induction variable.
+    mlir::Value offsetRoot = unwrapValuePreservingOps(offset);
+    if (!offsetRoot)
+        return false;
+    auto inductionVar = mlir::dyn_cast<mlir::BlockArgument>(offsetRoot);
+    if (!inductionVar)
+        return false;
+    // Step 2: that loop must enclose `op` and count upwards, so that
+    // offset < upperBound inside it.
+    mlir::scf::ForOp forOp = findEnclosingLoopCountingWith(op, inductionVar);
+    if (!forOp || !countsUpwards(forOp))
+        return false;
+    // Step 3: the upper bound must be the extent itself, so that
+    // extent - offset >= 1.
+    mlir::Value extentRoot = unwrapValuePreservingOps(extent);
+    return extentRoot && unwrapValuePreservingOps(forOp.getUpperBound()) == extentRoot;
+}
+
+// Return the extent of one tile dimension after cropping it to the parent
+// tensor: `min(requested, parentExtent - offset)`.
+//
+// The minimum is skipped when the view is one element wide and an enclosing
+// loop proves that this element lies inside the parent. Skipping it saves
+// instructions in two places:
+//   - The scalar unit has no signed minimum, so a run-time `arith.minsi` is
+//     lowered to a chain of selects.
+//   - The extent stays a constant, so getTlaTensorValidLaneCount can fold the
+//     lane-count multiply.
+static mlir::Value buildCroppedExtent(
+    mlir::OpBuilder& builder, mlir::Location loc, mlir::Operation* op, mlir::Value requested, mlir::Value parentExtent,
+    mlir::Value offset, mlir::Value remaining)
+{
+    if (isConstantOne(requested) && subtractingOffsetLeavesAtLeastOneElement(op, parentExtent, offset))
+        return requested;
+    return builder.createOrFold<arith::MinSIOp>(loc, requested, remaining);
+}
+
 static mlir::FailureOr<TensorDescriptor> buildTileViewResultDescriptorFromParent(
     mlir::Operation* op, mlir::Value base, mlir::MemRefType bridgedBaseType, const TensorTypeInfo& info,
     const TensorDescriptor& parent, mlir::Value row, mlir::Value col, mlir::Value sh0, mlir::Value sh1,
@@ -63,8 +168,8 @@ static mlir::FailureOr<TensorDescriptor> buildTileViewResultDescriptorFromParent
     Value abs1 = b.createOrFold<arith::AddIOp>(loc, parent.coord[1], col);
     Value rest0 = b.createOrFold<arith::SubIOp>(loc, parent.originShape[0], row);
     Value rest1 = b.createOrFold<arith::SubIOp>(loc, parent.originShape[1], col);
-    Value origin0 = b.createOrFold<arith::MinSIOp>(loc, sh0, rest0);
-    Value origin1 = b.createOrFold<arith::MinSIOp>(loc, sh1, rest1);
+    Value origin0 = buildCroppedExtent(b, loc, op, sh0, parent.originShape[0], row, rest0);
+    Value origin1 = buildCroppedExtent(b, loc, op, sh1, parent.originShape[1], col, rest1);
 
     Value one = getConstant(op, 1, 0);
     std::array<Value, 4> shape;

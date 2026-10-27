@@ -115,9 +115,7 @@ bash scripts/build.sh [options] <target>
   - `--debug`: Compiles in debug mode.
   - `--msdebug`: Enables [msDebug](https://www.hiascend.com/en/document/redirect/CannCommunityToolMsdebug). For details, see [Using msDebug in a CATLASS Sample Project](./evaluation/msdebug.md).
   - `--simulator`: Enables the simulator mode. After this option is enabled, the code will not run on an actual NPU. For details, see [CATLASS Sample Simulation](./evaluation/performance_tools.md#example-with-msprof-op-simulator).
-  - `--enable_profiling`: Enables the profiling tool. For details, see [Tuning Performance in a CATLASS Sample Project](./evaluation/performance_tools.md#profiling-overview).
   - `--enable_print`: Enables the compiler's print functionality. For details, see [Device-Side Printing Based on `cce::printf`](./evaluation/print.md).
-  - `--enable_ascendc_dump`: Enables `Ascend C` operator debugging APIs. For details, see [Using Ascend C Operator Debugging APIs in a CATLASS Sample Project](./evaluation/ascendc_dump.md).
   - `-DCATLASS_ARCH`: Specifies the NPU architecture. Currently, `2201` (Atlas A2/A3 series products) and `3510` (Ascend 950PR&950DT series products) are supported. If not specified, the default is `2201`.
   - `-D<option>`: Passes other build options to CMake.
 

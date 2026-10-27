@@ -44,7 +44,7 @@ Common parameters:
 | `--application`  | Yes (one of two) | Specifies the executable file or command.                                                                 | Valid path or command                       | Mutually exclusive with `--config`.                   |
 | `--config`       | Yes (one of two) | Specifies the `.o` binary file.                                                                           | Valid path                                  | Mutually exclusive with `--application`.              |
 | `--kernel-name`  | No               | Specifies the name of the operator to collect. (Fuzzy match and multi-operator collection are supported.) | Example: `"conv*"` or `"add\|mul"`          | Must be used with `--launch-count`.                   |
-| `--launch-count` | No               | Specifies the maximum number of operators to collect.                                                     | Integer ranging from 1 to 100 (default: 1)  | Must be used with `--kernel-name`.                    |
+| `--launch-count` | No               | Specifies the maximum number of operators to collect.                                                     | Integer greater than or equal to 1 (default: 1, The upper limit is subject to the tool version.)  | Must be used with `--kernel-name`.                    |
 | `--warm-up`      | No               | Specifies the number of warm-up times (for chip frequency increasing).                                    | Integer (default: 5)                        | For small shape scenarios, consider increasing to 30. |
 | `--output`       | No               | Specifies the data output path.                                                                           | Valid path (default: the current directory) | Ensure that the path is writable.                     |
 
@@ -116,7 +116,7 @@ Through simulation, you can obtain visual data such as **pipeline diagrams**, **
       - If a large number of obvious `Vector` operations (such as `Add` and `Div`) are mapped to `Scalar` operations in the profiling results, causing significant anomalies in the results (`vector_ratio<10%`, `scalar>90%`), this is due to the compilation optimization level. You can add the following code at the beginning of `examples/CMakeLists.txt` to raise the optimization level:
 
         ```cmake
-        add_compile_options($<$<COMPILE_LANGUAGE:ASC>:"-Xaicore-start -O3 -Xaicore-end">)
+        add_compile_options("SHELL:$<$<COMPILE_LANGUAGE:ASC>:-Xaicore-start -O3 -Xaicore-end>")
         ```
 
       - Simulation can only run on card 0; the NPU ID cannot be specified.
@@ -178,10 +178,10 @@ The following uses `00_basic_matmul` as an example.
 
 ### Example with `msProf`
 
-1. Following [Quick Start](../01_quick_start.md), enable the tool's build switch `--enable_profiling` to enable the `Profiling API` for building the operator sample.
+1. Following [Quick Start](../01_quick_start.md), compile the operator sample.
 
     ```bash
-    bash scripts/build.sh --enable_profiling 00_basic_matmul
+    bash scripts/build.sh 00_basic_matmul
     ```
 
 2. Change to the executable build directory `output/bin` and execute the operator sample program with `msProf`.

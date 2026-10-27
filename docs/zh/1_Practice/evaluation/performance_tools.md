@@ -44,7 +44,7 @@ msprof op --application="./00_basic_matmul 256 512 1024 0"
 | `--application`  | 可选（二选一） | 指定可执行文件/执行指令                      | 有效路径或命令                | 与 `--config` 互斥           |
 | `--config`       | 可选（二选一） | 指定二进制文件 `.o`                          | 有效路径                      | 与 `--application` 互斥      |
 | `--kernel-name`  | 可选           | 指定采集的算子名称（支持模糊匹配和多个采集） | 例：`"conv*"` 或 `"add\|mul"` | 需配合 `--launch-count` 使用 |
-| `--launch-count` | 可选           | 设置最大采集算子数量                         | 1~100 整数（默认 1）          | 需配合 `--kernel-name` 使用  |
+| `--launch-count` | 可选           | 设置最大采集算子数量                         | 大于或等于1的整数（默认 1，上限以工具版本为准）          | 需配合 `--kernel-name` 使用  |
 | `--warm-up`      | 可选           | 预热次数（解决芯片未提频问题）               | 整数（默认 5）                | 小 shape 场景建议提高到 30   |
 | `--output`       | 可选           | 指定数据输出路径                             | 有效路径（默认当前目录）      | 需确保路径可写               |
 
@@ -116,7 +116,7 @@ msprof op ./00_basic_matmul 256 512 1024 0
     - 性能结果中有大量明显`Vector`操作（如`Add`、`Div`）映射为`Scalar`操作导致性能结果明显异常(`vector_ratio<10%`，`scalar>90%`)，这是编译优化等级造成的，可在`examples/CMakeLists.txt`的开始位置增加以下代码，用于提升优化等级：
 
       ```cmake
-      add_compile_options($<$<COMPILE_LANGUAGE:ASC>:"-Xaicore-start -O3 -Xaicore-end">)
+      add_compile_options("SHELL:$<$<COMPILE_LANGUAGE:ASC>:-Xaicore-start -O3 -Xaicore-end>")
       ```
 
     - 仿真只能在0卡运行，不能指定NPU卡号。
@@ -178,10 +178,10 @@ msProf工具采集到的数据，可导入可视化工具[MindStudio Insight](ht
 
 ### `Profiling`使用示例
 
-1. 基于[快速上手](../01_quick_start.md)，打开工具的编译开关`--enable_profiling`， 使能`Profiling API`编译算子样例。
+1. 基于[快速上手](../01_quick_start.md)，编译算子样例。
 
     ```bash
-    bash scripts/build.sh --enable_profiling 00_basic_matmul
+    bash scripts/build.sh 00_basic_matmul
     ```
 
 2. 切换到可执行文件的编译目录`output/bin`下，用`msProf`执行算子样例程序。

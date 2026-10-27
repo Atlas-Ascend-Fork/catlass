@@ -2,6 +2,36 @@
 
 ## CATLASS 2.X
 
+### CATLASS 2.2.0
+
+#### CATLASS Python
+
+- 关键特性
+  - **SIMD**：面向 Ascend950 扩展 SIMD OP 及配套搬运与矩阵计算能力：补齐对齐连续、对齐非连续（DataBlock 跨步）、非对齐连续三类场景下 Load/Store 的 `PostModeUpdate` 模式，搬运完成后按步长自动更新地址；支持 Histogram 的 `FREQUENCY` 与 `ACCUMULATE` 两种模式；L0C→GM 与 L0C→UB 搬出均支持随路 ReLU（`relu_enable`）；补齐 PER_TENSOR / PER_CHANNEL 量化及配套 scale 搬入、`tla.gather` Reg→Reg、无符号整数相关搬运/Compare/Cast，以及 L1→BiasTable 与普通 Matmul 带 Bias。
+  - **SIMT**：正式上线 SIMT 编程能力：通过 `tla.vec.func(mode="simt", thread_block_dim=...)` 描述逐线程标量计算，支持线程坐标、跨 Block 标量捕获与任务划分、GM/UB 逐线程访问，以及算术、比较、选择、类型转换与浮点数学等线程级运算，并可与 Cube/SIMD 同 Kernel 混用。
+  - **框架能力**：支持以类实例组织 Kernel：类内可封装 `tla.kernel` 并访问成员变量，`tla.compile` 可编译类实例或其绑定方法，实例属性作为编译期常量参与编排与缓存。
+- 更多样例（新增 Ascend950 Python 样例）
+  - [Flash Attention Infer](https://gitcode.com/cann/catlass/blob/v2.2.0/python/tla_dsl/examples/end_to_end/flash_attention_infer/README.md)：在既有 nomask 路径上完善 KV 分页（块表寻址）与独立 causal mask kernel，覆盖 FP16/BF16、BSND/TND、GQA、页边界与尾块场景。
+  - [MX Matmul](https://gitcode.com/cann/catlass/blob/v2.2.0/python/tla_dsl/examples/end_to_end/mx_mmad/README.md)：演示 MX FP8/FP4 数据准备、E8M0 缩放块、GM→L1→L0 带 scale 搬运、`tla.mmad_mx` 与 FP32 结果回写。
+  - [SIMT 多 Block 协作](https://gitcode.com/cann/catlass/blob/v2.2.0/python/tla_dsl/examples/end_to_end/simt/multiple_blocks_simt/README.md)：通过 3D 线程坐标线性化与全局步长，将任务分配至多个 Block，覆盖不同 Block 数、线程配置及非整除长度。
+  - [SIMT 多数学运算](https://gitcode.com/cann/catlass/blob/v2.2.0/python/tla_dsl/examples/end_to_end/simt/multi_ops_simt/README.md)：提供浮点与整数两条运算路径，覆盖算术、比较、`where`、类型转换以及浮点数学函数。
+- Bugfix&优化
+  - 将 HIVMC 编译默认注入的 `cce-vf-auto-sync=global` 统一覆盖为 `fused`：`global` 由 CCEC 分析并插入同步，`fused` 由开发者自行保证同步正确性；覆盖后可避免 `global` 在 VF 环内插入多余同步屏障。
+
+#### CATLASS C++
+
+- 更多样例（新增 Ascend950 样例）
+  - [Ascend950 HSTU Infer](https://gitcode.com/cann/catlass/blob/v2.2.0/examples/83_ascend950_hstu_infer/README.md)：实现 `S=QKᵀ`、`P=siluScale×S×sigmoid(S)`、`O=PV` 计算链路，支持可选 causal 乘法掩码，覆盖 NTD/TND 布局、变长序列与 Paged KV Cache。
+- 文档资料
+  - 对齐 CanImplement、Host 输入检查与 README 约束：建立输入支持矩阵，使数据类型、布局、形状、对齐、分页和 Mask 约束与实现一致；对非法输入在 Kernel 启动前给出明确诊断，并补齐合法边界与非法输入回归用例（首批覆盖含 Basic Matmul、Grouped Matmul、Optimized Matmul、Quant 系列、Ascend950 相关样例、X-Attention、Basic SYRK 等）。
+- Bugfix&优化
+  - 优化 [Broadcast Matmul PerBlock Quant](https://gitcode.com/cann/catlass/blob/v2.2.0/examples/62_ascend950_broadcast_matmul_perblock_quant/README.md) 与 [A8W4 Grouped MX Matmul](https://gitcode.com/cann/catlass/blob/v2.2.0/examples/74_ascend950_weight_quant_a8w4_grouped_mx_matmul/README.md) 的 golden 生成：E4M3 LUT 改为分块向量化 + 二分最近邻，消除 FP4 索引重复重算；产物逐字节一致，Broadcast Matmul PerBlock Quant 单用例耗时由约 37 分钟降至约数秒量级。
+  - 修复 [MLA](https://gitcode.com/cann/catlass/blob/v2.2.0/examples/19_mla/README.md) 以加代乘原子重缩放在零值、非规格数与指数下溢边界的精度问题，并补齐 UB 复用同步、移除可能误清合法大数的极值清零逻辑。
+  - 修复 Conv3d/Conv2d 输出尺寸计算在 `uint32` 下的无符号下溢，非法 shape（含 `stride=0`）在 CanImplement / Host 入口拦截。
+  - 修复 [Ascend950 Flash Attention Chunk Prefill](https://gitcode.com/cann/catlass/blob/v2.2.0/examples/70_ascend950_flash_attention_chunk_prefill/README.md) 在 `kvHeads != 1` 时的精度问题，并补充约束与 README。
+  - 修复 [A8W4 MX Matmul](https://gitcode.com/cann/catlass/blob/v2.2.0/examples/59_ascend950_a8w4_mx_matmul/README.md) optest 与 example 对齐问题。
+  - 修复 catlass_cppgen EVG 模板遗漏 Bias 入参的问题。
+
 ### CATLASS 2.1.0
 
 #### CATLASS Python
@@ -69,7 +99,7 @@
   - [AtlasA2 Planar Complex Matmul](https://gitcode.com/cann/catlass/blob/v2.0.0/examples/77_planar_complex_matmul/README.md)：平面复数矩阵乘，输出实部与虚部两路结果
 - 工具支持
   - [optest](https://gitcode.com/cann/catlass/blob/v2.0.0/tests/optest/README.md) 接口扩展至 72 个，新增 Symm、Trmm、PlanarComplexMatmul、GroupedMatmulSliceMGelu、A8W4GroupedMxMatmul 等 10 个接口
-  - Agent Skill 新增 [CANNBot CATLASS C++](https://gitcode.com/cann/cannbot-skills/blob/master/plugins-official/catlass-op-generator/AGENTS.md)、CANNBot CATLASS Python 算子自动生成工具链，及[A2/A3 向 Ascend950 迁移工作流](https://gitcode.com/cann/catlass/tree/v2.0.0/.agents/skills/catlass-ascend950-migration)和[Tile 层级单元测试编写技能](https://gitcode.com/cann/catlass/tree/v2.0.0/.agents/skills/catlass-tile-level-ut)
+  - Agent Skill 新增 [CANNBot CATLASS C++](https://gitcode.com/cann/cannbot/blob/master/plugins-official/catlass-op-generator/quickstart.md)、CANNBot CATLASS Python 算子自动生成工具链，及[A2/A3 向 Ascend950 迁移工作流](https://gitcode.com/cann/catlass/tree/v2.0.0/.agents/skills/catlass-ascend950-migration)和[Tile 层级单元测试编写技能](https://gitcode.com/cann/catlass/tree/v2.0.0/.agents/skills/catlass-tile-level-ut)
 - 文档资料
   - 更新 README 中 gcc 版本约束说明
   - 更新 Gemm/Tile UT 依赖说明

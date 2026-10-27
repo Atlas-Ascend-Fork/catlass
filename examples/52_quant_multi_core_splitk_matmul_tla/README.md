@@ -1,4 +1,4 @@
-# QuantMatmulFullLoadA Example Readme
+# QuantMultiCoreSplitkMatmulTla Example Readme
 
 ## 代码组织
 

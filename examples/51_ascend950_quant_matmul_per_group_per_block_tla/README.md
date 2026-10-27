@@ -1,4 +1,4 @@
-# 51_ascend950_quant_matmul_per_group_per_block_tla Example Readme
+# QuantMatmulPerGroupPerBlockTla Example Readme
 
 ## 代码组织
 

@@ -1,4 +1,4 @@
-# Flash Attention Infer Example Readme
+# FlashAttentionInfer Example Readme
 
 ## 功能说明
 

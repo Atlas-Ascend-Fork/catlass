@@ -1,4 +1,4 @@
-# SingleSplitK_Matmul Example Readme
+# SingleCoreSplitkMatmul Example Readme
 
 ## 功能说明
 

@@ -1,4 +1,4 @@
-# W4A8_Matmul Example Readme
+# W4A8Matmul Example Readme
 
 ## 代码组织
 

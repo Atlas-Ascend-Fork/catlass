@@ -1,4 +1,4 @@
-# MXFP8GroupMatmulSliceMSwigluMxQuant Example Readme
+# FP8MxGroupedMatmulSliceMSwigluMxQuant Example Readme
 
 ## 功能介绍
 

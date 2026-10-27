@@ -1,4 +1,4 @@
-# Dual-Level Quant MX Batch Matmul
+# DualLevelQuantMxBatchMatmul Example Readme
 
 本样例实现二级量化 + MX FP4 Batch Matmul。AIV 侧先将 A/B 全量量化到 workspace，然后通过 `AscendC::SyncAll<false>()` 通知 AIC 侧执行 MX FP4 matmul。
 

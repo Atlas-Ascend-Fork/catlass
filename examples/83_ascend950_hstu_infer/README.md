@@ -1,4 +1,4 @@
-# HSTU Infer Example
+# HstuInfer Example Readme
 
 ## 功能说明
 

@@ -1,4 +1,4 @@
-# Ascend950 Batched SYRK Example Readme
+# Syrk Example Readme
 
 ## 代码组织
 

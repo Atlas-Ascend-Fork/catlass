@@ -1,4 +1,4 @@
-# PlanarComplexMatmul
+# PlanarComplexMatmul Example Readme
 
 本文档用于说明 `examples/77_planar_complex_matmul` 平面复数矩阵乘算子示例所依赖的 Catlass GEMM 模板库能力、外部接口、分层设计方案。
 

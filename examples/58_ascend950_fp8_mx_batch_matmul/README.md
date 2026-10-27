@@ -1,4 +1,4 @@
-# MXFP8BatchMatmulTla Example Readme
+# FP8MxBatchMatmul Example Readme
 
 ## 功能介绍
 

@@ -1,4 +1,4 @@
-# symmMatmul Example Readme
+# Symm Example Readme
 
 ## 功能说明
 

@@ -1,4 +1,4 @@
-# 42_quant_optimized_matmul_tla Example Readme
+# QuantOptimizedMatmulTla Example Readme
 
 ## 功能说明
 

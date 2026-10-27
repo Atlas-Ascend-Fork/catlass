@@ -1,4 +1,4 @@
-# MXFP4MatmulTla Example Readme
+# FP4MxMatmul Example Readme
 
 ## 功能介绍
 

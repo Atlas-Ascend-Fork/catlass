@@ -1,4 +1,4 @@
-# FlashAttentionInfer Example Readme
+# FlashAttentionChunkPrefill Example Readme
 
 ## 功能说明
 

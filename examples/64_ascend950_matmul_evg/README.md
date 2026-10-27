@@ -1,4 +1,4 @@
-# Ascend950MatmulEvg Example Readme
+# MatmulEvg Example Readme
 
 ## 功能说明
 

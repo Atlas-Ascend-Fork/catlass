@@ -1,4 +1,4 @@
-# 57_ascend950_matmul_full_dequant Example Readme
+# MatmulFullDequant Example Readme
 
 ## 代码组织
 

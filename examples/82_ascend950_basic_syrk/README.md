@@ -1,4 +1,4 @@
-# Ascend 950 Basic SYRK Example Readme
+# BasicSyrk Example Readme
 
 ## 功能说明
 

@@ -1,4 +1,4 @@
-# 47_ascend950_grouped_matmul_slice_m_per_token_dequant Example Readme
+# GroupedMatmulSliceMPerTokenDequant Example Readme
 
 ## 功能说明
 

@@ -1,4 +1,4 @@
-# 44_quant_matmul_full_loadA_tla Example Readme
+# QuantMatmulFullLoadATla Example Readme
 
 ## 功能说明
 

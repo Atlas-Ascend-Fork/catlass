@@ -1,4 +1,4 @@
-# MXFP8GroupedMatmulFinalizeRouting Example Readme
+# FP8MxGroupedMatmulFinalizeRouting Example Readme
 
 ## 功能介绍
 

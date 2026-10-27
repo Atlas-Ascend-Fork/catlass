@@ -1,4 +1,4 @@
-# SvdQuantMatmulTla Example Readme
+# SvdQuantMatmul Example Readme
 
 ## SvdQuant算法原理简介
 

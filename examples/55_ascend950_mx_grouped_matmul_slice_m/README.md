@@ -1,4 +1,4 @@
-# MX Grouped Matmul Slice M Example Readme
+# MxGroupedMatmulSliceM Example Readme
 
 ## 功能介绍
 

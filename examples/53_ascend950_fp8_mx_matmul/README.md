@@ -1,4 +1,4 @@
-# MXFP8MatmulTla Example Readme
+# FP8MxMatmul Example Readme
 
 ## 功能介绍
 

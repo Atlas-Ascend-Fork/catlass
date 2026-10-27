@@ -1,4 +1,4 @@
-# 12_quant_matmul Example Readme
+# QuantMatmul Example Readme
 
 ## 功能说明
 

@@ -111,7 +111,7 @@ bash scripts/build.sh [options] <target>
 ```
 
 - `options`: Optional build options. Currently supported options include:
-  - `--clean`: Clears the previous build and output directories (the default paths are `/build` and `/output`, respectively).
+  - `--clean`: Removes the `build` and `output` directories under the repository root.
   - `--debug`: Compiles in debug mode.
   - `--msdebug`: Enables [msDebug](https://www.hiascend.com/en/document/redirect/CannCommunityToolMsdebug). For details, see [Using msDebug in a CATLASS Sample Project](./evaluation/msdebug.md).
   - `--simulator`: Enables the simulator mode. After this option is enabled, the code will not run on an actual NPU. For details, see [CATLASS Sample Simulation](./evaluation/performance_tools.md#example-with-msprof-op-simulator).

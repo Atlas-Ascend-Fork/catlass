@@ -145,12 +145,22 @@ protected:
     {
         _blkLen = blkLen;
         _blkCnt = blkCnt;
+        _oriBlkLen = blkLen;
+        _oriBlkCnt = blkCnt;
         _totalLen = blkLen * blkCnt;
+    }
+
+    void _setOriginalShape(const uint32_t oriBlkLen, const uint16_t oriBlkCnt)
+    {
+        _oriBlkLen = oriBlkLen;
+        _oriBlkCnt = oriBlkCnt;
     }
 
 protected:
     uint32_t _blkLen = 128;
     uint16_t _blkCnt = 1;
+    uint32_t _oriBlkLen = 128;
+    uint16_t _oriBlkCnt = 1;
     uint32_t _totalLen = 128;
 };
 

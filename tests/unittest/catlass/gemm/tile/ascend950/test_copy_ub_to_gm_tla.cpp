@@ -64,6 +64,7 @@ protected:
     void setShape()
     {
         _setShape(GetParam().blkLen, GetParam().blkCnt);
+        _setOriginalShape(GetParam().oriBlkLen, GetParam().oriBlkCnt);
         _srcStride = GetParam().srcStride;
         _dstStride = GetParam().dstStride;
     }
@@ -141,18 +142,18 @@ TEST_P(TileCopyUbToGmTlaNonContiguousTestAscend950, RowMajorToRowMajorTestNonCon
     AscendC::GlobalTensor<Element> gmDst;
 
     setShape();
-    if (_srcStride == _blkLen && _dstStride == _blkLen) {
+    if (_srcStride == _oriBlkLen && _dstStride == _oriBlkLen) {
         GTEST_SKIP();
     }
 
     auto layoutSrc = tla::MakeLayout(
         tla::MakeShape(static_cast<uint32_t>(_blkCnt), _blkLen),
         tla::MakeStride(static_cast<int64_t>(_srcStride), tla::Int<1>{}),
-        tla::MakeShape(static_cast<uint32_t>(_blkCnt), _blkLen));
+        tla::MakeShape(static_cast<uint32_t>(_oriBlkCnt), _oriBlkLen));
     auto layoutDst = tla::MakeLayout(
         tla::MakeShape(static_cast<uint32_t>(_blkCnt), _blkLen),
         tla::MakeStride(static_cast<int64_t>(_dstStride), tla::Int<1>{}),
-        tla::MakeShape(static_cast<uint32_t>(_blkCnt), _blkLen));
+        tla::MakeShape(static_cast<uint32_t>(_oriBlkCnt), _oriBlkLen));
     UbToGmTensorSrc<Element, Layout> tensorUb(ubSrc, layoutSrc);
     UbToGmTensorDst<Element, Layout> tensorGm(gmDst, layoutDst);
 
@@ -168,10 +169,10 @@ TEST_P(TileCopyUbToGmTlaNonContiguousTestAscend950, RowMajorToRowMajorTestNonCon
     ASSERT_EQ(logVecCopy.GetArgsAt(1).GetInstAddr(), 0);
 
     const auto* dataCopyParams = logVecCopy.GetArgsAt(2).Value<AscendC::DataCopyExtParams>();
-    ASSERT_EQ(dataCopyParams->blockCount, _blkCnt);
-    ASSERT_EQ(dataCopyParams->blockLen, _blkLen * sizeof(Element));
-    ASSERT_EQ(dataCopyParams->srcStride, (_srcStride - _blkLen) / ELE_NUM_PER_C0);
-    ASSERT_EQ(dataCopyParams->dstStride, (_dstStride - _blkLen) * sizeof(Element));
+    ASSERT_EQ(dataCopyParams->blockCount, _oriBlkCnt);
+    ASSERT_EQ(dataCopyParams->blockLen, _oriBlkLen * sizeof(Element));
+    ASSERT_EQ(dataCopyParams->srcStride, (_srcStride - _oriBlkLen) / ELE_NUM_PER_C0);
+    ASSERT_EQ(dataCopyParams->dstStride, (_dstStride - _oriBlkLen) * sizeof(Element));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -188,9 +189,10 @@ INSTANTIATE_TEST_SUITE_P(
     CopyUbToGmTlaNonContiguousAscend950,
     TileCopyUbToGmTlaNonContiguousTestAscend950,
     ::testing::Values(
-        TestVectorShapeWithStride{128U, 4U, 256U, 256U},
-        TestVectorShapeWithStride{64U, 8U, 128U, 128U},
-        TestVectorShapeWithStride{256U, 2U, 512U, 512U}
+        TestVectorShapeWithStride{128U, 4U, 128U, 4U, 256U, 256U},
+        TestVectorShapeWithStride{64U, 8U, 64U, 8U, 128U, 128U},
+        TestVectorShapeWithStride{256U, 2U, 256U, 2U, 512U, 512U},
+        TestVectorShapeWithStride{256U, 2U, 192U, 1U, 512U, 512U}
     )
 );
 

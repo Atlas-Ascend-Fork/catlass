@@ -39,11 +39,21 @@ struct TestCubeMatrixShapeWithUnitflag {
 struct TestVectorShape {
     uint32_t blkLen;
     uint16_t blkCnt;
+    uint32_t oriBlkLen;
+    uint16_t oriBlkCnt;
 };
 
 struct TestVectorShapeWithStride : public TestVectorShape {
     uint32_t srcStride;
     uint32_t dstStride;
+
+    TestVectorShapeWithStride(uint32_t blkLen, uint16_t blkCnt, uint32_t srcStride, uint32_t dstStride)
+        : TestVectorShape{blkLen, blkCnt, blkLen, blkCnt}, srcStride(srcStride), dstStride(dstStride) {}
+
+    TestVectorShapeWithStride(
+        uint32_t blkLen, uint16_t blkCnt, uint32_t oriBlkLen, uint16_t oriBlkCnt, uint32_t srcStride,
+        uint32_t dstStride)
+        : TestVectorShape{blkLen, blkCnt, oriBlkLen, oriBlkCnt}, srcStride(srcStride), dstStride(dstStride) {}
 };
 
 struct TestMatrixShapeWithUnitflag : public TestMatrixShape {

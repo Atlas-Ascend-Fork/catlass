@@ -63,7 +63,7 @@ golden::ComputeMatmul(options.problemShape, hostA, layoutA, hostB, layoutB, host
 
 ### 整数类型：二进制一致性校验
 
-对于`int32_t`等整数类型，由于整数运算不存在舍入误差，要求**NPU输出与标杆完全一致（二进制一致）**。比对时直接检查差值是否为0：
+对于`int32_t`等整数类型，由于整数运算不存在舍入误差，要求**NPU输出与标杆完全一致（二进制一致）**。比对时直接检查两个值是否相等，避免减法或绝对值运算在整数极值处溢出：
 
 ```cpp
 // int32_t 特化版本：要求完全一致
@@ -73,7 +73,7 @@ std::vector<uint64_t> CompareData(const std::vector<int32_t>& result, const std:
 {
     std::vector<uint64_t> errorIndices;
     for (uint64_t i = 0; i < result.size(); ++i) {
-        if (std::abs(static_cast<int32_t>(result[i]) - expect[i]) != 0) {
+        if (result[i] != expect[i]) {
             errorIndices.push_back(i);
         }
     }

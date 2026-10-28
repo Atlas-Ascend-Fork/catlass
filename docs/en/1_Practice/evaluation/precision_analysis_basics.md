@@ -63,7 +63,7 @@ golden::ComputeMatmul(options.problemShape, hostA, layoutA, hostB, layoutB, host
 
 ### Integer Types: Bitwise Identity Validation
 
-For integer types such as `int32_t`, since integer operations involve no rounding errors, the NPU output must be **bitwise identical** to the golden result. The comparison directly checks whether the difference is zero:
+For integer types such as `int32_t`, since integer operations involve no rounding errors, the NPU output must be **bitwise identical** to the golden result. Compare the values directly to avoid overflow in subtraction or absolute-value operations at integer limits:
 
 ```cpp
 // int32_t specialization: Requires bitwise identity
@@ -73,7 +73,7 @@ std::vector<uint64_t> CompareData(const std::vector<int32_t>& result, const std:
 {
     std::vector<uint64_t> errorIndices;
     for (uint64_t i = 0; i < result.size(); ++i) {
-        if (std::abs(static_cast<int32_t>(result[i]) - expect[i]) != 0) {
+        if (result[i] != expect[i]) {
             errorIndices.push_back(i);
         }
     }

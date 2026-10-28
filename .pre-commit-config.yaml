@@ -48,11 +48,11 @@ repos:
       - id: ruff-check
         args: ["--output-format", "github", "--fix", "--line-length", "120"]
         types: [python]
-        exclude: gen_data.py
+        exclude: '(?:^|/)gen_data\.py$'
 
       - id: ruff-format
         types: [python]
-        exclude: gen_data.py
+        exclude: '(?:^|/)gen_data\.py$'
 
   # Markdown 内部链接有效性检查
   - repo: local

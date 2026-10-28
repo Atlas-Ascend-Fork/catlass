@@ -69,7 +69,7 @@ def test_arange_emits_tlair(compiler_tlair: Any) -> None:
     mlir = compiler_tlair(arange_store, type_args=(_ub_tensor(),))
 
     assert "tla.arange" in mlir
-    assert 'order = "increase"' in mlir or 'order = \"increase\"' in mlir
+    assert 'order = "increase"' in mlir
     assert "tla.store" in mlir
 
 def test_arange_decrease_emits_tlair(compiler_tlair: Any) -> None:

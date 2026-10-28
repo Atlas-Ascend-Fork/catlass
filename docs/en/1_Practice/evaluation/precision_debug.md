@@ -548,16 +548,13 @@ CATLASS's modular architecture provides a natural advantage for precision debugg
 
 ## Precision Tolerance Reference
 
-The default precision tolerances for different data types in CATLASS are as follows. If the sample development plan has explicit precision requirements, those take precedence.
+Precision acceptance depends on the comparison function called by the sample and any explicit requirements in the development plan. The floating-point rules below are implemented in `examples/common/golden/compare_data.hpp`. These functions have no separate `atol` argument and do not select fixed `1e-5`/`1e-3` tolerances based on FP32/FP16 data types.
 
-| Data Type| rtol | atol | Description|
-| --- | --- | --- | --- |
-| FP32 | 1e-5 | 1e-6 | High precision, the strictest tolerance|
-| FP16 | 1e-3 | 1e-4 | Medium precision|
-| BF16 | 1e-2 | 1e-3 | Low precision (mantissa: 7 bits only)|
-| INT | - | 0 | Requires bitwise identical results|
+- `CompareData`: `abs(actual - expected) <= rtol * max(1.0, abs(expected))`.
+- `CompareDataBfloat16`: `abs(actual - expected) <= rtol * max(1.0 / 256, abs(expected))`. Call this function explicitly to use the BF16 rule; it is not selected automatically by the output data type.
+- The `int32_t` specialization of `CompareData` requires elementwise equality with the reference.
 
-The `CompareData` function of CATLASS dynamically adjusts rtol based on `computeNum` (usually the K dimension size).
+The floating-point functions select `rtol` based on `computeNum` (usually the K dimension size):
 
 | Computation Count| FP16/FP32 rtol | BF16 rtol |
 | --- | --- | --- |

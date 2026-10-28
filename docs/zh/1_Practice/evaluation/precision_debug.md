@@ -547,16 +547,13 @@ CATLASS的模块化架构为精度调试提供了天然的优势：每个模块�
 
 ## 精度标准参考
 
-CATLASS中不同数据类型的默认精度标准如下。当样例开发Plan有明确精度要求时，以Plan为准。
+精度判定应以样例实际调用的比对函数及开发 Plan 为准。以下是 `examples/common/golden/compare_data.hpp` 中的浮点比对规则；这些函数没有独立的 `atol` 参数，也没有按 FP32/FP16 数据类型采用固定的 `1e-5`/`1e-3` 容忍度。
 
-| 数据类型 | rtol | atol | 说明                     |
-| -------- | ---- | ---- | ------------------------ |
-| FP32     | 1e-5 | 1e-6 | 高精度，容忍度最低       |
-| FP16     | 1e-3 | 1e-4 | 中等精度                 |
-| BF16     | 1e-2 | 1e-3 | 低精度（mantissa仅7bit） |
-| INT      | -    | 0    | 要求二进制完全一致       |
+- `CompareData`：`abs(actual - expected) <= rtol * max(1.0, abs(expected))`。
+- `CompareDataBfloat16`：`abs(actual - expected) <= rtol * max(1.0 / 256, abs(expected))`。BF16 规则需要显式调用该函数，并非自动由输出数据类型选择。
+- `CompareData` 的 `int32_t` 特化要求结果与标杆逐元素一致。
 
-CATLASS的`CompareData`函数会根据`computeNum`（通常为K维大小）动态调整rtol：
+浮点函数根据 `computeNum`（通常为 K 维大小）选择 `rtol`：
 
 | 计算次数 | FP16/FP32 rtol | BF16 rtol |
 | -------- | -------------- | --------- |

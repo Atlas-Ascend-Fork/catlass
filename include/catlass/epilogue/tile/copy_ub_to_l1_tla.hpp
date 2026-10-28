@@ -46,8 +46,8 @@ struct CopyUb2L1Tla<
             "The input parameters do not match. TensorSrc must be VECCALC and RowMajor, while TensorDst must be L1 and "
             "zN");
 
-        const uint32_t nValue = tla::get<0>(srcTensor.shape());
-        const uint32_t dValue = tla::get<1>(srcTensor.shape());
+        const uint32_t nValue = tla::get<0>(srcTensor.originShape());
+        const uint32_t dValue = tla::get<1>(srcTensor.originShape());
         const uint32_t srcDValue = tla::get<0>(srcTensor.stride());
         const uint32_t dstNzNStride = tla::get<0, 0>(dstTensor.stride()) / ELE_NUM_PER_C0;
         const uint32_t dstNzC0Stride = tla::get<1, 1>(dstTensor.stride()) / ELE_NUM_PER_C0;

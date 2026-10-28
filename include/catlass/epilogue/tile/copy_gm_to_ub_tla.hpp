@@ -80,7 +80,8 @@ struct CopyGm2UbTla<
             "The input parameters do not match. TensorSrc must be GM and Vector, "
             "while TensorDst must be UB and Vector");
 
-        AscendC::DataCopyExtParams dataCopyParams(1, tla::get<0>(srcTensor.shape()) * sizeof(ElementSrc), 0, 0, 0);
+        AscendC::DataCopyExtParams dataCopyParams(
+            1, tla::get<0>(srcTensor.originShape()) * sizeof(ElementSrc), 0, 0, 0);
         AscendC::DataCopyPadExtParams<ElementSrc> padParams(false, 0, 0, 0);
         auto dstOffset = dstTensor.layout()(dstTensor.coord());
         auto srcOffset = srcTensor.layout()(srcTensor.coord());

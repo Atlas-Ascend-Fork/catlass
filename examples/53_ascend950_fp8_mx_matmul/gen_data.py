@@ -373,15 +373,21 @@ def _resolve_workspace(data_root_cli: Optional[str]) -> str:
     return _SCRIPT_DIR
 
 
-def gen_data(m, n, k, trans_a, trans_b, workspace: str) -> None:
+_FP8_GENERATORS = {
+    "e4m3": gen_data_fp8_e4m3,
+    "e5m2": gen_data_fp8_e5m2,
+}
+
+
+def gen_data(m, n, k, trans_a, trans_b, workspace: str, type_a: str = "e4m3", type_b: str = "e4m3") -> None:
     data_dir = os.path.join(workspace, "data")
     input_dir = os.path.join(data_dir, "input")
     golden_dir = os.path.join(data_dir, "golden")
     os.makedirs(input_dir, exist_ok=True)
     os.makedirs(golden_dir, exist_ok=True)
 
-    a_fp8, a_scale, a_fp32 = gen_data_fp8_e4m3(m, k, 1)
-    b_fp8, b_scale, b_fp32 = gen_data_fp8_e4m3(k, n, 0)
+    a_fp8, a_scale, a_fp32 = _FP8_GENERATORS[type_a](m, k, 1)
+    b_fp8, b_scale, b_fp32 = _FP8_GENERATORS[type_b](k, n, 0)
 
     a_scale = a_scale.reshape(a_scale.shape[0], a_scale.shape[1] // 2, 2)
     b_scale = b_scale.reshape(b_scale.shape[0] // 2, 2, b_scale.shape[1])
@@ -426,6 +432,18 @@ if __name__ == "__main__":
         help="Directory under which data/input and data/golden are created. "
         "Default: this script's directory.",
     )
+    parser.add_argument(
+        "--type-a",
+        choices=["e4m3", "e5m2"],
+        default="e4m3",
+        help="A matrix FP8 format. Default: e4m3.",
+    )
+    parser.add_argument(
+        "--type-b",
+        choices=["e4m3", "e5m2"],
+        default="e4m3",
+        help="B matrix FP8 format. Default: e4m3.",
+    )
     parser.add_argument("m", type=int)
     parser.add_argument("n", type=int)
     parser.add_argument("k", type=int)
@@ -433,4 +451,4 @@ if __name__ == "__main__":
     parser.add_argument("trans_b", type=int)
     args = parser.parse_args()
     workspace = _resolve_workspace(args.data_root)
-    gen_data(args.m, args.n, args.k, args.trans_a, args.trans_b, workspace)
+    gen_data(args.m, args.n, args.k, args.trans_a, args.trans_b, workspace, args.type_a, args.type_b)

@@ -187,8 +187,20 @@ static void Run(const Options& options)
         layoutMxScaleA,       deviceMxScaleB, layoutMxScaleB, deviceC, layoutC, deviceBias};
 
     MatmulAdapter matmulOp;
-    if (matmulOp.CanImplement(arguments) == Status::kInvalid) {
+    if (matmulOp.CanImplement(arguments) != Status::kSuccess) {
         std::cerr << "[ERROR]matmul op cannot be implemented" << std::endl;
+        ACL_CHECK(aclrtFree(deviceA));
+        ACL_CHECK(aclrtFree(deviceB));
+        ACL_CHECK(aclrtFree(deviceMxScaleA));
+        ACL_CHECK(aclrtFree(deviceMxScaleB));
+        ACL_CHECK(aclrtFree(deviceC));
+        if constexpr (!std::is_void_v<ElementBias>) {
+            ACL_CHECK(aclrtFree(deviceBias));
+        }
+        ACL_CHECK(aclrtDestroyStream(stream));
+        ACL_CHECK(aclrtResetDevice(options.deviceId));
+        ACL_CHECK(aclFinalize());
+        return;
     }
     sizeWorkspace = matmulOp.GetWorkspaceSize(arguments);
     if (sizeWorkspace > 0) {

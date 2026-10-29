@@ -4,7 +4,7 @@
 
 ## 安装CANN
 
-请参考[CANN快速安装](https://www.hiascend.com/cann/download)，选择`稳定版本`（仅支持CANN 8.5.0及后续版本），并根据产品系列、CPU架构、操作系统等下载对应包，最后参考页面提供的命令完成安装。
+请参考[CANN快速安装](https://www.hiascend.com/cann/download)，选择稳定版本（仅支持CANN 8.5.0及后续版本），并根据产品系列、CPU架构、操作系统等下载对应包，最后参考页面提供的命令完成安装。
 
 ## 安装Python相关依赖
 
@@ -121,7 +121,7 @@ bash scripts/build.sh [options] <target>
 
 - `target`：要编译的算子样例，可指定为特定的样例名，也可指定为：
   - `catlass_examples`：对当前仓样例进行全量编译。
-  - `python_extension`：编译pybind扩展，详见基于[Python调用CATLASS样例](../../../examples/python_extension/README.md)。
+  - `python_extension`：编译pybind扩展，详见[Python调用CATLASS样例](../../../examples/python_extension/README.md)。
   - `torch_library`：编译torch扩展，详见[Python调用CATLASS样例](../../../examples/python_extension/README.md)。
   - `mstuner_catlass`：编译msTuner_CATLASS工具，详见[`mstuner_catlass`使用说明](../../../tools/tuner/README.md)。
 

@@ -273,7 +273,7 @@ Cube和Vector/Scalar分开计算后再求和，因为三者可并行执行到一
 
 主要手段：
 
-- 合理编排搬运与计算指令的排布，使数据搬运与计算重叠执行。
+- 合理编排搬运与计算指令，使数据搬运与计算重叠执行。
 - 通过Double Buffer / Triple Buffer机制掩盖搬运延迟。
 - 减少流水同步等待，提升各流水线并行度。
 - CV融合场景下通过增加workspace stages扩大流水覆盖能力。workspace stages是AIC与AIV之间中转中间结果的缓冲区份数，`2`即双缓冲；增加份数可扩大AIC提前量，但会线性增加workspace容量和同步开销，需权衡取舍，调优方法见[CV融合调优](../others/fused_kernel_optimization.md)。

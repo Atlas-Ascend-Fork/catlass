@@ -1,81 +1,83 @@
-# BasicSyrk DSL Example Readme
+# Basic SYRK End-to-End Example
 
-## 功能说明
+This example uses CATLASS DSL to compute a symmetric matrix product on Ascend 950.
 
-- 算子功能：计算输入矩阵与其转置的乘积，得到对称矩阵。
-- 计算公式：
+## Functionality
 
-  $$
-    \begin{aligned}
-    Y &= X \times X^T \\
-    Y_{i,j} &= \sum_k X_{i,k}X_{j,k}
-    \end{aligned}
-  $$
+For an input `X` of shape `(M, K)` or `(B, M, K)`, the default operation is
+`Y = X @ X.T`, applied separately to each batch. The output has shape `(M, M)`
+or `(B, M, M)` and the same dtype as `X`.
 
-  其中 $X$ 是形如 `(m, k)` 的输入矩阵，$Y$ 是形如 `(m, m)` 的输出矩阵，满足 $Y=Y^T$。
+The example also supports:
 
-- 支持产品型号：Ascend 950PR&950DT系列产品。
+$$
+Y = \alpha X X^T + \beta R + dI
+$$
 
-## 样例参数说明
+Here, `R` is an optional symmetric residual and `d` is the diagonal coefficient.
+The kernel computes the lower triangle and mirrors off-diagonal tiles through
+UB transpose. Split-K uses FP32 partial results and applies the coefficients
+after summing them.
 
-| 参数 | 属性 | shape | dtype | 说明 |
-| --- | --- | --- | --- | --- |
-| `X` | Input | `(m, k)` | `float16/bfloat16` | 连续 NPU 输入张量，layout 仅支持 `RowMajor`
-| `Y` | Output | `(m, m)` | `float16/bfloat16` | 对称矩阵乘结果，layout 为 `RowMajor`，数据类型与输入一致 |
+## Code Organization
 
-Python 接口为 `syrk(x, block_num=-1)`，在输入所在设备的当前流上启动，函数内部不进行同步。
-block_num 用于指定参与计算的 Cube 核数量，不设置时自动选择，设置为正整数时按指定数量执行。
+| File | Description |
+| --- | --- |
+| [basic_syrk.py](basic_syrk.py) | SYRK kernels, the `syrk(...)` Python interface, and command-line accuracy and symmetry checks. |
+| [README.md](README.md) | Example description and usage. |
 
-## 使用范围说明
+## Constraints
 
-本样例按 `256*256` 输出块计算下三角，并通过 RowMajor/ColumnMajor 写回补全对称位置；L1/L0 的 K 分块分别为 128/64，使用双缓冲。默认采用 `GemmIdentityBlockSwizzle<3,1>` 调度，通过 CUBE/FIX 事件保护 L0C 双写，`unit_flag=0`。需要安装已包含 L0C→ColumnMajor GM 支持的 DSL wheel。
+- Requires Ascend 950 and contiguous, row-major FP16 or BF16 NPU tensors. Products use FP32 accumulation; the output uses the input dtype.
+- `M`, `K`, and `B` must be positive, with `M <= 8192`, `K <= 65536`, and both `B*M*K` and `B*M*M <= 67108864`. These limits bound memory use for the example's reference checks. Tail tiles are supported.
+- When `beta` is nonzero, supply a symmetric residual matching the output shape, device, and dtype. The command-line example generates one automatically.
+- The Python interface waits for the kernel to finish before returning. Autograd is not supported.
 
-使用范围：
+## Usage
 
-- 输入为连续二维 NPU 张量，`1 ≤ M ≤ 8192`、`1 ≤ K ≤ 65536`，且 `MK ≤ 8192² = 67108864`；M、K 可独立取值，支持尾块。越界检查在命令行分配测试张量前执行，Python 接口同样检查。
-- 输入、输出使用 ND RowMajor 存储，计算使用 fp32 累加；`X^T` 由输入存储的 ColumnMajor 视图表示，无需独立转置输入。
-- 默认启动核数取设备 Cube 核数与输出块网格大小中的较小值；显式指定正整数 `block_num` 时，取指定值与输出块网格大小中的较小值。
-- 当前仅实现 `Y = X @ X.T`，不支持 alpha/beta、输入 C、fp32 输入或仅返回单侧三角结果。
+Follow the [Quick Start](../../../docs/en/quick_start.md) to prepare the environment.
 
-SYRK 输出占 `2M²` 字节，M 翻倍时输出规模变为四倍，因此限制 `M ≤ 8192`；输入占 `2MK` 字节，另限制 `MK ≤ 8192²`。单份 fp16/bf16 输入、输出均不超过 128 MiB，为 10 GiB 主机内存预算下的参考计算及比较留出空间。例如允许 `(1024,65536)`，拒绝 `(8192,65536)`；该范围是交付测试约束，不是算子理论极限或进程内存的硬保证。
+### Command-Line Arguments
 
-推荐范围：
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--m` | `1024` | Input row count and output matrix size. |
+| `--k` | `1024` | Reduction dimension. |
+| `--batch` | `1` | Number of independent matrix products. |
+| `--dtype` | `bf16` | Input and output dtype: `f16` or `bf16`. |
+| `--device` | `0` | NPU device ID. |
+| `--block-num` | `-1` | Core count; `-1` selects the available count automatically. |
+| `--tile` | `256` | Output tile size: `64`, `128`, or `256`; `0` selects automatically. |
+| `--splitk` | `1` | Requested K split count: `1`, `2`, `4`, `8`, `16`, or `32`; `0` selects automatically. The actual count may be lower for short K dimensions. |
+| `--workspace-limit-mb` | `512` | Maximum split-K workspace in MiB. |
+| `--alpha` | `1.0` | Product coefficient. |
+| `--beta` | `0.0` | Residual coefficient; zero skips the residual load. |
+| `--diagonal` | `0.0` | Value added to each diagonal element. |
 
-- 在上述范围内，推荐 M 为 256 的整数倍、K 为 128 的整数倍，以匹配分块并避免尾块处理。
-- 推荐采用默认自动核数；单核调试时可指定 `block_num=1`。小尺寸可能无法充分利用多核并行。
+### Examples
 
-## 使用示例
-
-### 命令行参数
+From the repository root:
 
 ```bash
-python basic_syrk.py [m M] [k K] [dtype {f16,bf16}] [device DEVICE] [block-num BLOCK_NUM]
+cd python/tla_dsl
+
+# Default matrix product.
+python examples/end_to_end/basic_syrk/basic_syrk.py
+
+# Batched input with tail tiles, a residual, and automatic tiling and split-K.
+python examples/end_to_end/basic_syrk/basic_syrk.py \
+  --batch 2 --m 145 --k 1025 --dtype f16 \
+  --alpha 2.0 --beta -1.0 --diagonal 3.0 --tile 0 --splitk 0
+
+# Run on one core of device 1.
+python examples/end_to_end/basic_syrk/basic_syrk.py --device 1 --block-num 1
 ```
 
-上述命令行参数具体说明如下：
+A successful run ends with:
 
-| 参数 | 默认值 | 参数说明 |
-| --- | --- | --- |
-| `m` | `1024` | 输入行数及输出边长 |
-| `k` | `1024` | 归约维度 |
-| `dtype` | `bf16` | 输入和输出类型，可选 `f16`、`bf16` |
-| `device` | `0` | 指定运行设备 ID |
-| `block-num` | `-1` | 默认自动选择 Cube 核数，也可指定正整数 |
+```text
+passed=True symmetric=True
+```
 
-### 执行示例
-
-1. 进入项目根目录，参考[快速上手](../../../docs/zh/quick_start.md)准备样例代码的运行环境。
-
-2. 在项目根目录下执行算子样例程序。
-
-   ```bash
-   python python/tla_dsl/examples/end_to_end/basic_syrk/basic_syrk.py --m 1024 --k 1024 --dtype bf16 --device 0
-   ```
-
-   若提示 BC 缺失或版本不匹配，先执行 `python -m catlass.bc_compile`。
-
-3. 执行结果如下，说明样例执行成功，精度和对称性检查通过：
-
-   ```text
-   passed=True symmetric=True
-   ```
+`passed` reports agreement with the CPU reference, and `symmetric` reports
+agreement with the output's transpose, using the shared accuracy tolerances.

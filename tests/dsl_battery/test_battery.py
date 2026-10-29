@@ -129,6 +129,48 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                     ]],
                 )
 
+    # --- SYRK: the UB-transpose mirror, the polynomial epilogue and split-K ---
+    #
+    # M=145 is a tail for every tile size and spans several tile rows, so the
+    # mirror lands on off-diagonal tiles; the script's symmetry check is what
+    # catches a mirror written to the wrong triangle. The polynomial cases carry
+    # a symmetric residual so that check still holds, and the split-K cases pick
+    # a K long enough for the planner to split it.
+    for dtype in ("f16", "bf16"):
+        syrk = ["basic_syrk/basic_syrk.py", "--dtype", dtype, *dev]
+        shape = ["--batch", "2", "--m", "145", "--k", "1025"]
+        poly = ["--alpha", "2.0", "--diagonal", "3.0"]
+        # Reusing L1 buffers after a one-tile prologue, then an uneven K split.
+        yield (
+            f"syrk-prefetch-single-k-{dtype}",
+            [[*syrk, "--batch", "2", "--m", "145", "--k", "513", "--tile", "64", "--splitk", "2", "--block-num", "1"]],
+        )
+        yield (
+            f"syrk-prefetch-split-tail-{dtype}",
+            [[*syrk, "--batch", "2", "--m", "145", "--k", "1025", *poly,
+              "--beta", "-1.0", "--tile", "64", "--splitk", "2", "--block-num", "1"]],
+        )
+        yield (f"syrk-batched-mirror-{dtype}", [[*syrk, *shape]])
+        for tile in ("64", "128"):
+            yield (
+                f"syrk-batched-mirror-{dtype}-t{tile}",
+                [[*syrk, *shape, "--tile", tile]],
+            )
+        yield (
+            f"syrk-poly-splitk-tail-{dtype}",
+            [[*syrk, *shape, *poly, "--beta", "-1.0", "--tile", "64", "--splitk", "2"]],
+        )
+        yield (f"syrk-poly-residual-{dtype}", [[*syrk, *shape, *poly, "--beta", "-1.0"]])
+        yield (f"syrk-poly-no-residual-{dtype}", [[*syrk, *shape, *poly]])
+        yield (
+            f"syrk-splitk-{dtype}",
+            [[*syrk, "--m", "256", "--k", "8192", "--splitk", "2"]],
+        )
+        yield (
+            f"syrk-splitk-auto-{dtype}",
+            [[*syrk, "--m", "64", "--k", "32768", "--tile", "0", "--splitk", "0"]],
+        )
+
     # --- basic_mmad: the flag-sync layout x dtype matrix ---
     yield from _mmad_cases(
         "mmad",
@@ -867,3 +909,17 @@ def test_case(case_id: str, device: int) -> None:
         assert script.is_file(), f"no such example: {argv[0]}"
         rc = example_runner.run_case([str(script), *argv[1:]])
         assert rc == 0, f"{argv[0]} {' '.join(argv[1:])} exited {rc}"
+
+
+def test_syrk_api_rejects_invalid_block_num(device: int) -> None:
+    import example_runner
+    import torch
+
+    example = example_runner.load_example(
+        example_runner.EXAMPLES_DIR / "basic_syrk/basic_syrk.py"
+    )
+    x = torch.ones((16, 16), dtype=torch.float16, device=f"npu:{device}")
+    for block_num in (0, -2):
+        with pytest.raises(ValueError, match="block_num must be -1 .* or positive"):
+            example.syrk(x, block_num=block_num)
+

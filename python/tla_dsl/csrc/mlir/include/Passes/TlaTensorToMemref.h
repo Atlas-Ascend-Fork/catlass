@@ -121,7 +121,9 @@ mlir::LogicalResult collectMaterializedTensorDescriptors(
 /// memref (via `getOrMaterializeDescriptorBaseMemref`) for a rank-1 flattened
 /// buffer, otherwise a `memref.subview` at the tile's (row,col) offset and shape.
 /// Descriptor-driven tile materialization shared by tile subview lowering and
-/// the tla.copy / tla.mmad operand paths.
+/// the tla.mmad operand path. The copy routes (tla.copy / tla.copy_mx) call
+/// `getOrMaterializeDescriptorBaseMemref` themselves instead: they ship the tile
+/// coordinate in the runtime payload, and the bc layer rebases on it.
 ///
 /// `foldRankOneCoord` decides who owns a rank-1 tile's coordinate. The copy
 /// routes ship it in the descriptor payload and let the bc layer compute the

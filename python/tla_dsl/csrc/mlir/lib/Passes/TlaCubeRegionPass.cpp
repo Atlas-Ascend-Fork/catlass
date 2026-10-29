@@ -434,15 +434,20 @@ struct LowerTlaCopyMxPattern : public OpRewritePattern<::tla::CopyMxOp> {
         if (!dstDesc || !srcDesc || !scaleDesc)
             return failure();
 
+        // The bc layer applies the tile coordinate from the payload itself, so
+        // this passes the descriptor's base memref, exactly like
+        // LowerTlaCopyPattern: folding the coordinate into a tile subview here
+        // as well would apply the offset twice.
         auto buildRuntimeMemref = [&](const TensorDescriptor& desc) -> FailureOr<Value> {
-            FailureOr<Value> base = ::tla::materializeTileMemrefFromDescriptor(
+            FailureOr<Value> baseMemref = ::tla::getOrMaterializeDescriptorBaseMemref(
                 rewriter, op.getLoc(), desc, op.getOperation(), loweredMemrefByValue);
-            if (failed(base))
+            if (failed(baseMemref))
                 return failure();
-            auto baseType = dyn_cast<MemRefType>((*base).getType());
+            auto baseType = dyn_cast<MemRefType>((*baseMemref).getType());
             if (!baseType)
                 return failure();
-            return ::tla::castMemrefToType(rewriter, op.getLoc(), *base, ::tla::getDynamicStridedMemrefType(baseType));
+            return ::tla::castMemrefToType(
+                rewriter, op.getLoc(), *baseMemref, ::tla::getDynamicStridedMemrefType(baseType));
         };
 
         FailureOr<Value> srcMemref = buildRuntimeMemref(*srcDesc);

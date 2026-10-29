@@ -137,7 +137,7 @@ Passed.
 安装完成后，也可以直接运行仓库内的端到端示例：
 
 ```bash
-python examples/end_to_end/basic_mmad/basic_matmul.py --device 0
+python examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py --device 0
 ```
 
-输出包含 `passed=True` 即表示环境与工具链就绪。更多端到端示例见 `python/tla_dsl/examples/end_to_end/`。
+输出包含 `passed=True` 即表示环境与工具链就绪。更多端到端示例见 `examples/python/tla_dsl/tla/kernel/` 与 `examples/python/tla_dsl/dsl_tutorials/`。

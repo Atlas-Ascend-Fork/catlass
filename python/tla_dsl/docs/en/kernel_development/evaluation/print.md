@@ -15,14 +15,14 @@ CATLASS Python provides the `tla.print` interface for debugging output inside a 
 
 ## Usage Examples
 
-The following examples use `basic_mmad_kernel` from `python/tla_dsl/examples/end_to_end/basic_mmad/basic_matmul.py`. When debugging, **choose only one** of the following two approaches.
+The following examples use `basic_mmad_kernel` from `examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py`. When debugging, **choose only one** of the following two approaches.
 
 ### Scalar Printing
 
 Scalar printing is suitable for inspecting runtime integers, floating-point values, block scheduling, and execution flow. When using this approach, the kernel must not contain any `tla.print(tensor, ...)` calls.
 
 ```diff
-# python/tla_dsl/examples/end_to_end/basic_mmad/basic_matmul.py
+# examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py
     with tla.cube():
 +       tla.print(123)  # Print a constant
 +       tla.print("Hello world")  # Print a string
@@ -57,7 +57,7 @@ This approach demonstrates three types of printing:
 Tensor printing is suitable for inspecting data in GM or UB.
 
 ```diff
-# python/tla_dsl/examples/end_to_end/basic_mmad/basic_matmul.py
+# examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py
     with tla.cube():
 +       tla.print(gm_a, 256)
         tla.set_flag(l1a0_available)
@@ -80,7 +80,7 @@ Tensor printing is suitable for inspecting data in GM or UB.
 Before running, ensure that the kernel uses only one of the preceding printing approaches and contains no remaining calls that print L1, L0A, L0B, or L0C Tensors. The CATLASS Python compiler selects the corresponding debugging FIFO path based on the type of printing used in the kernel, with no additional compilation options required. Enabling the force-recompilation environment variable is recommended to ensure that the modified kernel and printing helper code are regenerated:
 
 ```bash
-cd python/tla_dsl/examples/end_to_end/basic_mmad
+cd examples/python/tla_dsl/tla/kernel/matmul/basic_mmad
 
 # Launch a single block to make the output easier to inspect
 CATLASS_DSL_FORCE_RECOMPILE=1 python basic_matmul.py --device 0 --block-num 1

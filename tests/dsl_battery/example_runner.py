@@ -29,8 +29,7 @@ from pathlib import Path
 from typing import Any
 
 EXAMPLES_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "python" / "tla_dsl" / "examples" / "end_to_end"
+    Path(__file__).resolve().parents[2] / "examples" / "python" / "tla_dsl"
 )
 
 _MODULE_CACHE: dict[Path, Any] = {}
@@ -46,8 +45,8 @@ class _SiblingFinder(importlib.abc.MetaPathFinder):
     same-named modules for the rest of the session (a sibling called types.py
     would break every later case). The finder is installed at the head of
     sys.meta_path, not as a trailing fallback: a lingering sys.path entry for
-    examples/end_to_end makes PathFinder answer ``debug_print`` with the
-    namespace package end_to_end/debug_print/ -- a *successful* resolution a
+    examples/python/tla_dsl makes PathFinder answer ``debug_print`` with the
+    namespace package dsl_tutorials/debug_print/ -- a *successful* resolution a
     fallback never sees. The stdlib check below is what keeps a same-named
     sibling out of the standard library's way in this position.
     """

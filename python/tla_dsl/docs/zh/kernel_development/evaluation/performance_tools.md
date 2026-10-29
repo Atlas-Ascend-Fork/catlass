@@ -40,7 +40,7 @@ DSL 的底层编译依赖于 AscendNPU-IR。在执行后续编译操作前，请
 ### msprof op 使用示例
 
 ```bash
-msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py"
+msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py"
 ```
 
 以下列举一些常用参数，获取完整参数信息请参考[msopprof模式用户指南](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/latest/devaids/optool/docs/zh/user_guide/msopprof_user_guide.md)：
@@ -48,10 +48,10 @@ msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py"
 | 参数 | 说明 | 示例 |
 | --- | --- | --- |
 | `-h`, `--help` | 显示帮助信息并退出 | `msprof op -h` |
-| `--application` | 指定在Device上执行的应用。指定可执行文件/执行指令。 | `msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py"`
-| `--launch-count` | 可选参数，表示循环执行特定数量的特定kernel进行性能数据采集并计算平均值（需配合 --kernel-name 参数指定目标算子使用。如果不配置该参数，只会采集一组数据）。| `msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py" --kernel-name=basic_mixed --launch-count=10` |
-| `--warm-up` | 可选参数，表示预热次数（解决芯片未提频问题）<br>如果不配置该参数，默认预热次数值为5。 | `msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py" --warm-up=20` |
-| `--replay-mode` | 可选参数，指定算子数据采集的重放模式，默认为 kernel。<br>kernel：核函数级重放，对指定采集范围的单个算子核函数多次重放。<br>application：应用级重放，整个应用进行多次重放。<br>range：范围级重放，指定范围内的多算子整体多次重放（需配合 --mstx=on 使用）。 | `msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py" --replay-mode=kernel` |
+| `--application` | 指定在Device上执行的应用。指定可执行文件/执行指令。 | `msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py"`
+| `--launch-count` | 可选参数，表示循环执行特定数量的特定kernel进行性能数据采集并计算平均值（需配合 --kernel-name 参数指定目标算子使用。如果不配置该参数，只会采集一组数据）。| `msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py" --kernel-name=basic_mixed --launch-count=10` |
+| `--warm-up` | 可选参数，表示预热次数（解决芯片未提频问题）<br>如果不配置该参数，默认预热次数值为5。 | `msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py" --warm-up=20` |
+| `--replay-mode` | 可选参数，指定算子数据采集的重放模式，默认为 kernel。<br>kernel：核函数级重放，对指定采集范围的单个算子核函数多次重放。<br>application：应用级重放，整个应用进行多次重放。<br>range：范围级重放，指定范围内的多算子整体多次重放（需配合 --mstx=on 使用）。 | `msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py" --replay-mode=kernel` |
 
 * ⚠ 注意事项
   * 工具默认会读取执行序列中第一个算子的性能数据。在使用官方 example 进行独立调测时，通常可直接获取到目标结果；但若接入其他复杂工程，即使只跑某一个算子的用例，底层也可能伴随着框架（如 PyTorch）其他的初始化或前置算子执行。
@@ -110,7 +110,7 @@ export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/tools/simulator/A
 接下来执行下面这条命令（以下以basic_mixed算子为例）：
 
 ```bash
-msprof op simulator --soc-version=Ascendxxxyy --core-id=0 --kernel-name=basic_mixed python3 ./examples/end_to_end/basic_mixed/basic_mixed.py
+msprof op simulator --soc-version=Ascendxxxyy --core-id=0 --kernel-name=basic_mixed python3 ./examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py
 ```
 
 * **关键参数解析**：
@@ -154,13 +154,13 @@ msprof op simulator --soc-version=Ascendxxxyy --core-id=0 --kernel-name=basic_mi
 ### msprof 使用示例
 
 ```bash
-msprof --application="python examples/end_to_end/basic_mixed/basic_mixed.py"
+msprof --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py"
 ```
 
 | 参数 | 说明 | 示例 |
 | --- | --- | --- |
 | `-h`, `--help` | 显示帮助信息并退出 | `msprof -h` |
-| `--application` | 场景相关，通过参数方式传入二进制执行程序或执行脚本及参数。 | `msprof --application="python examples/end_to_end/basic_mixed/basic_mixed.py"` |
+| `--application` | 场景相关，通过参数方式传入二进制执行程序或执行脚本及参数。 | `msprof --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py"` |
 | `--output=<path>` | 可选参数，收集到的性能数据的存放路径。 | `msprof --output=/home/projects/output /home/projects/main`
 
 更多参数参考[msprof采集命令](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/latest/devaids/Profiling/atlasprofiling_16_0010.html)

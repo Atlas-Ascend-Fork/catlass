@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+# The DSL examples live outside the package (examples/python/tla_dsl), so put
+# their root on sys.path to keep ``from dsl_tutorials...`` / ``helpers`` imports
+# working no matter which directory pytest is started from.
+_EXAMPLES_ROOT = Path(__file__).resolve().parents[3] / "examples" / "python" / "tla_dsl"
+if str(_EXAMPLES_ROOT) not in sys.path:
+    sys.path.append(str(_EXAMPLES_ROOT))
 
 
 def _load_pretest_bootstrap(repo_root: Path):  # type: ignore[no-untyped-def]
@@ -30,8 +39,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         # Fail fast instead of letting tests run against missing MLIR
         # binaries (which would fail later with confusing import errors).
         pytest.exit(
-            f"Pre-test MLIR build check failed: {exc}\n"
-            "Run `./build.sh` first.",
+            f"Pre-test MLIR build check failed: {exc}\nRun `./build.sh` first.",
             returncode=1,
         )
 

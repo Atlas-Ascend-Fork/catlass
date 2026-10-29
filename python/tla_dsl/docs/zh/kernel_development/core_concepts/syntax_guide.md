@@ -266,7 +266,7 @@ Python 的 36 个内置关键字全部列出如下，按功能分类。两个支
 
 ## 实例
 
-示例取自 `examples/end_to_end` 并精简，完整可运行版本见对应文件。
+示例取自 `tla/kernel` 与 `dsl_tutorials` 并精简，完整可运行版本见对应文件。
 
 ### 动态 if：分支内改变量须先初始化
 
@@ -471,6 +471,6 @@ artifact(tiling, out)
 
 ## 参考资料
 
-- 控制流使用示例：[`scalar_index_control_flow.py`](../../../../examples/end_to_end/tensor_index/scalar_index_control_flow.py)、[`basic_vadd.py`](../../../../examples/end_to_end/basic_vadd/basic_vadd.py)、[`register_control_flow.py`](../../../../examples/end_to_end/vector_ops/register_control_flow.py)
+- 控制流使用示例：[`scalar_index_control_flow.py`](../../../../../../examples/python/tla_dsl/dsl_tutorials/tensor_index/scalar_index_control_flow.py)、[`basic_vadd.py`](../../../../../../examples/python/tla_dsl/tla/kernel/vec/basic_vadd/basic_vadd.py)、[`register_control_flow.py`](../../../../../../examples/python/tla_dsl/dsl_tutorials/vector_simd_ops/register_control_flow.py)
 - 控制流 AST 实现：[`ast_preprocessor.py`](../../../../catlass/base_dsl/ast_preprocessor.py)、[`tla_ast_decorators.py`](../../../../catlass/tla_ast_decorators.py)
 - 控制流测试用例参考：[`test_frontend_branching.py`](../../../../tests/test_frontend_branching.py)、[`test_frontend_for_range.py`](../../../../tests/test_frontend_for_range.py)、[`test_frontend_while.py`](../../../../tests/test_frontend_while.py)、[`test_frontend_with.py`](../../../../tests/test_frontend_with.py)

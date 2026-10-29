@@ -124,7 +124,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                 yield (
                     f"syrk-{m}x{k}-{dtype}-b{blocks}",
                     [[
-                        "basic_syrk/basic_syrk.py", "--m", m, "--k", k,
+                        "tla/kernel/matmul/basic_syrk/basic_syrk.py", "--m", m, "--k", k,
                         "--dtype", dtype, "--block-num", blocks, *dev,
                     ]],
                 )
@@ -137,7 +137,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     # a symmetric residual so that check still holds, and the split-K cases pick
     # a K long enough for the planner to split it.
     for dtype in ("f16", "bf16"):
-        syrk = ["basic_syrk/basic_syrk.py", "--dtype", dtype, *dev]
+        syrk = ["tla/kernel/matmul/basic_syrk/basic_syrk.py", "--dtype", dtype, *dev]
         shape = ["--batch", "2", "--m", "145", "--k", "1025"]
         poly = ["--alpha", "2.0", "--diagonal", "3.0"]
         # Reusing L1 buffers after a one-tile prologue, then an uneven K split.
@@ -174,7 +174,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     # --- basic_mmad: the flag-sync layout x dtype matrix ---
     yield from _mmad_cases(
         "mmad",
-        "basic_mmad/basic_matmul.py",
+        "tla/kernel/matmul/basic_mmad/basic_matmul.py",
         device,
     )
 
@@ -217,7 +217,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                 yield (
                     f"mx-mmad-{case.replace(',', '-')}-{la}{lb}-{shape_label}",
                     [[
-                        "mx_mmad/mx_matmul.py", "--case", case,
+                        "tla/kernel/matmul/mx_mmad/mx_matmul.py", "--case", case,
                         "--layout-a", la, "--layout-b", lb,
                         *shape_args, *dev,
                     ]],
@@ -246,7 +246,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                 yield (
                     f"mx-mmad-bias-{case.replace(',', '-')}-{la}{lb}-{shape_label}",
                     [[
-                        "mx_mmad/mx_matmul_bias.py", "--case", case,
+                        "tla/kernel/matmul/mx_mmad/mx_matmul_bias.py", "--case", case,
                         "--layout-a", la, "--layout-b", lb,
                         *shape_args, *dev,
                     ]],
@@ -260,7 +260,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         yield (
             f"mmad-{label}",
             [[
-                f"basic_mmad/{script}", *MMAD_MNK, *MMAD_ROW_ROW,
+                f"tla/kernel/matmul/basic_mmad/{script}", *MMAD_MNK, *MMAD_ROW_ROW,
                 "--dtype-a", "f16", "--dtype-b", "f16", "--dtype-c", "f32", *dev,
             ]],
         )
@@ -269,7 +269,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         yield (
             f"mmad-atomic-add-{dtype}",
             [[
-                "basic_mmad/basic_matmul_atomic_add.py", *MMAD_MNK, *MMAD_ROW_ROW,
+                "tla/kernel/matmul/basic_mmad/basic_matmul_atomic_add.py", *MMAD_MNK, *MMAD_ROW_ROW,
                 "--dtype-a", dtype, "--dtype-b", dtype, "--dtype-c", "f32", *dev,
             ]],
         )
@@ -279,12 +279,12 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     # every block. Operand dtypes follow basic_matmul.py, and the output follows
     # from them, so there is no --dtype-c to vary: i8 x i8 writes an i32
     # accumulator, every other route keeps fp32.
-    yield ("mmad-bias-default", [["basic_mmad/basic_matmul_bias.py", *dev]])
+    yield ("mmad-bias-default", [["tla/kernel/matmul/basic_mmad/basic_matmul_bias.py", *dev]])
     for dtype in ("f16", "bf16", "f32", "i8"):
         yield (
             f"mmad-bias-{dtype}",
             [[
-                "basic_mmad/basic_matmul_bias.py",
+                "tla/kernel/matmul/basic_mmad/basic_matmul_bias.py",
                 *MMAD_MNK,
                 "--dtype-a", dtype, "--dtype-b", dtype, *dev,
             ]],
@@ -300,17 +300,17 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         yield (
             f"mmad-bias-{dtype_a}-{dtype_b}",
             [[
-                "basic_mmad/basic_matmul_bias.py",
+                "tla/kernel/matmul/basic_mmad/basic_matmul_bias.py",
                 *MMAD_MNK,
                 "--dtype-a", dtype_a, "--dtype-b", dtype_b, *dev,
             ]],
         )
 
-    yield ("mmad-ptr", [["basic_mmad/basic_mmad_ptr.py", *dev]])
+    yield ("mmad-ptr", [["tla/kernel/matmul/basic_mmad/basic_mmad_ptr.py", *dev]])
 
     # basic_mmad_l0c2l1: cube-only E=(A@B)@D, L0C->L1 (fixpipe) staging reused
     # as the second mmad's LHS; single static tile (M=50/N=60/K=64).
-    yield ("mmad-l0c2l1", [["basic_mmad/basic_matmul_l0c2l1.py", *dev]])
+    yield ("mmad-l0c2l1", [["tla/kernel/matmul/basic_mmad/basic_matmul_l0c2l1.py", *dev]])
 
     # --- basic_mmad fixpipe per-tensor quant, with and without relu ---
     # `--dtype-ab` picks the accumulator (f32 -> f32, i8 -> i32) and with it the
@@ -328,7 +328,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                 yield (
                     f"mmad-fixpipe-per-tensor-{layout_c}-{src}-{dst}-relu{relu}",
                     [[
-                        "basic_mmad/basic_matmul_fixpipe_per_tensor.py",
+                        "tla/kernel/matmul/basic_mmad/basic_matmul_fixpipe_per_tensor.py",
                         *MMAD_MNK,
                         "--dtype-ab", dtype_ab, "--dtype-c", dst,
                         "--relu-enable", str(relu),
@@ -352,7 +352,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                 yield (
                     f"mmad-fixpipe-per-channel-{layout_c}-{src}-{dst}-relu{relu}",
                     [[
-                        "basic_mmad/basic_matmul_fixpipe_per_channel.py",
+                        "tla/kernel/matmul/basic_mmad/basic_matmul_fixpipe_per_channel.py",
                         *MMAD_MNK,
                         "--dtype-ab", dtype_ab, "--dtype-c", dst,
                         "--relu-enable", str(relu),
@@ -368,7 +368,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             yield (
                 f"vadd-{label}-{dtype}",
                 [[
-                    "basic_vadd/basic_vadd.py", "--dtype", dtype, *dev,
+                    "tla/kernel/vec/basic_vadd/basic_vadd.py", "--dtype", dtype, *dev,
                     *([mode] if mode else []),
                 ]],
             )
@@ -376,19 +376,19 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     # --- extern_op: user-provided Ascend C functions called from TLA kernels ---
     yield (
         "extern-vecadd",
-        [["extern_op/extern_vecadd.py", *dev]],
+        [["dsl_tutorials/extern_op/extern_vecadd.py", *dev]],
     )
     yield (
         "extern-dual-core",
-        [["extern_op/extern_dual_core.py", *dev]],
+        [["dsl_tutorials/extern_op/extern_dual_core.py", *dev]],
     )
     yield (
         "extern-multi-ops",
-        [["extern_op/extern_multi_ops.py", *dev]],
+        [["dsl_tutorials/extern_op/extern_multi_ops.py", *dev]],
     )
     yield (
         "extern-custom-include",
-        [["extern_op/extern_custom_include.py", *dev]],
+        [["dsl_tutorials/extern_op/extern_custom_include.py", *dev]],
     )
 
     # --- basic_mixed ---
@@ -397,24 +397,24 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     yield (
         "mixed-compile-then-cache-reuse",
         [
-            ["basic_mixed/basic_mixed.py", *dev, "--block-num", "1"],
-            ["basic_mixed/basic_mixed.py", *dev, "--block-num", "1"],
+            ["tla/kernel/matmul/basic_mixed/basic_mixed.py", *dev, "--block-num", "1"],
+            ["tla/kernel/matmul/basic_mixed/basic_mixed.py", *dev, "--block-num", "1"],
         ],
     )
     yield (
         "mixed-mutex",
-        [["basic_mixed/basic_mixed_mutex.py", *dev, "--block-num", "1"]],
+        [["tla/kernel/matmul/basic_mixed/basic_mixed_mutex.py", *dev, "--block-num", "1"]],
     )
-    yield ("mixed-ub2l1", [["basic_mixed/basic_mixed_ub2l1.py", *dev]])
-    yield ("mixed-store-zN", [["basic_mixed/basic_mixed_store_zN.py", *dev]])
+    yield ("mixed-ub2l1", [["tla/kernel/matmul/basic_mixed/basic_mixed_ub2l1.py", *dev]])
+    yield ("mixed-store-zN", [["tla/kernel/matmul/basic_mixed/basic_mixed_store_zN.py", *dev]])
     # m=64 is fractal-aligned (multiple of 16); m=50 exercises the zNUnAlign M
     # axis, where the dest leaf[0] is the runtime row count and the stride varies.
     for m in ("64", "50"):
         yield (
             f"mixed-store-zNUnAlign-m{m}",
-            [["basic_mixed/basic_mixed_store_zNUnAlign.py", *dev, "--m", m]],
+            [["tla/kernel/matmul/basic_mixed/basic_mixed_store_zNUnAlign.py", *dev, "--m", m]],
         )
-    yield ("mixed-fixpipe-nz2dn", [["basic_mixed/basic_mixed_fixpipe_nz2dn.py", *dev]])
+    yield ("mixed-fixpipe-nz2dn", [["tla/kernel/matmul/basic_mixed/basic_mixed_fixpipe_nz2dn.py", *dev]])
 
     # --- mixed-core handshake and standalone control-flow probes ---
     # flash_attention_infer routes --mask to two independently compiled
@@ -423,38 +423,38 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     for mask_mode in ("causal", "none"):
         yield (
             f"flash-attention-infer-{mask_mode}",
-            [["flash_attention_infer/flash_attention_infer.py", "--mask", mask_mode, *dev]],
+            [["tla/kernel/attention/flash_attention_infer/flash_attention_infer.py", "--mask", mask_mode, *dev]],
         )
     yield (
         "flash-attention-infer-causal-no-paged",
         [[
-            "flash_attention_infer/flash_attention_infer.py",
+            "tla/kernel/attention/flash_attention_infer/flash_attention_infer.py",
             "--mask", "causal", "--no-paged", "--kvseqlen", "160", *dev,
         ]],
     )
     yield (
         "flash-attention-infer-nomask-no-paged",
         [[
-            "flash_attention_infer/flash_attention_infer.py",
+            "tla/kernel/attention/flash_attention_infer/flash_attention_infer.py",
             "--mask", "none", "--no-paged", "--kvseqlen", "224", *dev,
         ]],
     )
     yield (
         "lazy-conditions",
-        [["lazy_conditions/lazy_conditions.py", *dev]],
+        [["dsl_tutorials/lazy_conditions/lazy_conditions.py", *dev]],
     )
     # Constexpr Callable / @tla.jit helper as Constexpr epilogue (Phase-1).
     yield (
         "constexpr-callable",
-        [["constexpr_callable/constexpr_callable_epilogue.py", *dev]],
+        [["dsl_tutorials/constexpr_callable/constexpr_callable_epilogue.py", *dev]],
     )
     yield (
         "jit-callable",
-        [["jit_callable/jit_callable_epilogue.py", *dev]],
+        [["dsl_tutorials/jit_callable/jit_callable_epilogue.py", *dev]],
     )
     yield (
         "simt-basic-vadd",
-        [["simt/basic_vadd_simt/basic_vadd_simt.py", *dev]],
+        [["dsl_tutorials/vector_simt_ops/basic_vadd_simt/basic_vadd_simt.py", *dev]],
     )
     # The only battery case that puts a SIMT region inside a mixed AIC+AIV
     # kernel, and the only one that gives SIMT any UB at all: basic_vadd_simt
@@ -462,14 +462,14 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     # launch-sized UB region, whose buffer the SIMD and SIMT stages share.
     yield (
         "simt-mixed",
-        [["simt/simt_mixed/simt_mixed.py", *dev]],
+        [["dsl_tutorials/vector_simt_ops/simt_mixed/simt_mixed.py", *dev]],
     )
     # The op coverage for SIMT: arithmetic, abs/exp/log/sqrt, max/min/where,
     # over six dtypes -- including the bf16 round-trip through f32 and the
     # integer divide. simt-basic-vadd exercises a single addition.
     yield (
         "simt-multi-ops",
-        [["simt/multi_ops_simt/multi_ops_simt.py", *dev]],
+        [["dsl_tutorials/vector_simt_ops/multi_ops_simt/multi_ops_simt.py", *dev]],
     )
 
     # --- multi_core_splitk_matmul and tail_multi_core_splitk_matmul ---
@@ -477,28 +477,28 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         for m, n, k in MMAD_SHAPES + BIG_SHAPES:
             yield (
                 f"{script}-{m}x{n}x{k}",
-                [[f"multi_core_splitk_matmul/{script}", "--m", m, "--n", n, "--k", k, *dev]],
+                [[f"tla/kernel/matmul/multi_core_splitk_matmul/{script}", "--m", m, "--n", n, "--k", k, *dev]],
             )
 
     # --- basic_mmad_streamk: a streamK example for workload balance ---
     for m, n, k in MMAD_SHAPES + BIG_SHAPES:
         yield (
             f"mmad-streamk-{m}x{n}x{k}",
-            [["basic_mmad_streamk/basic_mmad_streamk.py", "--m", m, "--n", n, "--k", k, *dev]],
+            [["tla/kernel/matmul/basic_mmad_streamk/basic_mmad_streamk.py", "--m", m, "--n", n, "--k", k, *dev]],
         )
 
     # --- batched_matmul ---
     for b, m, n, k in BATCH_SHAPES:
         yield (
             f"batched-matmul-{b}x{m}x{n}x{k}",
-            [["batched_matmul/batched_matmul.py", "--batch", b, "--m", m, "--n", n, "--k", k, *dev]],
+            [["tla/kernel/matmul/batched_matmul/batched_matmul.py", "--batch", b, "--m", m, "--n", n, "--k", k, *dev]],
         )
 
     # --- grouped_matmul_slice_m: grouped matmul example ---
     yield (
         "grouped-matmul-slice-m",
-        [["grouped_matmul_slice_m/grouped_matmul_slice_m.py", *dev],
-         ["grouped_matmul_slice_m/grouped_matmul_slice_m.py",
+        [["tla/kernel/gmm/grouped_matmul_slice_m/grouped_matmul_slice_m.py", *dev],
+         ["tla/kernel/gmm/grouped_matmul_slice_m/grouped_matmul_slice_m.py",
             "--groups", "3", "--m", "768", "--n", "333", "--k", "333", *dev]]
     )
 
@@ -522,7 +522,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                 yield (
                     f"mmad-epilogue-{op.replace('_', '-')}-{m}x{n}x{k}-{dab}-{dc}",
                     [[
-                        f"basic_mmad_epilogue/matmul_{op}.py",
+                        f"tla/kernel/matmul/basic_mmad_epilogue/matmul_{op}.py",
                         "--m", m, "--n", n, "--k", k,
                         "--dtype-a", dab, "--dtype-b", dab, "--dtype-c", dc,
                         *dev
@@ -532,36 +532,36 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     # --- vector_ops: each of these sweeps or batches many kernels internally ---
     yield (
         "vector-masked-binary",
-        [["vector_ops/masked_binary.py", "masked_binary", "--sweep", "--shapes", "400", *dev]],
+        [["dsl_tutorials/vector_simd_ops/masked_binary.py", "masked_binary", "--sweep", "--shapes", "400", *dev]],
     )
     yield (
         "vector-bitwise-ops",
-        [["vector_ops/bitwise_ops.py", "bitwise_ops", "--sweep", "--shapes", "400", *dev]],
+        [["dsl_tutorials/vector_simd_ops/bitwise_ops.py", "bitwise_ops", "--sweep", "--shapes", "400", *dev]],
     )
     yield (
         "vector-binary-op",
         [[
-            "vector_ops/binary_op.py", "--batch-run",
+            "dsl_tutorials/vector_simd_ops/binary_op.py", "--batch-run",
             "add", "sub", "mul", "div", "max", "min", "add_unalign", "add_brc_b32",
             "--shape", "400", "--batch-size", "4", *dev,
         ]],
     )
-    yield ("vector-reduction-ops", [["vector_ops/reduction_ops.py", "--batch-run", *dev]])
+    yield ("vector-reduction-ops", [["dsl_tutorials/vector_simd_ops/reduction_ops.py", "--batch-run", *dev]])
     yield (
         "vector-load-store-scalar-after-reduction",
-        [["vector_ops/load_and_store_scalar_after_reduction.py", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_and_store_scalar_after_reduction.py", *dev]],
     )
     yield (
         "vector-compare-mask",
         [[
-            "vector_ops/compare_mask.py", "--batch-run", *COMPARE_MASK_OPS,
+            "dsl_tutorials/vector_simd_ops/compare_mask.py", "--batch-run", *COMPARE_MASK_OPS,
             "--shape", "400", "--batch-size", "4", *dev,
         ]],
     )
     yield (
         "vector-unary-ops",
         [[
-            "vector_ops/unary_ops.py", "--batch-run",
+            "dsl_tutorials/vector_simd_ops/unary_ops.py", "--batch-run",
             "exp", "log", "sqrt", "abs", "neg", "masked_unary", "masked_abs", "masked_neg",
             "--shape", "400", "--batch-size", "4", *dev,
         ]],
@@ -569,14 +569,14 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     yield (
         "vector-arange-op",
         [[
-            "vector_ops/arange_op.py", "--batch-run", "increase", "decrease",
+            "dsl_tutorials/vector_simd_ops/arange_op.py", "--batch-run", "increase", "decrease",
             "--shape", "400", "--batch-size", "4", *dev,
         ]],
     )
     yield (
         "vector-interleave-op",
         [[
-            "vector_ops/interleave_op.py", "--batch-run", "interleave", "deinterleave",
+            "dsl_tutorials/vector_simd_ops/interleave_op.py", "--batch-run", "interleave", "deinterleave",
             "--shape", "512", "--batch-size", "4", *dev,
         ]],
     )
@@ -585,7 +585,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         yield (
             f"vector-{op.replace('_', '-')}-op",
             [[
-                "vector_ops/mask_interleave_op.py", op,
+                "dsl_tutorials/vector_simd_ops/mask_interleave_op.py", op,
                 "--all-dtypes", "--shape", "512", *dev,
             ]],
         )
@@ -593,7 +593,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         "mask-pack-op",
         [
             [
-                "vector_ops/pack_op.py",
+                "dsl_tutorials/vector_simd_ops/pack_op.py",
                 "--mask-width", mask_width,
                 "--part", part,
                 *dev,
@@ -605,23 +605,23 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     yield (
         "vector-mask-select-op",
         [[
-            "vector_ops/mask_select_op.py", "mask_select",
+            "dsl_tutorials/vector_simd_ops/mask_select_op.py", "mask_select",
             "--all-dtypes", "--shape", "512", *dev,
         ]],
     )
     yield (
         "vector-load-dintlv-op",
-        [["vector_ops/load_dintlv_op.py", "dintlv_b32", "--sweep", "--shapes", "512", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_dintlv_op.py", "dintlv_b32", "--sweep", "--shapes", "512", *dev]],
     )
     yield (
         "vector-load-us-b8-op",
-        [["vector_ops/load_us_b8_op.py", "us_b8", "--sweep", "--shapes", "512", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_us_b8_op.py", "us_b8", "--sweep", "--shapes", "512", *dev]],
     )
     yield (
         "vector-load-dist-ops",
         [
             [
-                "vector_ops/load_dist_ops.py",
+                "dsl_tutorials/vector_simd_ops/load_dist_ops.py",
                 op,
                 "--sweep",
                 "--shapes",
@@ -633,55 +633,55 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     )
     yield (
         "vector-load-store-mask",
-        [["vector_ops/load_store_mask.py", "load_store_mask", "--all-dtypes", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_store_mask.py", "load_store_mask", "--all-dtypes", *dev]],
     )
     yield (
         "vector-store-pack",
-        [["vector_ops/store_pack.py", "store_pack", "--all-dtypes", *dev]],
+        [["dsl_tutorials/vector_simd_ops/store_pack.py", "store_pack", "--all-dtypes", *dev]],
     )
     yield (
         "vector-store-first-element",
-        [["vector_ops/store_first_element_op.py", "store_first_element", "--all-dtypes", *dev]],
+        [["dsl_tutorials/vector_simd_ops/store_first_element_op.py", "store_first_element", "--all-dtypes", *dev]],
     )
     yield (
         "vector-load-stride",
-        [["vector_ops/load_stride_op.py", "stride", "--all-dtypes", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_stride_op.py", "stride", "--all-dtypes", *dev]],
     )
     yield (
         "vector-load-stride-repeat",
-        [["vector_ops/load_stride_op.py", "repeat", "--all-dtypes", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_stride_op.py", "repeat", "--all-dtypes", *dev]],
     )
     yield (
         "vector-load-stride-post",
-        [["vector_ops/load_stride_op.py", "post", "--all-dtypes", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_stride_op.py", "post", "--all-dtypes", *dev]],
     )
     yield (
         "vector-squeeze-op",
-        [["vector_ops/squeeze_op.py", "squeeze", "--sweep", "--shapes", "64", *dev]],
+        [["dsl_tutorials/vector_simd_ops/squeeze_op.py", "squeeze", "--sweep", "--shapes", "64", *dev]],
     )
     yield (
         "vector-register-control-flow",
-        [["vector_ops/register_control_flow.py", "register_carriers", *dev]],
+        [["dsl_tutorials/vector_simd_ops/register_control_flow.py", "register_carriers", *dev]],
     )
     yield (
         "vector-cast-multi",
-        [["vector_ops/cast_multi.py", "cast_multi", "--shape", "256", *dev]],
+        [["dsl_tutorials/vector_simd_ops/cast_multi.py", "cast_multi", "--shape", "256", *dev]],
     )
     # Same-width bit reinterpretation: the f32 round trips through i32 and u32
     # are subtracted to zero, so a rewritten register shows as a mismatch
     # rather than hiding behind the exponent term.
     yield (
         "vector-bitcast",
-        [["vector_ops/bitcast_op.py", "bitcast", "--shape", "256", *dev]],
+        [["dsl_tutorials/vector_simd_ops/bitcast_op.py", "bitcast", "--shape", "256", *dev]],
     )
     yield (
         "vector-gather",
-        [["vector_ops/gather_op.py", "--run", *dev]],
+        [["dsl_tutorials/vector_simd_ops/gather_op.py", "--run", *dev]],
     )
     yield (
         "vector-shift-op",
         [
-            ["vector_ops/shift_op.py", shift_op, "--all-dtypes", *dev]
+            ["dsl_tutorials/vector_simd_ops/shift_op.py", shift_op, "--all-dtypes", *dev]
             for shift_op in ("shift_left", "shift_right", "shift_lefts", "shift_rights")
         ],
     )
@@ -691,7 +691,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             f"vector-load-mask-dist-ds-{mask_dt}",
             [
                 [
-                    "vector_ops/load_mask_dist.py",
+                    "dsl_tutorials/vector_simd_ops/load_mask_dist.py",
                     "ds",
                     "--run",
                     "--mask-dtype",
@@ -704,7 +704,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             f"vector-load-mask-dist-us-{mask_dt}",
             [
                 [
-                    "vector_ops/load_mask_dist.py",
+                    "dsl_tutorials/vector_simd_ops/load_mask_dist.py",
                     "us",
                     "--run",
                     "--mask-dtype",
@@ -715,16 +715,16 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         )
     yield (
         "vector-load-store-update",
-        [["vector_ops/load_store_update.py", "add", "--shape", "400", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_store_update.py", "add", "--shape", "400", *dev]],
     )
     yield (
         "vector-load-store-block-update",
-        [["vector_ops/load_store_block_update.py", "add", "--shape", "400", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_store_block_update.py", "add", "--shape", "400", *dev]],
     )
     yield (
         "vector-load-store-unalign",
         [[
-            "vector_ops/load_store_unalign.py",
+            "dsl_tutorials/vector_simd_ops/load_store_unalign.py",
             "add",
             "--dtype",
             "f32",
@@ -738,7 +738,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     yield (
         "vector-load-store-unalign-once",
         [[
-            "vector_ops/load_store_unalign.py",
+            "dsl_tutorials/vector_simd_ops/load_store_unalign.py",
             "add",
             "--dtype",
             "f16",
@@ -752,17 +752,17 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     # Align UPDATE: stride≠VL (overlap + hole); UnAlign is dense-only now.
     yield (
         "vector-load-store-update-stride-geoms",
-        [["vector_ops/load_store_update.py", "--stride-geoms", *dev]],
+        [["dsl_tutorials/vector_simd_ops/load_store_update.py", "--stride-geoms", *dev]],
     )
 
     # --- tensor_index ---
     yield (
         "tensor-index-scalar-control-flow",
-        [["tensor_index/scalar_index_control_flow.py", *dev]],
+        [["dsl_tutorials/tensor_index/scalar_index_control_flow.py", *dev]],
     )
     yield (
         "tensor-index-scalar-kernel-arg",
-        [["tensor_index/scalar_kernel_arg.py", *dev]],
+        [["dsl_tutorials/tensor_index/scalar_kernel_arg.py", *dev]],
     )
 
     # --- print_tensor, GM storage ---
@@ -770,7 +770,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         yield (
             f"print-tensor-gm-b{blocks}-c{calls}",
             [[
-                "print_tensor/print_tensor.py", "--run", *dev,
+                "dsl_tutorials/print_tensor/print_tensor.py", "--run", *dev,
                 "--block-num", blocks, "--calls", calls, *dtype_args,
             ]],
         )
@@ -779,7 +779,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     yield (
         "debug-print-matrix",
         [[
-            "debug_print/debug_print.py", "--run", *dev,
+            "dsl_tutorials/debug_print/debug_print.py", "--run", *dev,
             "--all-dtypes", "--block-num", "2", "--expect-count", "2",
         ]],
     )
@@ -787,43 +787,43 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         yield (
             f"debug-print-f16-{value}",
             [[
-                "debug_print/debug_print.py", "--run", *dev,
+                "dsl_tutorials/debug_print/debug_print.py", "--run", *dev,
                 "--dtype", "f16", f"--value={value}",
             ]],
         )
     yield (
         "debug-print-expression",
-        [["debug_print/debug_print.py", "--run", *dev, "--all-dtypes", "--expression"]],
+        [["dsl_tutorials/debug_print/debug_print.py", "--run", *dev, "--all-dtypes", "--expression"]],
     )
     for region in ("cube", "vector", "both"):
         yield (
             f"debug-print-mixed-{region}",
             [[
-                "debug_print/debug_print_mixed.py", "--run", *dev,
+                "dsl_tutorials/debug_print/debug_print_mixed.py", "--run", *dev,
                 "--all-dtypes", "--print-region", region,
             ]],
         )
     yield (
         "debug-print-format",
-        [["debug_print/debug_print_format.py", "--run", *dev, "--block-num", "2"]],
+        [["dsl_tutorials/debug_print/debug_print_format.py", "--run", *dev, "--block-num", "2"]],
     )
 
     # --- scalar_arg_alignment ---
     yield (
         "scalar-arg-alignment",
-        [["scalar_arg_alignment/scalar_arg_alignment.py", *dev]],
+        [["dsl_tutorials/scalar_arg_alignment/scalar_arg_alignment.py", *dev]],
     )
 
     # --- mixed Dynamic-GM and static memref arguments ---
     yield (
         "mixed-memref-arguments",
-        [["mixed_memref_arguments/mixed_memref_arguments.py", *dev]],
+        [["dsl_tutorials/mixed_memref_arguments/mixed_memref_arguments.py", *dev]],
     )
 
     # --- dataclass_arg (stdlib @dataclass unpacked into scalar kernel args) ---
     yield (
         "dataclass-arg",
-        [["dataclass_arg/dataclass_arg.py", *dev]],
+        [["dsl_tutorials/dataclass_arg/dataclass_arg.py", *dev]],
     )
 
     # --- print_tensor, UB storage ---
@@ -831,7 +831,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         yield (
             f"print-tensor-ub-{case_name}-b{blocks}-c{calls}",
             [[
-                "print_tensor/print_tensor.py", "--run", *dev, "--storage", "ub",
+                "dsl_tutorials/print_tensor/print_tensor.py", "--run", *dev, "--storage", "ub",
                 "--case", case_name, "--block-num", blocks, "--calls", calls,
                 *dtype_args,
             ]],
@@ -844,13 +844,13 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
     ):
         yield (
             f"structured-args-{name}",
-            [[f"structured_arguments/{name}.py", *dev]],
+            [[f"dsl_tutorials/structured_arguments/{name}.py", *dev]],
         )
 
     # --- print_tensor, local AIC storage ---
     # Base cases sweep dtypes; repeated entries verify in-process cache reuse.
     local_common = [
-        "print_tensor/print_tensor.py", "--run", *dev,
+        "dsl_tutorials/print_tensor/print_tensor.py", "--run", *dev,
         "--arch-scope", "aic.c310",
     ]
     l1_zn_base = [*local_common, "--storage", "l1", "--layout", "zn", "--all-dtypes"]
@@ -916,7 +916,7 @@ def test_syrk_api_rejects_invalid_block_num(device: int) -> None:
     import torch
 
     example = example_runner.load_example(
-        example_runner.EXAMPLES_DIR / "basic_syrk/basic_syrk.py"
+        example_runner.EXAMPLES_DIR / "tla/kernel/matmul/basic_syrk/basic_syrk.py"
     )
     x = torch.ones((16, 16), dtype=torch.float16, device=f"npu:{device}")
     for block_num in (0, -2):

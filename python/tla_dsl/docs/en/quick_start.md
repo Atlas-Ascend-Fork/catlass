@@ -137,7 +137,7 @@ Passed.
 After installation, you can also directly run the end-to-end examples in the repository:
 
 ```bash
-python examples/end_to_end/basic_mmad/basic_matmul.py --device 0
+python examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py --device 0
 ```
 
-If the output contains `passed=True`, it means the environment and toolchain are ready. For more end-to-end examples, see `python/tla_dsl/examples/end_to_end/`.
+If the output contains `passed=True`, it means the environment and toolchain are ready. For more end-to-end examples, see `examples/python/tla_dsl/tla/kernel/` and `examples/python/tla_dsl/dsl_tutorials/`.

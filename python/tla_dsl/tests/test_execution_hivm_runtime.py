@@ -32,6 +32,11 @@ from catlass.base_dsl.runtime.argument_tree import ArgumentTreeError
 from catlass.tla.runtime import make_fake_tensor
 
 
+_EXAMPLES_DIR = (
+    Path(__file__).resolve().parents[3] / "examples" / "python" / "tla_dsl"
+)
+
+
 def _load_debug_print_example(*, mixed: bool = False):
     fake_catlass = types.ModuleType("catlass")
     fake_catlass.kernel = lambda function: function
@@ -40,7 +45,7 @@ def _load_debug_print_example(*, mixed: bool = False):
         fake_catlass.Float32 = float
     previous = sys.modules.get("catlass")
     sys.modules["catlass"] = fake_catlass
-    example_dir = Path(__file__).parents[1] / "examples/end_to_end/debug_print"
+    example_dir = _EXAMPLES_DIR / "dsl_tutorials/debug_print"
     previous_debug_print = sys.modules.get("debug_print")
     try:
         if mixed:
@@ -80,8 +85,8 @@ def _load_print_tensor_example():
     sys.modules["catlass"] = fake_catlass
     try:
         path = (
-            Path(__file__).parents[1]
-            / "examples/end_to_end/print_tensor/print_tensor.py"
+            _EXAMPLES_DIR
+            / "dsl_tutorials/print_tensor/print_tensor.py"
         )
         spec = importlib.util.spec_from_file_location("print_tensor_example", path)
         assert spec and spec.loader
@@ -103,7 +108,7 @@ def _load_basic_mixed_example():
     sys.modules["catlass"] = fake_catlass
     try:
         path = (
-            Path(__file__).parents[1] / "examples/end_to_end/basic_mixed/basic_mixed.py"
+            _EXAMPLES_DIR / "tla/kernel/matmul/basic_mixed/basic_mixed.py"
         )
         spec = importlib.util.spec_from_file_location("basic_mixed_example", path)
         assert spec and spec.loader

@@ -28,14 +28,14 @@ lit -sv csrc/mlir/build/tests/lit
 - This test additionally depends on an NPU environment and requires `torch` / `torch_npu` to be installed.
 
 ```bash
-cd /path/to/catlass/python/tla_dsl
-python examples/end_to_end/basic_mmad/basic_matmul.py --device 0
+cd /path/to/catlass
+python examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py --device 0
 ```
 
 Specify the matrix shape, layout, and data type:
 
 ```bash
-python examples/end_to_end/basic_mmad/basic_matmul.py \
+python examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py \
     --device 0 \
     --m 256 --n 512 --k 128 \
     --layout-a row --layout-b col \
@@ -52,7 +52,7 @@ kernel.o=<CACHE_DIR>/<CACHE_KEY>/kernel.o
 The available arguments are those shown by the script help:
 
 ```bash
-python examples/end_to_end/basic_mmad/basic_matmul.py --help
+python examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py --help
 ```
 
 ## Complete End-to-End Test

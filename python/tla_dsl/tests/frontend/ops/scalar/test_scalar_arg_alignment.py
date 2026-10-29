@@ -4,11 +4,12 @@ import ast
 from pathlib import Path
 
 
-_CATLASS_DSL_ROOT = Path(__file__).resolve().parents[4]
+_EXAMPLES_ROOT = (
+    Path(__file__).resolve().parents[6] / "examples" / "python" / "tla_dsl"
+)
 _EXAMPLE = (
-    _CATLASS_DSL_ROOT
-    / "examples"
-    / "end_to_end"
+    _EXAMPLES_ROOT
+    / "dsl_tutorials"
     / "scalar_arg_alignment"
     / "scalar_arg_alignment.py"
 )

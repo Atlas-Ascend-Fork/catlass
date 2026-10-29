@@ -1,4 +1,4 @@
-from examples.end_to_end.cross_flag_two_way.cross_flag_two_way import dump_tlair
+from dsl_tutorials.cross_flag_two_way.cross_flag_two_way import dump_tlair
 
 
 def test_two_way_cross_flag_example_emits_complete_handshake() -> None:

@@ -15,14 +15,14 @@ CATLASS Python 提供 `tla.print` 接口，用于在 kernel 内部进行调试�
 
 ## 使用示例
 
-下面以 `python/tla_dsl/examples/end_to_end/basic_mmad/basic_matmul.py` 中的 `basic_mmad_kernel` 为例。调试时请在下面两种方案中**二选一**。
+下面以 `examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py` 中的 `basic_mmad_kernel` 为例。调试时请在下面两种方案中**二选一**。
 
 ### 标量打印
 
 标量打印适合查看运行时整数、浮点数、block 调度和执行流。使用本方案时，kernel 中不能再有 `tla.print(tensor, ...)` 调用。
 
 ```diff
-# python/tla_dsl/examples/end_to_end/basic_mmad/basic_matmul.py
+# examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py
     with tla.cube():
 +       tla.print(123)  # 打印常量
 +       tla.print("Hello world")  # 打印字符串
@@ -57,7 +57,7 @@ CATLASS Python 提供 `tla.print` 接口，用于在 kernel 内部进行调试�
 Tensor 打印适合查看 GM 或 UB 中的数据。
 
 ```diff
-# python/tla_dsl/examples/end_to_end/basic_mmad/basic_matmul.py
+# examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py
     with tla.cube():
 +       tla.print(gm_a, 256)
         tla.set_flag(l1a0_available)
@@ -80,7 +80,7 @@ Tensor 打印适合查看 GM 或 UB 中的数据。
 确认 kernel 中只保留上述一种打印方案，并且没有残留的 L1、L0A、L0B 或 L0C Tensor 打印后再运行。CATLASS Python 编译器会根据 kernel 中的打印类型选择对应的调试 FIFO 通路，无需额外编译选项。建议启用强制重新编译环境变量，确保修改后的 kernel 和打印辅助代码重新生成：
 
 ```bash
-cd python/tla_dsl/examples/end_to_end/basic_mmad
+cd examples/python/tla_dsl/tla/kernel/matmul/basic_mmad
 
 # 单 block 启动方便观察输出
 CATLASS_DSL_FORCE_RECOMPILE=1 python basic_matmul.py --device 0 --block-num 1

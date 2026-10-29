@@ -32,7 +32,7 @@ def kernel_func(...):
 | `@tla.kernel` / `@tla.kernel()` | 不启用 AutoSync，核内同步由开发者显式描述。 |
 | `@tla.kernel(auto_sync="v0")` | 启用自动核内同步。 |
 
-完整端到端样例见 [basic_matmul_auto_sync.py](../../../../examples/end_to_end/basic_mmad/basic_matmul_auto_sync.py)。该样例使用 L1 和 L0 双缓冲，kernel 中未显式编写同步原语。
+完整端到端样例见 [basic_matmul_auto_sync.py](../../../../../../examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul_auto_sync.py)。该样例使用 L1 和 L0 双缓冲，kernel 中未显式编写同步原语。
 
 ### 使用约束
 

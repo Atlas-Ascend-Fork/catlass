@@ -28,14 +28,14 @@ lit -sv csrc/mlir/build/tests/lit
 - 该测试额外依赖NPU环境，并且需要安装`torch` / `torch_npu`。
 
 ```bash
-cd /path/to/catlass/python/tla_dsl
-python examples/end_to_end/basic_mmad/basic_matmul.py --device 0
+cd /path/to/catlass
+python examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py --device 0
 ```
 
 指定矩阵shape、layout和数据类型：
 
 ```bash
-python examples/end_to_end/basic_mmad/basic_matmul.py \
+python examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py \
     --device 0 \
     --m 256 --n 512 --k 128 \
     --layout-a row --layout-b col \
@@ -52,7 +52,7 @@ kernel.o=<CACHE_DIR>/<CACHE_KEY>/kernel.o
 可用参数以脚本帮助为准：
 
 ```bash
-python examples/end_to_end/basic_mmad/basic_matmul.py --help
+python examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py --help
 ```
 
 ## 完整的端到端测试

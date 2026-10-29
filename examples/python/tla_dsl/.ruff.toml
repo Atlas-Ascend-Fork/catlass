@@ -1,0 +1,10 @@
+target-version = "py310"
+
+# Pre-commit CI: suppress non-format lint (E402 after path bootstrap, re-export
+# F401/F822, latent F821, intentional unused DSL locals F841). Format is handled
+# by ruff-format.
+[lint.per-file-ignores]
+"tla/**/*.py" = ["E402", "F401", "F722", "F841", "I001", "UP035", "PLR0402"]
+"dsl_tutorials/**/*.py" = ["E402", "F401", "F722", "F841", "I001", "UP035", "PLR0402"]
+"experimental/**/*.py" = ["E402", "F401", "F722", "F841", "I001", "UP035", "PLR0402"]
+"helpers/**/*.py" = ["E402", "F401", "F722", "F841", "I001", "UP035", "PLR0402"]

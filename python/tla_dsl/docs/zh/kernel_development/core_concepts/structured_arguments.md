@@ -143,7 +143,7 @@ compiled(tx, aux, tout, block_num=1)
 
 动态维度和布局约束见 [静态与动态 Layout](layout.md)。
 普通 Tensor 与 Dynamic-GM 可以组合传入；描述符的物理字段由 DSL 处理。
-混合参数示例见 [mixed_memref_arguments.py](../../../../examples/end_to_end/structured_arguments/mixed_memref_arguments.py)。
+混合参数示例见 [mixed_memref_arguments.py](../../../../../../examples/python/tla_dsl/dsl_tutorials/structured_arguments/mixed_memref_arguments.py)。
 
 ## 已编译对象的复用
 

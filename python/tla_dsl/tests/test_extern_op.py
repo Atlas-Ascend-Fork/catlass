@@ -16,12 +16,9 @@ from catlass.base_dsl.arch import get_kernel_target
 from catlass.execution_lowering import ExternCompileSpec
 
 
+EXAMPLES_DIR = Path(__file__).parents[3] / "examples" / "python" / "tla_dsl"
 EXAMPLE_PATH = (
-    Path(__file__).parents[1]
-    / "examples"
-    / "end_to_end"
-    / "extern_op"
-    / "extern_vecadd.py"
+    EXAMPLES_DIR / "dsl_tutorials" / "extern_op" / "extern_vecadd.py"
 )
 DUAL_CORE_EXAMPLE_PATH = EXAMPLE_PATH.with_name("extern_dual_core.py")
 MULTI_OPS_EXAMPLE_PATH = EXAMPLE_PATH.with_name("extern_multi_ops.py")

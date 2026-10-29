@@ -107,7 +107,7 @@ compiled(gm_a, gm_b, gm_c, block_num=1)
 
 两种写法编译出的产物相同：实例作为 receiver 排在编译类型样本的第 0 位，落进 kernel 的 `self` 参数，不占启动 ABI。`n_ele` / `vl_ele` 是编译期输入，不同实例得到不同的编译产物；`gm_a`、`gm_b`、`gm_c` 仍是启动时传入的 tensor。
 
-完整 kernel 与可运行版本见 [vector_add_with_static_length.py](../../../../examples/end_to_end/kernel_in_class/vector_add_with_static_length.py)。
+完整 kernel 与可运行版本见 [vector_add_with_static_length.py](../../../../../../examples/python/tla_dsl/dsl_tutorials/kernel_in_class/vector_add_with_static_length.py)。
 
 约束：
 

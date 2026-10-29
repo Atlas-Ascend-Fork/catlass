@@ -9,46 +9,46 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
 #
-# End-to-end validation for python/tla_dsl/examples/end_to_end/basic_mmad (basic_matmul*.py, basic_mmad_ptr.py,
+# End-to-end validation for examples/python/tla_dsl/tla/kernel/matmul/basic_mmad (basic_matmul*.py, basic_mmad_ptr.py,
 # basic_matmul_l0c2l1.py, basic_matmul_bias.py),
-# python/tla_dsl/examples/end_to_end/basic_syrk (basic_syrk.py).
-# python/tla_dsl/examples/end_to_end/basic_vadd (basic_vadd.py),
-# python/tla_dsl/examples/end_to_end/extern_op (extern_vecadd.py, extern_dual_core.py),
-# python/tla_dsl/examples/end_to_end/basic_mixed (basic_mixed.py), python/tla_dsl/examples/end_to_end/basic_mixed_mutex (basic_mixed_mutex.py) and
-# python/tla_dsl/examples/end_to_end/basic_mixed (basic_mixed_ub2l1.py, basic_mixed_store_zN.py,
+# examples/python/tla_dsl/tla/kernel/matmul/basic_syrk (basic_syrk.py).
+# examples/python/tla_dsl/tla/kernel/vec/basic_vadd (basic_vadd.py),
+# examples/python/tla_dsl/dsl_tutorials/extern_op (extern_vecadd.py, extern_dual_core.py),
+# examples/python/tla_dsl/tla/kernel/matmul/basic_mixed (basic_mixed.py), examples/python/tla_dsl/tla/kernel/matmul/basic_mixed (basic_mixed_mutex.py) and
+# examples/python/tla_dsl/tla/kernel/matmul/basic_mixed (basic_mixed_ub2l1.py, basic_mixed_store_zN.py,
 # basic_mixed_store_zNUnAlign.py, basic_mixed_fixpipe_nz2dn.py).
-# python/tla_dsl/examples/end_to_end/vector_ops (binary_op.py, masked_binary.py,
+# examples/python/tla_dsl/dsl_tutorials/vector_simd_ops (binary_op.py, masked_binary.py,
 # bitwise_ops.py, reduction_ops.py, compare_mask.py, unary_ops.py, arange_op.py,
 # interleave_op.py, mask_interleave_op.py, pack_op.py, mask_select_op.py, load_dintlv_op.py, load_store_mask.py,
 # load_mask_dist.py, load_store_update.py, load_store_block_update.py, load_store_unalign.py, squeeze_op.py,
 # register_control_flow.py, load_and_store_scalar_after_reduction.py, load_us_b8_op.py,
 # cast_multi.py, gather_op.py, shift_op.py).
-# python/tla_dsl/examples/end_to_end/tensor_index (scalar_index_control_flow.py,
+# examples/python/tla_dsl/dsl_tutorials/tensor_index (scalar_index_control_flow.py,
 # scalar_kernel_arg.py).
-# python/tla_dsl/examples/end_to_end/debug_print (debug_print.py, debug_print_mixed.py,
+# examples/python/tla_dsl/dsl_tutorials/debug_print (debug_print.py, debug_print_mixed.py,
 # debug_print_format.py).
-# python/tla_dsl/examples/end_to_end/scalar_arg_alignment (scalar_arg_alignment.py).
-# python/tla_dsl/examples/end_to_end/dataclass_arg (dataclass_arg.py: stdlib
+# examples/python/tla_dsl/dsl_tutorials/scalar_arg_alignment (scalar_arg_alignment.py).
+# examples/python/tla_dsl/dsl_tutorials/dataclass_arg (dataclass_arg.py: stdlib
 # @dataclass instance unpacked into scalar kernel args).
-# python/tla_dsl/examples/end_to_end/structured_arguments (recursive arguments,
+# examples/python/tla_dsl/dsl_tutorials/structured_arguments (recursive arguments,
 # Tensor interfaces, scalar subclasses and mixed memref ABI).
-# python/tla_dsl/examples/end_to_end/print_tensor (print_tensor.py: GM/UB/L1/L0C
+# examples/python/tla_dsl/dsl_tutorials/print_tensor (print_tensor.py: GM/UB/L1/L0C
 # tensor dumps plus multi-block and multi-call cases).
-# python/tla_dsl/examples/end_to_end/basic_mmad_epilogue (matmul_add.py, matmul_add_ub.py,
+# examples/python/tla_dsl/tla/kernel/matmul/basic_mmad_epilogue (matmul_add.py, matmul_add_ub.py,
 # matmul_bias.py, matmul_leaky_relu.py, matmul_sigmoid.py, matmul_silu.py, matmul_tanh.py).
-# python/tla_dsl/examples/end_to_end/flash_attention_infer (flash_attention_infer.py).
-# python/tla_dsl/examples/end_to_end/lazy_conditions (lazy_conditions.py).
-# python/tla_dsl/examples/end_to_end/constexpr_callable (constexpr_callable_epilogue.py).
-# python/tla_dsl/examples/end_to_end/jit_callable (jit_callable_epilogue.py).
-# python/tla_dsl/examples/end_to_end/simt/basic_vadd_simt (basic_vadd_simt.py).
-# python/tla_dsl/examples/end_to_end/multi_core_splitk_matmul (multi_core_splitk_matmul.py,
+# examples/python/tla_dsl/tla/kernel/attention/flash_attention_infer (flash_attention_infer.py).
+# examples/python/tla_dsl/dsl_tutorials/lazy_conditions (lazy_conditions.py).
+# examples/python/tla_dsl/dsl_tutorials/constexpr_callable (constexpr_callable_epilogue.py).
+# examples/python/tla_dsl/dsl_tutorials/jit_callable (jit_callable_epilogue.py).
+# examples/python/tla_dsl/dsl_tutorials/vector_simt_ops/basic_vadd_simt (basic_vadd_simt.py).
+# examples/python/tla_dsl/tla/kernel/matmul/multi_core_splitk_matmul (multi_core_splitk_matmul.py,
 # tail_multi_core_splitk_matmul.py).
-# python/tla_dsl/examples/end_to_end/basic_mmad_streamk (basic_mmad_streamk.py).
-# python/tla_dsl/examples/end_to_end/mx_mmad (mx_matmul_bias.py: microscaling
+# examples/python/tla_dsl/tla/kernel/matmul/basic_mmad_streamk (basic_mmad_streamk.py).
+# examples/python/tla_dsl/tla/kernel/matmul/mx_mmad (mx_matmul_bias.py: microscaling
 # matmul with a 1 x N fp32 bias staged GM -> L1 -> biasbuf, consumed by the first
 # mmad_mx of each block; fp8 and fp4 operand formats).
-# python/tla_dsl/examples/end_to_end/batched_matmul (batched_matmul.py).
-# python/tla_dsl/examples/end_to_end/grouped_matmul_slice_m (grouped_matmul_slice_m.py).
+# examples/python/tla_dsl/tla/kernel/matmul/batched_matmul (batched_matmul.py).
+# examples/python/tla_dsl/tla/kernel/gmm/grouped_matmul_slice_m (grouped_matmul_slice_m.py).
 #
 # Toolchain paths:
 #   CANN:             ASCEND_HOME_PATH (source set_env.sh if not already in env)
@@ -56,6 +56,7 @@
 #   AscendNPU-IR:     CATLASS_DSL_PREBUILT_ASCENDNPU_IR
 #                     with repository submodule fallback
 #   TLA DSL:          CATLASS_DSL_DIR → CATDSL_ROOT/python/tla_dsl
+#   DSL examples:     EXAMPLES_DIR  → CATDSL_ROOT/examples/python/tla_dsl
 #
 # CANN 9.1+ ships hivmc-a5 in toolkit; no separate HIVMC sibling is required.
 #
@@ -71,6 +72,7 @@ CATDSL_ROOT="$(realpath "${SCRIPT_PATH}/..")"
 WORKSPACE_ROOT="${ASCEND_CATLASS_DSL_ROOT:-$(dirname "${CATDSL_ROOT}")}"
 
 CATLASS_DSL_DIR="${CATLASS_DSL_DIR:-${CATDSL_ROOT}/python/tla_dsl}"
+EXAMPLES_DIR="${EXAMPLES_DIR:-${CATDSL_ROOT}/examples/python/tla_dsl}"
 
 _resolve_cann_set_env_sh() {
     if [[ -n "${ASCEND_HOME_PATH:-}" && -f "${ASCEND_HOME_PATH}/set_env.sh" ]]; then
@@ -90,79 +92,79 @@ export CATLASS_DSL_FORCE_RECOMPILE="${CATLASS_DSL_FORCE_RECOMPILE:-1}"
 tla_dsl_wheel_path=""
 tla_dsl_wheel_site=""
 
-BASIC_MMAD_REL="examples/end_to_end/basic_mmad/basic_matmul.py"
-BASIC_MMAD_AUTO_SYNC_REL="examples/end_to_end/basic_mmad/basic_matmul_auto_sync.py"
-BASIC_MMAD_PTR_REL="examples/end_to_end/basic_mmad/basic_mmad_ptr.py"
-BASIC_MMAD_L0C2L1_REL="examples/end_to_end/basic_mmad/basic_matmul_l0c2l1.py"
-BASIC_MMAD_BIAS_REL="examples/end_to_end/basic_mmad/basic_matmul_bias.py"
-MX_MMAD_BIAS_REL="examples/end_to_end/mx_mmad/mx_matmul_bias.py"
-BASIC_MMAD_FIXPIPE_PER_TENSOR_REL="examples/end_to_end/basic_mmad/basic_matmul_fixpipe_per_tensor.py"
-BASIC_MMAD_FIXPIPE_PER_CHANNEL_REL="examples/end_to_end/basic_mmad/basic_matmul_fixpipe_per_channel.py"
-BASIC_SYRK_REL="examples/end_to_end/basic_syrk/basic_syrk.py"
-BASIC_VADD_REL="examples/end_to_end/basic_vadd/basic_vadd.py"
-EXTERN_VECADD_REL="examples/end_to_end/extern_op/extern_vecadd.py"
-EXTERN_DUAL_CORE_REL="examples/end_to_end/extern_op/extern_dual_core.py"
-BASIC_MIXED_REL="examples/end_to_end/basic_mixed/basic_mixed.py"
-BASIC_MIXED_MUTEX_REL="examples/end_to_end/basic_mixed/basic_mixed_mutex.py"
-BASIC_MIXED_UB2L1_REL="examples/end_to_end/basic_mixed/basic_mixed_ub2l1.py"
-BASIC_MIXED_STORE_ZN_REL="examples/end_to_end/basic_mixed/basic_mixed_store_zN.py"
-BASIC_MIXED_STORE_ZNUNALIGN_REL="examples/end_to_end/basic_mixed/basic_mixed_store_zNUnAlign.py"
-BASIC_MIXED_FIXPIPE_NZ2DN_REL="examples/end_to_end/basic_mixed/basic_mixed_fixpipe_nz2dn.py"
-MASKED_BINARY_REL="examples/end_to_end/vector_ops/masked_binary.py"
-BITWISE_OPS_REL="examples/end_to_end/vector_ops/bitwise_ops.py"
-BINARY_OP_REL="examples/end_to_end/vector_ops/binary_op.py"
-REDUCTION_OPS_REL="examples/end_to_end/vector_ops/reduction_ops.py"
-LOAD_STORE_SCALAR_AFTER_REDUCTION_REL="examples/end_to_end/vector_ops/load_and_store_scalar_after_reduction.py"
-COMPARE_MASK_REL="examples/end_to_end/vector_ops/compare_mask.py"
+BASIC_MMAD_REL="tla/kernel/matmul/basic_mmad/basic_matmul.py"
+BASIC_MMAD_AUTO_SYNC_REL="tla/kernel/matmul/basic_mmad/basic_matmul_auto_sync.py"
+BASIC_MMAD_PTR_REL="tla/kernel/matmul/basic_mmad/basic_mmad_ptr.py"
+BASIC_MMAD_L0C2L1_REL="tla/kernel/matmul/basic_mmad/basic_matmul_l0c2l1.py"
+BASIC_MMAD_BIAS_REL="tla/kernel/matmul/basic_mmad/basic_matmul_bias.py"
+MX_MMAD_BIAS_REL="tla/kernel/matmul/mx_mmad/mx_matmul_bias.py"
+BASIC_MMAD_FIXPIPE_PER_TENSOR_REL="tla/kernel/matmul/basic_mmad/basic_matmul_fixpipe_per_tensor.py"
+BASIC_MMAD_FIXPIPE_PER_CHANNEL_REL="tla/kernel/matmul/basic_mmad/basic_matmul_fixpipe_per_channel.py"
+BASIC_SYRK_REL="tla/kernel/matmul/basic_syrk/basic_syrk.py"
+BASIC_VADD_REL="tla/kernel/vec/basic_vadd/basic_vadd.py"
+EXTERN_VECADD_REL="dsl_tutorials/extern_op/extern_vecadd.py"
+EXTERN_DUAL_CORE_REL="dsl_tutorials/extern_op/extern_dual_core.py"
+BASIC_MIXED_REL="tla/kernel/matmul/basic_mixed/basic_mixed.py"
+BASIC_MIXED_MUTEX_REL="tla/kernel/matmul/basic_mixed/basic_mixed_mutex.py"
+BASIC_MIXED_UB2L1_REL="tla/kernel/matmul/basic_mixed/basic_mixed_ub2l1.py"
+BASIC_MIXED_STORE_ZN_REL="tla/kernel/matmul/basic_mixed/basic_mixed_store_zN.py"
+BASIC_MIXED_STORE_ZNUNALIGN_REL="tla/kernel/matmul/basic_mixed/basic_mixed_store_zNUnAlign.py"
+BASIC_MIXED_FIXPIPE_NZ2DN_REL="tla/kernel/matmul/basic_mixed/basic_mixed_fixpipe_nz2dn.py"
+MASKED_BINARY_REL="dsl_tutorials/vector_simd_ops/masked_binary.py"
+BITWISE_OPS_REL="dsl_tutorials/vector_simd_ops/bitwise_ops.py"
+BINARY_OP_REL="dsl_tutorials/vector_simd_ops/binary_op.py"
+REDUCTION_OPS_REL="dsl_tutorials/vector_simd_ops/reduction_ops.py"
+LOAD_STORE_SCALAR_AFTER_REDUCTION_REL="dsl_tutorials/vector_simd_ops/load_and_store_scalar_after_reduction.py"
+COMPARE_MASK_REL="dsl_tutorials/vector_simd_ops/compare_mask.py"
 COMPARE_MASK_OPS=(
     vector_vector_lt vector_vector_le vector_vector_gt vector_vector_ge vector_vector_eq vector_vector_ne
     vector_scalar_gt vector_scalar_ge
     masked_vector_vector_lt cmp_masked_fused static_dynamic_lt
 )
-UNARY_OPS_REL="examples/end_to_end/vector_ops/unary_ops.py"
-ARANGE_OP_REL="examples/end_to_end/vector_ops/arange_op.py"
-INTERLEAVE_OP_REL="examples/end_to_end/vector_ops/interleave_op.py"
-MASK_INTERLEAVE_OP_REL="examples/end_to_end/vector_ops/mask_interleave_op.py"
-MASK_SELECT_OP_REL="examples/end_to_end/vector_ops/mask_select_op.py"
-LOAD_DINTLV_OP_REL="examples/end_to_end/vector_ops/load_dintlv_op.py"
-LOAD_US_B8_OP_REL="examples/end_to_end/vector_ops/load_us_b8_op.py"
-LOAD_DIST_OPS_REL="examples/end_to_end/vector_ops/load_dist_ops.py"
-LOAD_STORE_MASK_REL="examples/end_to_end/vector_ops/load_store_mask.py"
-LOAD_MASK_DIST_REL="examples/end_to_end/vector_ops/load_mask_dist.py"
-LOAD_STORE_UPDATE_REL="examples/end_to_end/vector_ops/load_store_update.py"
-LOAD_STORE_BLOCK_UPDATE_REL="examples/end_to_end/vector_ops/load_store_block_update.py"
-LOAD_STORE_UNALIGN_REL="examples/end_to_end/vector_ops/load_store_unalign.py"
-STORE_PACK_REL="examples/end_to_end/vector_ops/store_pack.py"
-STORE_FIRST_ELEMENT_OP_REL="examples/end_to_end/vector_ops/store_first_element_op.py"
-SQUEEZE_OP_REL="examples/end_to_end/vector_ops/squeeze_op.py"
-REGISTER_CONTROL_FLOW_REL="examples/end_to_end/vector_ops/register_control_flow.py"
-SCALAR_INDEX_CONTROL_FLOW_REL="examples/end_to_end/tensor_index/scalar_index_control_flow.py"
-SCALAR_KERNEL_ARG_REL="examples/end_to_end/tensor_index/scalar_kernel_arg.py"
-DEBUG_PRINT_REL="examples/end_to_end/debug_print/debug_print.py"
-DEBUG_PRINT_MIXED_REL="examples/end_to_end/debug_print/debug_print_mixed.py"
-DEBUG_PRINT_FORMAT_REL="examples/end_to_end/debug_print/debug_print_format.py"
-SCALAR_ARG_ALIGNMENT_REL="examples/end_to_end/scalar_arg_alignment/scalar_arg_alignment.py"
-PRINT_TENSOR_REL="examples/end_to_end/print_tensor/print_tensor.py"
-STREAMK_OPS_REL="examples/end_to_end/basic_mmad_streamk/basic_mmad_streamk.py"
-GROUPED_MATMUL_SLICEM_REL="examples/end_to_end/grouped_matmul_slice_m/grouped_matmul_slice_m.py"
-BATCHED_MATMUL_REL="examples/end_to_end/batched_matmul/batched_matmul.py"
-FLASH_ATTENTION_INFER_REL="examples/end_to_end/flash_attention_infer/flash_attention_infer.py"
-LAZY_CONDITIONS_REL="examples/end_to_end/lazy_conditions/lazy_conditions.py"
-CONSTEXPR_CALLABLE_REL="examples/end_to_end/constexpr_callable/constexpr_callable_epilogue.py"
-JIT_CALLABLE_REL="examples/end_to_end/jit_callable/jit_callable_epilogue.py"
-SIMT_VADD_REL="examples/end_to_end/simt/basic_vadd_simt/basic_vadd_simt.py"
-MULTI_CORE_SPLITK_REL="examples/end_to_end/multi_core_splitk_matmul/multi_core_splitk_matmul.py"
-TAIL_MULTI_CORE_SPLITK_REL="examples/end_to_end/multi_core_splitk_matmul/tail_multi_core_splitk_matmul.py"
-BASIC_MMAD_EPILOGUE_ADD_REL="examples/end_to_end/basic_mmad_epilogue/matmul_add.py"
-BASIC_MMAD_EPILOGUE_ADD_UB_REL="examples/end_to_end/basic_mmad_epilogue/matmul_add_ub.py"
-BASIC_MMAD_EPILOGUE_BIAS_REL="examples/end_to_end/basic_mmad_epilogue/matmul_bias.py"
-BASIC_MMAD_EPILOGUE_LEAKY_RELU_REL="examples/end_to_end/basic_mmad_epilogue/matmul_leaky_relu.py"
-BASIC_MMAD_EPILOGUE_SIGMOID_REL="examples/end_to_end/basic_mmad_epilogue/matmul_sigmoid.py"
-BASIC_MMAD_EPILOGUE_SILU_REL="examples/end_to_end/basic_mmad_epilogue/matmul_silu.py"
-BASIC_MMAD_EPILOGUE_TANH_REL="examples/end_to_end/basic_mmad_epilogue/matmul_tanh.py"
-CAST_MULTI_REL="examples/end_to_end/vector_ops/cast_multi.py"
-GATHER_OP_REL="examples/end_to_end/vector_ops/gather_op.py"
-SHIFT_OP_REL="examples/end_to_end/vector_ops/shift_op.py"
+UNARY_OPS_REL="dsl_tutorials/vector_simd_ops/unary_ops.py"
+ARANGE_OP_REL="dsl_tutorials/vector_simd_ops/arange_op.py"
+INTERLEAVE_OP_REL="dsl_tutorials/vector_simd_ops/interleave_op.py"
+MASK_INTERLEAVE_OP_REL="dsl_tutorials/vector_simd_ops/mask_interleave_op.py"
+MASK_SELECT_OP_REL="dsl_tutorials/vector_simd_ops/mask_select_op.py"
+LOAD_DINTLV_OP_REL="dsl_tutorials/vector_simd_ops/load_dintlv_op.py"
+LOAD_US_B8_OP_REL="dsl_tutorials/vector_simd_ops/load_us_b8_op.py"
+LOAD_DIST_OPS_REL="dsl_tutorials/vector_simd_ops/load_dist_ops.py"
+LOAD_STORE_MASK_REL="dsl_tutorials/vector_simd_ops/load_store_mask.py"
+LOAD_MASK_DIST_REL="dsl_tutorials/vector_simd_ops/load_mask_dist.py"
+LOAD_STORE_UPDATE_REL="dsl_tutorials/vector_simd_ops/load_store_update.py"
+LOAD_STORE_BLOCK_UPDATE_REL="dsl_tutorials/vector_simd_ops/load_store_block_update.py"
+LOAD_STORE_UNALIGN_REL="dsl_tutorials/vector_simd_ops/load_store_unalign.py"
+STORE_PACK_REL="dsl_tutorials/vector_simd_ops/store_pack.py"
+STORE_FIRST_ELEMENT_OP_REL="dsl_tutorials/vector_simd_ops/store_first_element_op.py"
+SQUEEZE_OP_REL="dsl_tutorials/vector_simd_ops/squeeze_op.py"
+REGISTER_CONTROL_FLOW_REL="dsl_tutorials/vector_simd_ops/register_control_flow.py"
+SCALAR_INDEX_CONTROL_FLOW_REL="dsl_tutorials/tensor_index/scalar_index_control_flow.py"
+SCALAR_KERNEL_ARG_REL="dsl_tutorials/tensor_index/scalar_kernel_arg.py"
+DEBUG_PRINT_REL="dsl_tutorials/debug_print/debug_print.py"
+DEBUG_PRINT_MIXED_REL="dsl_tutorials/debug_print/debug_print_mixed.py"
+DEBUG_PRINT_FORMAT_REL="dsl_tutorials/debug_print/debug_print_format.py"
+SCALAR_ARG_ALIGNMENT_REL="dsl_tutorials/scalar_arg_alignment/scalar_arg_alignment.py"
+PRINT_TENSOR_REL="dsl_tutorials/print_tensor/print_tensor.py"
+STREAMK_OPS_REL="tla/kernel/matmul/basic_mmad_streamk/basic_mmad_streamk.py"
+GROUPED_MATMUL_SLICEM_REL="tla/kernel/gmm/grouped_matmul_slice_m/grouped_matmul_slice_m.py"
+BATCHED_MATMUL_REL="tla/kernel/matmul/batched_matmul/batched_matmul.py"
+FLASH_ATTENTION_INFER_REL="tla/kernel/attention/flash_attention_infer/flash_attention_infer.py"
+LAZY_CONDITIONS_REL="dsl_tutorials/lazy_conditions/lazy_conditions.py"
+CONSTEXPR_CALLABLE_REL="dsl_tutorials/constexpr_callable/constexpr_callable_epilogue.py"
+JIT_CALLABLE_REL="dsl_tutorials/jit_callable/jit_callable_epilogue.py"
+SIMT_VADD_REL="dsl_tutorials/vector_simt_ops/basic_vadd_simt/basic_vadd_simt.py"
+MULTI_CORE_SPLITK_REL="tla/kernel/matmul/multi_core_splitk_matmul/multi_core_splitk_matmul.py"
+TAIL_MULTI_CORE_SPLITK_REL="tla/kernel/matmul/multi_core_splitk_matmul/tail_multi_core_splitk_matmul.py"
+BASIC_MMAD_EPILOGUE_ADD_REL="tla/kernel/matmul/basic_mmad_epilogue/matmul_add.py"
+BASIC_MMAD_EPILOGUE_ADD_UB_REL="tla/kernel/matmul/basic_mmad_epilogue/matmul_add_ub.py"
+BASIC_MMAD_EPILOGUE_BIAS_REL="tla/kernel/matmul/basic_mmad_epilogue/matmul_bias.py"
+BASIC_MMAD_EPILOGUE_LEAKY_RELU_REL="tla/kernel/matmul/basic_mmad_epilogue/matmul_leaky_relu.py"
+BASIC_MMAD_EPILOGUE_SIGMOID_REL="tla/kernel/matmul/basic_mmad_epilogue/matmul_sigmoid.py"
+BASIC_MMAD_EPILOGUE_SILU_REL="tla/kernel/matmul/basic_mmad_epilogue/matmul_silu.py"
+BASIC_MMAD_EPILOGUE_TANH_REL="tla/kernel/matmul/basic_mmad_epilogue/matmul_tanh.py"
+CAST_MULTI_REL="dsl_tutorials/vector_simd_ops/cast_multi.py"
+GATHER_OP_REL="dsl_tutorials/vector_simd_ops/gather_op.py"
+SHIFT_OP_REL="dsl_tutorials/vector_simd_ops/shift_op.py"
 
 usage() {
     cat <<EOF
@@ -239,7 +241,7 @@ Run end-to-end validation for:
   - lazy_conditions (lazy_conditions.py)
   - constexpr_callable (constexpr_callable_epilogue.py: Constexpr Callable epilogue)
   - jit_callable (jit_callable_epilogue.py: @tla.jit helper as Constexpr epilogue)
-  - simt/basic_vadd_simt (basic_vadd_simt.py: SIMT thread-block add)
+  - dsl_tutorials/vector_simt_ops/basic_vadd_simt (basic_vadd_simt.py: SIMT thread-block add)
   - multi_core_splitk_matmul (multi_core_splitk_matmul.py: using split-k strategy for workload balancing)
   - basic_mmad_streamk (basic_mmad_streamk.py: streamK workload balancing)
   - batched_matmul (batched_matmul.py)
@@ -265,6 +267,7 @@ Paths (auto from script location):
   WORKSPACE_ROOT=${WORKSPACE_ROOT}   (override: ASCEND_CATLASS_DSL_ROOT)
   CATDSL_ROOT=${CATDSL_ROOT}
   CATLASS_DSL_DIR=${CATLASS_DSL_DIR}
+  EXAMPLES_DIR=${EXAMPLES_DIR}
   Python: $(command -v python 2>/dev/null || echo '<not found>')
 
 Toolchain:
@@ -398,252 +401,252 @@ echo "==> Using CATLASS_DSL_DIR=${CATLASS_DSL_DIR}"
 trap 'if [[ -n "${tla_dsl_wheel_site}" && -d "${tla_dsl_wheel_site}" ]]; then rm -rf "${tla_dsl_wheel_site}"; fi; rm -rf "${HOME}/.cache/catlass/bc"' EXIT
 _prepare_tla_dsl
 
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_AUTO_SYNC_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_AUTO_SYNC_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_AUTO_SYNC_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_AUTO_SYNC_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_PTR_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_PTR_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_PTR_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_PTR_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_L0C2L1_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_L0C2L1_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_L0C2L1_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_L0C2L1_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_BIAS_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_BIAS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_BIAS_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_BIAS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${MX_MMAD_BIAS_REL}" ]]; then
-    echo "error: missing ${MX_MMAD_BIAS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${MX_MMAD_BIAS_REL}" ]]; then
+    echo "error: missing ${MX_MMAD_BIAS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_FIXPIPE_PER_TENSOR_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_FIXPIPE_PER_TENSOR_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_FIXPIPE_PER_TENSOR_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_FIXPIPE_PER_TENSOR_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_FIXPIPE_PER_CHANNEL_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_FIXPIPE_PER_CHANNEL_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_FIXPIPE_PER_CHANNEL_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_FIXPIPE_PER_CHANNEL_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_SYRK_REL}" ]]; then
-    echo "error: missing ${BASIC_SYRK_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_SYRK_REL}" ]]; then
+    echo "error: missing ${BASIC_SYRK_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_VADD_REL}" ]]; then
-    echo "error: missing ${BASIC_VADD_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_VADD_REL}" ]]; then
+    echo "error: missing ${BASIC_VADD_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${EXTERN_VECADD_REL}" ]]; then
-    echo "error: missing ${EXTERN_VECADD_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${EXTERN_VECADD_REL}" ]]; then
+    echo "error: missing ${EXTERN_VECADD_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${EXTERN_DUAL_CORE_REL}" ]]; then
-    echo "error: missing ${EXTERN_DUAL_CORE_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${EXTERN_DUAL_CORE_REL}" ]]; then
+    echo "error: missing ${EXTERN_DUAL_CORE_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MIXED_REL}" ]]; then
-    echo "error: missing ${BASIC_MIXED_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MIXED_REL}" ]]; then
+    echo "error: missing ${BASIC_MIXED_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MIXED_MUTEX_REL}" ]]; then
-    echo "error: missing ${BASIC_MIXED_MUTEX_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MIXED_MUTEX_REL}" ]]; then
+    echo "error: missing ${BASIC_MIXED_MUTEX_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MIXED_UB2L1_REL}" ]]; then
-    echo "error: missing ${BASIC_MIXED_UB2L1_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MIXED_UB2L1_REL}" ]]; then
+    echo "error: missing ${BASIC_MIXED_UB2L1_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MIXED_STORE_ZN_REL}" ]]; then
-    echo "error: missing ${BASIC_MIXED_STORE_ZN_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MIXED_STORE_ZN_REL}" ]]; then
+    echo "error: missing ${BASIC_MIXED_STORE_ZN_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MIXED_STORE_ZNUNALIGN_REL}" ]]; then
-    echo "error: missing ${BASIC_MIXED_STORE_ZNUNALIGN_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MIXED_STORE_ZNUNALIGN_REL}" ]]; then
+    echo "error: missing ${BASIC_MIXED_STORE_ZNUNALIGN_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MIXED_FIXPIPE_NZ2DN_REL}" ]]; then
-    echo "error: missing ${BASIC_MIXED_FIXPIPE_NZ2DN_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MIXED_FIXPIPE_NZ2DN_REL}" ]]; then
+    echo "error: missing ${BASIC_MIXED_FIXPIPE_NZ2DN_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${MASKED_BINARY_REL}" ]]; then
-    echo "error: missing ${MASKED_BINARY_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${MASKED_BINARY_REL}" ]]; then
+    echo "error: missing ${MASKED_BINARY_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BITWISE_OPS_REL}" ]]; then
-    echo "error: missing ${BITWISE_OPS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BITWISE_OPS_REL}" ]]; then
+    echo "error: missing ${BITWISE_OPS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BINARY_OP_REL}" ]]; then
-    echo "error: missing ${BINARY_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BINARY_OP_REL}" ]]; then
+    echo "error: missing ${BINARY_OP_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${REDUCTION_OPS_REL}" ]]; then
-    echo "error: missing ${REDUCTION_OPS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${REDUCTION_OPS_REL}" ]]; then
+    echo "error: missing ${REDUCTION_OPS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${LOAD_STORE_SCALAR_AFTER_REDUCTION_REL}" ]]; then
-    echo "error: missing ${LOAD_STORE_SCALAR_AFTER_REDUCTION_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${LOAD_STORE_SCALAR_AFTER_REDUCTION_REL}" ]]; then
+    echo "error: missing ${LOAD_STORE_SCALAR_AFTER_REDUCTION_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${COMPARE_MASK_REL}" ]]; then
-    echo "error: missing ${COMPARE_MASK_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${COMPARE_MASK_REL}" ]]; then
+    echo "error: missing ${COMPARE_MASK_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${MASK_INTERLEAVE_OP_REL}" ]]; then
-    echo "error: missing ${MASK_INTERLEAVE_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${MASK_INTERLEAVE_OP_REL}" ]]; then
+    echo "error: missing ${MASK_INTERLEAVE_OP_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${LOAD_DIST_OPS_REL}" ]]; then
-    echo "error: missing ${LOAD_DIST_OPS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${LOAD_DIST_OPS_REL}" ]]; then
+    echo "error: missing ${LOAD_DIST_OPS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${STORE_FIRST_ELEMENT_OP_REL}" ]]; then
-    echo "error: missing ${STORE_FIRST_ELEMENT_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${STORE_FIRST_ELEMENT_OP_REL}" ]]; then
+    echo "error: missing ${STORE_FIRST_ELEMENT_OP_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${UNARY_OPS_REL}" ]]; then
-    echo "error: missing ${UNARY_OPS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${UNARY_OPS_REL}" ]]; then
+    echo "error: missing ${UNARY_OPS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${ARANGE_OP_REL}" ]]; then
-    echo "error: missing ${ARANGE_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${ARANGE_OP_REL}" ]]; then
+    echo "error: missing ${ARANGE_OP_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${MASK_SELECT_OP_REL}" ]]; then
-    echo "error: missing ${MASK_SELECT_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${MASK_SELECT_OP_REL}" ]]; then
+    echo "error: missing ${MASK_SELECT_OP_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${SQUEEZE_OP_REL}" ]]; then
-    echo "error: missing ${SQUEEZE_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${SQUEEZE_OP_REL}" ]]; then
+    echo "error: missing ${SQUEEZE_OP_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${REGISTER_CONTROL_FLOW_REL}" ]]; then
-    echo "error: missing ${REGISTER_CONTROL_FLOW_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${REGISTER_CONTROL_FLOW_REL}" ]]; then
+    echo "error: missing ${REGISTER_CONTROL_FLOW_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${SCALAR_INDEX_CONTROL_FLOW_REL}" ]]; then
-    echo "error: missing ${SCALAR_INDEX_CONTROL_FLOW_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${SCALAR_INDEX_CONTROL_FLOW_REL}" ]]; then
+    echo "error: missing ${SCALAR_INDEX_CONTROL_FLOW_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${DEBUG_PRINT_REL}" ]]; then
-    echo "error: missing ${DEBUG_PRINT_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${DEBUG_PRINT_REL}" ]]; then
+    echo "error: missing ${DEBUG_PRINT_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${DEBUG_PRINT_MIXED_REL}" ]]; then
-    echo "error: missing ${DEBUG_PRINT_MIXED_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${DEBUG_PRINT_MIXED_REL}" ]]; then
+    echo "error: missing ${DEBUG_PRINT_MIXED_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${DEBUG_PRINT_FORMAT_REL}" ]]; then
-    echo "error: missing ${DEBUG_PRINT_FORMAT_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${DEBUG_PRINT_FORMAT_REL}" ]]; then
+    echo "error: missing ${DEBUG_PRINT_FORMAT_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${SCALAR_ARG_ALIGNMENT_REL}" ]]; then
-    echo "error: missing ${SCALAR_ARG_ALIGNMENT_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${SCALAR_ARG_ALIGNMENT_REL}" ]]; then
+    echo "error: missing ${SCALAR_ARG_ALIGNMENT_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${PRINT_TENSOR_REL}" ]]; then
-    echo "error: missing ${PRINT_TENSOR_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${PRINT_TENSOR_REL}" ]]; then
+    echo "error: missing ${PRINT_TENSOR_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${FLASH_ATTENTION_INFER_REL}" ]]; then
-    echo "error: missing ${FLASH_ATTENTION_INFER_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${FLASH_ATTENTION_INFER_REL}" ]]; then
+    echo "error: missing ${FLASH_ATTENTION_INFER_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${LAZY_CONDITIONS_REL}" ]]; then
-    echo "error: missing ${LAZY_CONDITIONS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${LAZY_CONDITIONS_REL}" ]]; then
+    echo "error: missing ${LAZY_CONDITIONS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${CONSTEXPR_CALLABLE_REL}" ]]; then
-    echo "error: missing ${CONSTEXPR_CALLABLE_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${CONSTEXPR_CALLABLE_REL}" ]]; then
+    echo "error: missing ${CONSTEXPR_CALLABLE_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${JIT_CALLABLE_REL}" ]]; then
-    echo "error: missing ${JIT_CALLABLE_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${JIT_CALLABLE_REL}" ]]; then
+    echo "error: missing ${JIT_CALLABLE_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${SIMT_VADD_REL}" ]]; then
-    echo "error: missing ${SIMT_VADD_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${SIMT_VADD_REL}" ]]; then
+    echo "error: missing ${SIMT_VADD_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${MULTI_CORE_SPLITK_REL}" ]]; then
-    echo "error: missing ${MULTI_CORE_SPLITK_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${MULTI_CORE_SPLITK_REL}" ]]; then
+    echo "error: missing ${MULTI_CORE_SPLITK_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${TAIL_MULTI_CORE_SPLITK_REL}" ]]; then
-    echo "error: missing ${TAIL_MULTI_CORE_SPLITK_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${TAIL_MULTI_CORE_SPLITK_REL}" ]]; then
+    echo "error: missing ${TAIL_MULTI_CORE_SPLITK_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${STREAMK_OPS_REL}" ]]; then
-    echo "error: missing ${STREAMK_OPS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${STREAMK_OPS_REL}" ]]; then
+    echo "error: missing ${STREAMK_OPS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BATCHED_MATMUL_REL}" ]]; then
-    echo "error: missing ${BATCHED_MATMUL_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BATCHED_MATMUL_REL}" ]]; then
+    echo "error: missing ${BATCHED_MATMUL_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${GROUPED_MATMUL_SLICEM_REL}" ]]; then
-    echo "error: missing ${GROUPED_MATMUL_SLICEM_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${GROUPED_MATMUL_SLICEM_REL}" ]]; then
+    echo "error: missing ${GROUPED_MATMUL_SLICEM_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_EPILOGUE_ADD_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_EPILOGUE_ADD_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_EPILOGUE_ADD_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_EPILOGUE_ADD_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_EPILOGUE_ADD_UB_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_EPILOGUE_ADD_UB_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_EPILOGUE_ADD_UB_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_EPILOGUE_ADD_UB_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_EPILOGUE_BIAS_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_EPILOGUE_BIAS_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_EPILOGUE_BIAS_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_EPILOGUE_BIAS_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_EPILOGUE_LEAKY_RELU_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_EPILOGUE_LEAKY_RELU_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_EPILOGUE_LEAKY_RELU_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_EPILOGUE_LEAKY_RELU_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_EPILOGUE_SIGMOID_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_EPILOGUE_SIGMOID_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_EPILOGUE_SIGMOID_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_EPILOGUE_SIGMOID_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_EPILOGUE_SILU_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_EPILOGUE_SILU_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_EPILOGUE_SILU_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_EPILOGUE_SILU_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${BASIC_MMAD_EPILOGUE_TANH_REL}" ]]; then
-    echo "error: missing ${BASIC_MMAD_EPILOGUE_TANH_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${BASIC_MMAD_EPILOGUE_TANH_REL}" ]]; then
+    echo "error: missing ${BASIC_MMAD_EPILOGUE_TANH_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${CAST_MULTI_REL}" ]]; then
-    echo "error: missing ${CAST_MULTI_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${CAST_MULTI_REL}" ]]; then
+    echo "error: missing ${CAST_MULTI_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${GATHER_OP_REL}" ]]; then
-    echo "error: missing ${GATHER_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${GATHER_OP_REL}" ]]; then
+    echo "error: missing ${GATHER_OP_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${LOAD_STORE_UPDATE_REL}" ]]; then
-    echo "error: missing ${LOAD_STORE_UPDATE_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${LOAD_STORE_UPDATE_REL}" ]]; then
+    echo "error: missing ${LOAD_STORE_UPDATE_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${LOAD_STORE_BLOCK_UPDATE_REL}" ]]; then
-    echo "error: missing ${LOAD_STORE_BLOCK_UPDATE_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${LOAD_STORE_BLOCK_UPDATE_REL}" ]]; then
+    echo "error: missing ${LOAD_STORE_BLOCK_UPDATE_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${LOAD_STORE_UNALIGN_REL}" ]]; then
-    echo "error: missing ${LOAD_STORE_UNALIGN_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${LOAD_STORE_UNALIGN_REL}" ]]; then
+    echo "error: missing ${LOAD_STORE_UNALIGN_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${SHIFT_OP_REL}" ]]; then
-    echo "error: missing ${SHIFT_OP_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${SHIFT_OP_REL}" ]]; then
+    echo "error: missing ${SHIFT_OP_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${CATLASS_DSL_DIR}/${LOAD_MASK_DIST_REL}" ]]; then
-    echo "error: missing ${LOAD_MASK_DIST_REL} under ${CATLASS_DSL_DIR}" >&2
+if [[ ! -f "${EXAMPLES_DIR}/${LOAD_MASK_DIST_REL}" ]]; then
+    echo "error: missing ${LOAD_MASK_DIST_REL} under ${EXAMPLES_DIR}" >&2
     exit 1
 fi
 

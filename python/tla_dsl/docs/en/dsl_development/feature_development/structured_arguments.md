@@ -156,7 +156,7 @@ For example, a rank-1 static memref selects indices `(0, 1, 2, 3, 7)`, not the f
 Dynamic-GM directly packs all 13 values; multiple descriptors form independent field groups respectively.
 
 Thus the nested position only affects the logical path and does not change the descriptor rules for that Tensor.
-For a runnable example, see [mixed_memref_arguments.py](../../../../examples/end_to_end/structured_arguments/mixed_memref_arguments.py).
+For a runnable example, see [mixed_memref_arguments.py](../../../../../../examples/python/tla_dsl/dsl_tutorials/structured_arguments/mixed_memref_arguments.py).
 
 ## Cache and Binding Lifecycle
 

@@ -12,9 +12,11 @@ import catlass.runtime as runtime_mod
 
 
 _EXAMPLE = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[3]
     / "examples"
-    / "end_to_end"
+    / "python"
+    / "tla_dsl"
+    / "dsl_tutorials"
     / "lazy_conditions"
     / "lazy_conditions.py"
 )

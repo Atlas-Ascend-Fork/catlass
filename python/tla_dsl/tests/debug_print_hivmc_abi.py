@@ -8,7 +8,7 @@ final attributed ``i64`` workspace.  HIVMC ELF evidence is compared through
 ``.ascend.meta.<entry>`` section.
 
 Produce the required non-print AIV input from ``python/tla_dsl`` by compiling
-``examples/end_to_end/basic_vadd/basic_vadd.py`` and taking its lowered MLIR
+``examples/python/tla_dsl/tla/kernel/vec/basic_vadd/basic_vadd.py`` and taking its lowered MLIR
 artifact (for example ``artifact.lowered_llvm``).  Do not use a print kernel as
 the input control for this test.
 

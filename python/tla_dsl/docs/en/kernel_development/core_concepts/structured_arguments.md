@@ -143,7 +143,7 @@ compiled(tx, aux, tout, block_num=1)
 
 For dynamic dimensions and layout constraints, see [Static and Dynamic Layout](layout.md).
 Ordinary Tensors and Dynamic-GM can be passed in combination; the physical fields of the descriptor are handled by the DSL.
-For a mixed-argument example, see [mixed_memref_arguments.py](../../../../examples/end_to_end/structured_arguments/mixed_memref_arguments.py).
+For a mixed-argument example, see [mixed_memref_arguments.py](../../../../../../examples/python/tla_dsl/dsl_tutorials/structured_arguments/mixed_memref_arguments.py).
 
 ## Reusing a Compiled Object
 

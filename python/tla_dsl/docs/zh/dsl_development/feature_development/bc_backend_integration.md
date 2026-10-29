@@ -125,7 +125,7 @@ kernel.o   (stub 被 always_inline 内联展开为 DMA intrinsic)
 
 ### 用户侧：写一行 `tla.copy`
 
-以 [examples/end_to_end/basic_mmad/basic_matmul.py](../../../../examples/end_to_end/basic_mmad/basic_matmul.py) 为例，一个 cube kernel 里典型的三段 copy：
+以 [tla/kernel/matmul/basic_mmad/basic_matmul.py](../../../../../../examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py) 为例，一个 cube kernel 里典型的三段 copy：
 
 ```python
 with tla.cube():

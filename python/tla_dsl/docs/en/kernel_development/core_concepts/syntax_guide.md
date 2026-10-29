@@ -263,7 +263,7 @@ Support for built-in functions can be seen as a whitelist: only the built-in fun
 
 ## Examples
 
-The examples are taken from `examples/end_to_end` and trimmed; for complete runnable versions, see the corresponding files.
+The examples are taken from `tla/kernel` and `dsl_tutorials` and trimmed; for complete runnable versions, see the corresponding files.
 
 ### Dynamic if: a variable changed inside a branch must be initialized first
 
@@ -468,6 +468,6 @@ artifact(tiling, out)
 
 ## References
 
-- Control-flow usage examples: [`scalar_index_control_flow.py`](../../../../examples/end_to_end/tensor_index/scalar_index_control_flow.py), [`basic_vadd.py`](../../../../examples/end_to_end/basic_vadd/basic_vadd.py), [`register_control_flow.py`](../../../../examples/end_to_end/vector_ops/register_control_flow.py)
+- Control-flow usage examples: [`scalar_index_control_flow.py`](../../../../../../examples/python/tla_dsl/dsl_tutorials/tensor_index/scalar_index_control_flow.py), [`basic_vadd.py`](../../../../../../examples/python/tla_dsl/tla/kernel/vec/basic_vadd/basic_vadd.py), [`register_control_flow.py`](../../../../../../examples/python/tla_dsl/dsl_tutorials/vector_simd_ops/register_control_flow.py)
 - Control-flow AST implementation: [`ast_preprocessor.py`](../../../../catlass/base_dsl/ast_preprocessor.py), [`tla_ast_decorators.py`](../../../../catlass/tla_ast_decorators.py)
 - Control-flow test case references: [`test_frontend_branching.py`](../../../../tests/test_frontend_branching.py), [`test_frontend_for_range.py`](../../../../tests/test_frontend_for_range.py), [`test_frontend_while.py`](../../../../tests/test_frontend_while.py), [`test_frontend_with.py`](../../../../tests/test_frontend_with.py)

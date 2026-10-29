@@ -32,7 +32,7 @@ The current public interface accepts only `None` and `"v0"`:
 | `@tla.kernel` / `@tla.kernel()` | AutoSync is not enabled; intra-core synchronization is described explicitly by the developer. |
 | `@tla.kernel(auto_sync="v0")` | Enables automatic intra-core synchronization. |
 
-For a complete end-to-end sample, see [basic_matmul_auto_sync.py](../../../../examples/end_to_end/basic_mmad/basic_matmul_auto_sync.py). That sample uses L1 and L0 double buffering and writes no synchronization primitives explicitly in the kernel.
+For a complete end-to-end sample, see [basic_matmul_auto_sync.py](../../../../../../examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul_auto_sync.py). That sample uses L1 and L0 double buffering and writes no synchronization primitives explicitly in the kernel.
 
 ### Usage Constraints
 

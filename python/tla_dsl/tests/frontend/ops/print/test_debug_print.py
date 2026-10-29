@@ -11,8 +11,8 @@ import pytest
 import catlass.tla as tla
 import catlass.runtime as runtime_mod
 from catlass.base_dsl import BaseDSL
-from examples.end_to_end.debug_print import debug_print as debug_print_example
-from examples.end_to_end.debug_print import debug_print_format
+from dsl_tutorials.debug_print import debug_print as debug_print_example
+from dsl_tutorials.debug_print import debug_print_format
 
 
 @tla.kernel

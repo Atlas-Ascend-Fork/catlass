@@ -125,7 +125,7 @@ These functions include: DMA movement (`dma.cpp`), matrix multiplication (`mmad.
 
 ### User side: writing one line of `tla.copy`
 
-Taking [examples/end_to_end/basic_mmad/basic_matmul.py](../../../../examples/end_to_end/basic_mmad/basic_matmul.py) as an example, here are the three typical copies in a cube kernel:
+Taking [tla/kernel/matmul/basic_mmad/basic_matmul.py](../../../../../../examples/python/tla_dsl/tla/kernel/matmul/basic_mmad/basic_matmul.py) as an example, here are the three typical copies in a cube kernel:
 
 ```python
 with tla.cube():

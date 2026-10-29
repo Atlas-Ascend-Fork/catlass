@@ -39,10 +39,19 @@ python/tla_dsl/
 ├── catlass/                # Python 前端与运行时
 ├── csrc/mlir/              # TLA Dialect 与编译器实现
 ├── docs/                   # 文档
-├── examples/               # 端到端示例
 ├── tests/                  # 单元、lit 与端到端测试
 ├── Dockerfile              # 开发环境镜像定义
 ├── build_docker_image.sh   # 镜像构建入口
 ├── build.sh                # 项目构建入口
 └── requirements.txt        # 开发 Python 依赖
+```
+
+算子样例与教学示例位于仓库根目录的 [examples/python/tla_dsl/](../../examples/python/tla_dsl/README.md)：
+
+```text
+examples/python/tla_dsl/
+├── tla/kernel/             # TLA 算子样例（matmul / attention / conv / gmm / vec）
+├── dsl_tutorials/          # DSL 语言特性与向量 / SIMT / 标量教学示例
+├── experimental/           # 实验性算子样例，目录结构与 tla/ 一致
+└── helpers/                # 示例共用的参数、精度比对与工具
 ```

@@ -164,7 +164,7 @@ packer 准备阶段校验静态 rank（1～4）、字段顺序、宽度和分组
 Dynamic-GM 直接打包全部 13 个值；多个描述符分别形成独立字段组。
 
 这样嵌套位置只影响逻辑路径，不改变该 Tensor 的描述符规则。
-可运行用例见 [mixed_memref_arguments.py](../../../../examples/end_to_end/structured_arguments/mixed_memref_arguments.py)。
+可运行用例见 [mixed_memref_arguments.py](../../../../../../examples/python/tla_dsl/dsl_tutorials/structured_arguments/mixed_memref_arguments.py)。
 
 ## 缓存与绑定生命周期
 

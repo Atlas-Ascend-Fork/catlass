@@ -135,7 +135,7 @@ Only documented TLA context managers are supported. One `with` may have one cont
 
 ## Examples
 
-The examples below are trimmed from `examples/end_to_end`; see the corresponding files for complete runnable versions.
+The examples below are trimmed from `tla/kernel` and `dsl_tutorials`; see the corresponding files for complete runnable versions.
 
 ### Dynamic if: initialize before rebinding in the branch
 
@@ -360,6 +360,6 @@ def struct_arg_kernel(tiling: TilingData, out: tla.Tensor) -> None:
 
 ## References
 
-- Control-flow examples: `examples/end_to_end/tensor_index/scalar_index_control_flow.py`, `examples/end_to_end/basic_vadd/basic_vadd.py`, `examples/end_to_end/vector_ops/register_control_flow.py`
+- Control-flow examples: `examples/python/tla_dsl/dsl_tutorials/tensor_index/scalar_index_control_flow.py`, `examples/python/tla_dsl/tla/kernel/vec/basic_vadd/basic_vadd.py`, `examples/python/tla_dsl/dsl_tutorials/vector_simd_ops/register_control_flow.py`
 - Control-flow frontend implementation: `catlass/base_dsl/ast_preprocessor.py`, `catlass/tla_ast_decorators.py`
 - Control-flow test cases: `tests/test_frontend_branching.py`, `tests/test_frontend_for_range.py`, `tests/test_frontend_while.py`, `tests/test_frontend_with.py`

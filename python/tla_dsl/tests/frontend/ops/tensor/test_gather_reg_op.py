@@ -68,9 +68,9 @@ def _gm_i16(n: int) -> tla.Tensor:
 
 @pytest.fixture
 def gather_reg_example(monkeypatch):
-    # tests/frontend/ops/tensor -> python/tla_dsl
-    root = Path(__file__).resolve().parents[4]
-    monkeypatch.syspath_prepend(str(root / "examples/end_to_end/vector_ops"))
+    # tests/frontend/ops/tensor -> examples/python/tla_dsl
+    root = Path(__file__).resolve().parents[6] / "examples" / "python" / "tla_dsl"
+    monkeypatch.syspath_prepend(str(root / "dsl_tutorials/vector_simd_ops"))
     return importlib.import_module("gather_reg_op")
 
 

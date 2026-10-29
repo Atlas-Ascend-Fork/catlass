@@ -40,7 +40,7 @@ Onboard performance collection directly measures the operator's runtime on the N
 ### msprof op Usage Example
 
 ```bash
-msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py"
+msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py"
 ```
 
 Some common parameters are listed below; for complete parameter information, see the [msopprof mode user guide](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/latest/devaids/optool/docs/zh/user_guide/msopprof_user_guide.md):
@@ -48,10 +48,10 @@ Some common parameters are listed below; for complete parameter information, see
 | Parameter | Description | Example |
 | --- | --- | --- |
 | `-h`, `--help` | Show help information and exit | `msprof op -h` |
-| `--application` | Specify the application to execute on the Device. Specify an executable file/execution command. | `msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py"` |
-| `--launch-count` | Optional parameter, meaning to loop a specific kernel a specific number of times to collect performance data and compute an average (must be used together with `--kernel-name` to specify the target operator; if this parameter is not configured, only one set of data is collected). | `msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py" --kernel-name=basic_mixed --launch-count=10` |
-| `--warm-up` | Optional parameter, meaning the number of warm-up runs (to address the issue of the chip not having raised its frequency).<br>If this parameter is not configured, the default warm-up count is 5. | `msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py" --warm-up=20` |
-| `--replay-mode` | Optional parameter, specifying the replay mode for operator data collection; the default is kernel.<br>kernel: kernel-function-level replay, replaying the kernel function of a single operator within the specified collection range multiple times.<br>application: application-level replay, replaying the entire application multiple times.<br>range: range-level replay, replaying multiple operators within a specified range as a whole multiple times (must be used together with --mstx=on). | `msprof op --application="python examples/end_to_end/basic_mixed/basic_mixed.py" --replay-mode=kernel` |
+| `--application` | Specify the application to execute on the Device. Specify an executable file/execution command. | `msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py"` |
+| `--launch-count` | Optional parameter, meaning to loop a specific kernel a specific number of times to collect performance data and compute an average (must be used together with `--kernel-name` to specify the target operator; if this parameter is not configured, only one set of data is collected). | `msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py" --kernel-name=basic_mixed --launch-count=10` |
+| `--warm-up` | Optional parameter, meaning the number of warm-up runs (to address the issue of the chip not having raised its frequency).<br>If this parameter is not configured, the default warm-up count is 5. | `msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py" --warm-up=20` |
+| `--replay-mode` | Optional parameter, specifying the replay mode for operator data collection; the default is kernel.<br>kernel: kernel-function-level replay, replaying the kernel function of a single operator within the specified collection range multiple times.<br>application: application-level replay, replaying the entire application multiple times.<br>range: range-level replay, replaying multiple operators within a specified range as a whole multiple times (must be used together with --mstx=on). | `msprof op --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py" --replay-mode=kernel` |
 
 * ⚠ Notes
   * By default, the tool reads the performance data of the first operator in the execution sequence. When using an official example for standalone measurement, the target result is usually obtained directly; but when integrating into another complex project, even if only one operator's case is run, the underlying layer may also be accompanied by other initialization or preceding operators from the framework (such as PyTorch).
@@ -110,7 +110,7 @@ export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/tools/simulator/A
 Next, run the following command (taking the basic_mixed operator as an example below):
 
 ```bash
-msprof op simulator --soc-version=Ascendxxxyy --core-id=0 --kernel-name=basic_mixed python3 ./examples/end_to_end/basic_mixed/basic_mixed.py
+msprof op simulator --soc-version=Ascendxxxyy --core-id=0 --kernel-name=basic_mixed python3 ./examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py
 ```
 
 * **Key parameter analysis**:
@@ -154,13 +154,13 @@ Although CATLASS only provides single-operator call examples, the single-operato
 ### msprof Usage Example
 
 ```bash
-msprof --application="python examples/end_to_end/basic_mixed/basic_mixed.py"
+msprof --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py"
 ```
 
 | Parameter | Description | Example |
 | --- | --- | --- |
 | `-h`, `--help` | Show help information and exit | `msprof -h` |
-| `--application` | Scenario-related; pass the binary executable program or execution script and its parameters as a parameter. | `msprof --application="python examples/end_to_end/basic_mixed/basic_mixed.py"` |
+| `--application` | Scenario-related; pass the binary executable program or execution script and its parameters as a parameter. | `msprof --application="python examples/python/tla_dsl/tla/kernel/matmul/basic_mixed/basic_mixed.py"` |
 | `--output=<path>` | Optional parameter, the storage path for the collected performance data. | `msprof --output=/home/projects/output /home/projects/main`
 
 For more parameters, see [msprof collection commands](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/latest/devaids/Profiling/atlasprofiling_16_0010.html)

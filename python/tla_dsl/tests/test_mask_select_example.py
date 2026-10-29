@@ -11,8 +11,8 @@ from catlass.tla.runtime import make_fake_tensor
 
 @pytest.fixture
 def mask_select_example(monkeypatch):
-    root = Path(__file__).resolve().parents[1]
-    monkeypatch.syspath_prepend(str(root / "examples/end_to_end/vector_ops"))
+    root = Path(__file__).resolve().parents[3] / "examples" / "python" / "tla_dsl"
+    monkeypatch.syspath_prepend(str(root / "dsl_tutorials/vector_simd_ops"))
     return importlib.import_module("mask_select_op")
 
 

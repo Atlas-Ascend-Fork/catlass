@@ -99,6 +99,18 @@ include/catlass/epilogue/block/
 └── block_epilogue_per_token_dequant_tla.hpp # 复用自样例42的BlockEpilogue
 ```
 
+**工程注册（易遗漏）**：仅新建样例目录和目录内 `CMakeLists.txt` 还不够。顶层 [`examples/CMakeLists.txt`](../../../examples/CMakeLists.txt) 通过 `EXAMPLE_ATLASA2` / `EXAMPLE_ASCEND950` 决定哪些样例进入编译；未把样例名追加到对应列表时，`bash scripts/build.sh <样例名>` 会找不到目标。按产品形态注册，例如 Atlas A2/A3：
+
+```diff
+set(EXAMPLE_ATLASA2
+    00_basic_matmul
+    # ...
++   44_quant_matmul_full_loadA_tla
+)
+```
+
+Ascend 950 样例则追加到 `EXAMPLE_ASCEND950`。目录内 `CMakeLists.txt` 写法与注册步骤的完整说明见 [Host侧样例组装 - 编译与运行](./02_host_example_assembly.md#编译与运行)。
+
 ### Host侧组装
 
 Host侧代码负责设备初始化、内存分配、组件组装和Kernel调用，详细说明可参考[Host层样例组装](./02_host_example_assembly.md)。开发时主要关注以下几点：
@@ -197,7 +209,7 @@ Tile组件是CATLASS中最底层的计算和数据操作单元，直接与硬件
 
 ### 编译与调试
 
-在仓库根目录执行以下命令编译和运行样例：
+编译前请确认已完成上文的**工程注册**（将样例名写入 `examples/CMakeLists.txt` 对应列表），否则构建系统不会收录该目标。随后在仓库根目录执行：
 
 ```bash
 # 编译样例，可执行文件生成到 output/bin 目录

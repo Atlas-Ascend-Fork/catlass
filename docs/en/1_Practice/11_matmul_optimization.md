@@ -23,6 +23,8 @@ The following figure shows the hardware architecture involved in basic Matmul ti
 
 From the above, TileShape must be set such that it does not exceed the L1/L0A/L0B/L0C memory space. Additionally, TileShape values must be multiples of 16. For hardware parameters of the Atlas A2/A3 series products, see [Arch::AtlasA2](../../../include/catlass/arch/arch.hpp); for hardware parameters of the Ascend 950PR&950DT series products, see [Arch::Ascend950](../../../include/catlass/arch/arch.hpp). The following uses the Atlas A2/A3 series products as the example scenario.
 
+For capacity formulas, a dtype quick-reference table, and how to rescale Tile when changing data types, see also [AtlasA2 Hardware Basics - Deriving TileShape from Hardware Capacity](../2_Design/01_kernel_design/00_basics/atlasA2_hardware_info.md#deriving-tileshape-from-hardware-capacity).
+
 - Scenario 1: FP16 input and output, L1TileShape<128,256,256>, L0TileShape<128,256,64>
 
 For FP16 input and output, to maintain calculation precision, the cube core's mmad output to L0C is of FP32 data type. The fixpipe casts it to FP16 when writing back to global memory.
@@ -72,6 +74,34 @@ Actual L0C usage = L0::M * L0::N * 4(Byte)
         = 128 * 128 * 4
         = 65536 B = 64 KB = 1/2 L0C_SIZE
 ```
+
+- Scenario 3: int8 input (common for quantized Matmul), L1TileShape<128,256,512>, L0TileShape<128,256,128>
+
+Compared with fp16, `sizeof(int8_t)=1`, so under the same 64KB L0B budget `L0::K` can be about twice the fp16 value (64->128), and L1 `K` is often scaled up together. Taking [12_quant_matmul](../../../examples/12_quant_matmul/quant_matmul.cpp) as an example:
+
+```text
+L1 size: 512 KB
+Actual L1 usage = L1::M * L1::K * 1(Byte) * 2(doubleBuffer) + L1::K * L1::N * 1(Byte) * 2(doubleBuffer)
+        = 128 * 512 * 1 * 2 + 512 * 256 * 1 * 2
+        = 393216 B = 384 KB = 3/4 L1_SIZE
+
+L0A size: 64 KB
+Actual L0A usage = L0::M * L0::K * 1(Byte) * 2(doubleBuffer)
+        = 128 * 128 * 1 * 2
+        = 32768 B = 32 KB = 1/2 L0A_SIZE
+
+L0B size: 64 KB
+Actual L0B usage = L0::K * L0::N * 1(Byte) * 2(doubleBuffer)
+        = 128 * 256 * 1 * 2
+        = 65536 B = 64 KB = 1 L0B_SIZE
+
+L0C size: 128 KB
+Actual L0C usage = L0::M * L0::N * 4(Byte)   # mmad accumulation still ~4 bytes (int32/fp32)
+        = 128 * 256 * 4
+        = 131072 B = 128 KB = 1 L0C_SIZE
+```
+
+**Common pitfall:** Reusing the int8 `L0TileShape<128,256,128>` unchanged for fp16 makes L0B `128*256*2*2=128KB > 64KB` and overflows L0B at runtime. When changing data types, recompute with `sizeof`; do not only change `GemmType` while keeping the same TileShape.
 
 ## Tuning Policy
 

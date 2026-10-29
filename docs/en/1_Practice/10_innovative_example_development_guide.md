@@ -99,6 +99,18 @@ include/catlass/epilogue/block/
 └── block_epilogue_per_token_dequant_tla.hpp # BlockEpilogue reused from example 42
 ```
 
+**Project registration (easy to miss):** Creating the example directory and its local `CMakeLists.txt` is not enough. The top-level [`examples/CMakeLists.txt`](../../../examples/CMakeLists.txt) decides which examples are built via `EXAMPLE_ATLASA2` / `EXAMPLE_ASCEND950`; if the example name is not appended to the matching list, `bash scripts/build.sh <example_name>` will not find the target. Register by product form, for example on Atlas A2/A3:
+
+```diff
+set(EXAMPLE_ATLASA2
+    00_basic_matmul
+    # ...
++   44_quant_matmul_full_loadA_tla
+)
+```
+
+For Ascend 950 examples, append to `EXAMPLE_ASCEND950` instead. For the local `CMakeLists.txt` pattern and the full registration steps, see [Host-side Example Assembly - Build and Run](./02_host_example_assembly.md#build-and-run).
+
 ### Host-Side Assembly
 
 The Host-side code is responsible for device initialization, memory allocation, component assembly, and kernel invocation; for details, see [Host-layer Example Assembly](./02_host_example_assembly.md). During development, focus mainly on the following points:
@@ -197,7 +209,7 @@ Taking example 44 as an example, the TileMmad and TileCopy used inside its Block
 
 ### Compilation and Debugging
 
-Run the following commands from the repository root to build and run the example:
+Before building, confirm the **project registration** step above is done (the example name is listed in `examples/CMakeLists.txt`); otherwise the build system will not pick up the target. Then from the repository root:
 
 ```bash
 # Build the example; the executable is installed to output/bin

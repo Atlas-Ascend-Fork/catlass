@@ -25,6 +25,8 @@ Atlas A2/A3系列产品硬件架构，参考[昇腾社区文档-基本架构](ht
 
 由上可知TileShape在设置时要保证不能超出L1/L0A/L0B/L0C空间大小，同时TileShape取值必须是16的倍数。Atlas A2/A3系列产品相关硬件参数参考[Arch::AtlasA2](../../../include/catlass/arch/arch.hpp)，Ascend 950PR&950DT系列产品相关硬件参数参考[Arch::Ascend950](../../../include/catlass/arch/arch.hpp)，下文以Atlas A2/A3系列产品为举例场景。
 
+容量公式、dtype 对照表与“改数据类型时如何缩放 Tile”的速查，也可先看 [AtlasA2 硬件基础信息 - 从硬件容量反推 TileShape](../2_Design/01_kernel_design/00_basics/atlasA2_hardware_info.md#从硬件容量反推-tileshape)。
+
 - 场景一：fp16输入输出，L1TileShape<128,256,256>，L0TileShape<128,256,64>
 
 对于输入输出是fp16场景，为了计算精度，cube核进行mmad输出到L0C上的结果是fp32数据类型，fixpipe随路传回gm时cast到fp16数据类型。
@@ -74,6 +76,34 @@ L0C实际占用 = L0::M * L0::N * 4(Byte)
         = 128 * 128 * 4
         = 65536 Byte = 64 KB = 1/2 L0C_SIZE
 ```
+
+- 场景三：int8 输入（量化 Matmul 常见），L1TileShape<128,256,512>，L0TileShape<128,256,128>
+
+相对 fp16，`sizeof(int8_t)=1`，同样 64KB 的 L0B 预算下 `L0::K` 可约为 fp16 的两倍（64->128），L1 上的 `K` 也常同步放大。以 [12_quant_matmul](../../../examples/12_quant_matmul/quant_matmul.cpp) 为例：
+
+```text
+L1大小512KB
+L1实际占用 = L1::M * L1::K * 1(Byte) * 2(doubleBuffer) + L1::K * L1::N * 1(Byte) * 2(doubleBuffer)
+        = 128 * 512 * 1 * 2 + 512 * 256 * 1 * 2
+        = 393216 Byte = 384 KB = 3/4 L1_SIZE
+
+L0A大小64KB
+L0A实际占用 = L0::M * L0::K * 1(Byte) * 2(doubleBuffer)
+        = 128 * 128 * 1 * 2
+        = 32768 Byte = 32 KB = 1/2 L0A_SIZE
+
+L0B大小64KB
+L0B实际占用 = L0::K * L0::N * 1(Byte) * 2(doubleBuffer)
+        = 128 * 256 * 1 * 2
+        = 65536 Byte = 64 KB = 1 L0B_SIZE
+
+L0C大小128KB
+L0C实际占用 = L0::M * L0::N * 4(Byte)   # mmad 累加仍为 int32/fp32 量级，按 4 Byte 估算
+        = 128 * 256 * 4
+        = 131072 Byte = 128 KB = 1 L0C_SIZE
+```
+
+**易错点**：把上述 int8 的 `L0TileShape<128,256,128>` 原样用于 fp16 时，L0B 变为 `128*256*2*2=128KB > 64KB`，会在运行期爆 L0B。切换数据类型时必须按 `sizeof` 重新验算，不能只改 `GemmType` 而保留 TileShape。
 
 ## 调优策略
 

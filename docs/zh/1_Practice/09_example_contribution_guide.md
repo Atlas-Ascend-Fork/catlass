@@ -51,6 +51,8 @@ examples/${id}_${op_name}/
 └── ${op_name}.cpp        # 主实现文件
 ```
 
+创建样例目录后，还需将 `${id}_${op_name}` 追加到顶层 [`examples/CMakeLists.txt`](../../../examples/CMakeLists.txt) 的 `EXAMPLE_ATLASA2` 或 `EXAMPLE_ASCEND950` 列表，否则 `bash scripts/build.sh` 无法收录该目标。目录内 `CMakeLists.txt` 与注册步骤详见 [Host侧样例组装 - 编译与运行](./02_host_example_assembly.md#编译与运行)。
+
 ### 核心实现
 
 - **Host侧**：参考[Host侧组装](./02_host_example_assembly.md)文档，实现算子的host侧组装

@@ -51,6 +51,8 @@ examples/${id}_${op_name}/
 └── ${op_name}.cpp        # Main implementation file
 ```
 
+After creating the example directory, also append `${id}_${op_name}` to the `EXAMPLE_ATLASA2` or `EXAMPLE_ASCEND950` list in the top-level [`examples/CMakeLists.txt`](../../../examples/CMakeLists.txt); otherwise `bash scripts/build.sh` will not pick up the target. For the local `CMakeLists.txt` pattern and registration steps, see [Host-side Example Assembly - Build and Run](./02_host_example_assembly.md#build-and-run).
+
 ### Core Implementation
 
 - **Host**: Assemble the operator on a host by referring to [Host Example Assembly](./02_host_example_assembly.md).

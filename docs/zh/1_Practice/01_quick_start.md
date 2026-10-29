@@ -115,7 +115,6 @@ bash scripts/build.sh [options] <target>
   - `--debug`：以Debug模式进行编译。
   - `--msdebug`：启用[msDebug](https://www.hiascend.com/document/redirect/CannCommunityToolMsdebug)工具，详见[在CATLASS样例工程使用msDebug](./evaluation/msdebug.md)。
   - `--simulator`：启用仿真器模式，该选项启用后将不在实际NPU上执行，详见[CATLASS样例仿真](./evaluation/performance_tools.md#msprof-op-simulator-example)。
-  - `--enable_print`：启用编译器的打印功能，详见[基于`cce::printf`进行设备侧打印](./evaluation/print.md)。
   - `-DCATLASS_ARCH`：指明NPU架构，当前支持`2201`（Atlas A2/A3系列产品）和`3510`（Ascend 950PR&950DT系列产品），不指明则默认为`2201`。
   - `-D<option>`：给CMake传递其他的编译选项。
 
@@ -145,6 +144,8 @@ bash scripts/build.sh 00_basic_matmul
 - `[ERROR]Multiple targets specified`：一次指定了多个样例名。
 
 其余失败为CMake配置或编译器报错，回显中包含出错文件与行号，可据此定位头文件缺失、架构标签不匹配等问题。
+
+若编译期报找不到 C++ 标准头文件（如 `fatal error: 'cstdint' file not found`），或链接期报找不到标准库（如 `unable to find library -lstdc++`），通常由系统 C++ 头文件/库搜索路径未注入CANN编译器导致，处理方式见[常见问题（FAQ）](../FAQ.md)。
 
 ### 执行算子
 

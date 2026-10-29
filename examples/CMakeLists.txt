@@ -35,10 +35,6 @@ add_compile_options(
 add_link_options($<$<COMPILE_LANGUAGE:ASC>:-Wno-unused-command-line-argument>)
 
 # compile options for debug features
-if(DEFINED ENABLE_PRINT AND ENABLE_PRINT)
-    add_compile_options($<$<COMPILE_LANGUAGE:ASC>:--cce-enable-print>)
-endif()
-
 if(DEFINED ENABLE_SIMULATOR AND ENABLE_SIMULATOR)
     if(NOT DEFINED NPU_MODEL OR NPU_MODEL STREQUAL "")
         message(FATAL_ERROR "NPU_MODEL is not defined.")

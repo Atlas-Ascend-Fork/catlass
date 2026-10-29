@@ -24,7 +24,6 @@
 - [Ascend C Dump 工具](./1_Practice/evaluation/ascendc_dump.md)：介绍 Ascend C 算子调试接口的使用方法
 - [msDebug 工具](./1_Practice/evaluation/msdebug.md)：介绍如何在 CATLASS 样例工程中使用 msDebug
 - [性能分析工具](./1_Practice/evaluation/performance_tools.md)：介绍 msProf、Profiling 等性能分析工具
-- [打印工具](./1_Practice/evaluation/print.md)：介绍算子调试中的打印方法
 - [精度分析基础](./1_Practice/evaluation/precision_analysis_basics.md)：介绍精度分析的基础知识
 - [精度问题定位](./1_Practice/evaluation/precision_debug.md)：介绍样例精度问题的定位方法
 - [性能瓶颈分析与优化](./1_Practice/evaluation/bottleneck_analysis_and_optimization.md)：介绍性能瓶颈分析及优化手段
@@ -88,6 +87,10 @@
 - [Ascend C API](https://www.hiascend.com/document/redirect/CannCommercialAscendCApi)：昇腾社区Ascend C API列表
 
 ## 4 附录
+
+### 常见问题
+
+- [常见问题（FAQ）](./FAQ.md)：汇总编译、链接与运行阶段的环境类问题及处理方式
 
 ### 技术文章
 

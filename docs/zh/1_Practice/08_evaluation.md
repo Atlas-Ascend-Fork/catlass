@@ -9,7 +9,6 @@ CATLASS示例工程可适配大多数[CANN](https://www.hiascend.com/cann)提供
 工具介绍：
 
 - [msDebug](./evaluation/msdebug.md) - 类gdb/lldb的调试工具[msDebug快速入门](https://www.hiascend.com/document/redirect/CannCommunityToolMsdebug)
-- [printf](./evaluation/print.md) - 基于[CCE Intrinsic](https://www.hiascend.com/document/redirect/CannCommunityccedev)，在算子device侧进行打印调试
 - [ascendc_dump](./evaluation/ascendc_dump.md) - 基于[原生AscendC API](https://www.hiascend.com/document/redirect/CannCommunityascendcapidumptensor)，对关键数据打点调测
 
 相关实践：

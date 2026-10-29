@@ -120,6 +120,7 @@ CATLASS所需的软硬件环境依赖如下：
   - `cmake` >= 3.16
   - `python` >= 3.10, < 3.14
 - CATLASS Python 软件依赖请参考[CATLASS Python README](./python/tla_dsl/README.md)
+- 若编译阶段出现找不到C++标准头文件/标准库等环境类报错，请先参考[常见问题（FAQ）](./docs/zh/FAQ.md)
 
 不同CATLASS发行版可支持的硬件平台及所需的最低[CANN](https://www.hiascend.com/zh/cann/download)版本如下表：
 

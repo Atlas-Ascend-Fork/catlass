@@ -24,7 +24,6 @@
 - [Ascend C Dump](./1_Practice/evaluation/ascendc_dump.md): Use Ascend C operator debugging APIs
 - [msDebug](./1_Practice/evaluation/msdebug.md): Use msDebug in a CATLASS example project
 - [Performance Analysis Tools](./1_Practice/evaluation/performance_tools.md): Use performance analysis tools such as msProf and Profiling
-- [Print Debugging](./1_Practice/evaluation/print.md): Print diagnostic information during operator debugging
 - [Precision Analysis Basics](./1_Practice/evaluation/precision_analysis_basics.md): Learn the fundamentals of precision analysis
 - [Precision Issue Debugging](./1_Practice/evaluation/precision_debug.md): Locate precision issues in examples
 - [Performance Bottleneck Analysis and Optimization](./1_Practice/evaluation/bottleneck_analysis_and_optimization.md): Analyze and optimize performance bottlenecks
@@ -88,6 +87,10 @@ Introduces the project positioning, layered modular design, and repository struc
 - [Ascend C API](https://www.hiascend.com/en/document/redirect/CannCommercialAscendCApi): Ascend C API reference
 
 ## 4 Appendix
+
+### FAQ
+
+- [FAQ](./FAQ.md): Frequently asked questions about build, link and runtime environment issues
 
 ### Technical Articles
 

@@ -187,8 +187,6 @@ public:
         CopyGmToL1B copyGmToL1B;
         uint32_t rowNum = actualOriShape[0];
         uint32_t embed = actualOriShape[1];
-        // cce::printf("rowNum:%d\n", rowNum);
-        // cce::printf("embed:%d\n", embed);
         auto l1ALayoutTla = tla::MakeLayout<ElementB, LayoutTagL1B>(embed, rowNum);
         auto l1ATensorTla = tla::MakeTensor(l1ATensor[0], l1ALayoutTla, Arch::PositionL1{});
         auto l1ATensorTlaTile = GetTile(l1ATensorTla, tla::MakeCoord(0, 0), tla::MakeShape(embed, rowNum));

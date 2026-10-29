@@ -9,7 +9,6 @@ The following sections detail development practices for profiling, debugging, an
 Introduction:
 
 - [msDebug](./evaluation/msdebug.md): A GDB/LLDB-like debugging tool [msDebug](https://www.hiascend.com/en/document/redirect/CannCommunityToolMsdebug).
-- [printf](./evaluation/print.md): Provides device-side print debugging within the operator kernel, powered by [CCE Intrinsic](https://www.hiascend.com/document/detail/en/canncommercial/latest/opdevg/cceintrinsicguide/cceprogram_0001.html).
 - [ascendc_dump](./evaluation/ascendc_dump.md): Inspects and debugs critical data points by leveraging the [native AscendC API](https://www.hiascend.com/en/document/redirect/CannCommunityascendcapidumptensor).
 
 Related practices:

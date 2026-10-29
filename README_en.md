@@ -120,6 +120,7 @@ CATLASS depends on the following software and hardware environments:
   - `cmake` >= 3.16
   - `python` >= 3.10, < 3.14
 - For CATLASS Python software dependencies, see the [CATLASS Python README](./python/tla_dsl/README.md).
+- If the build fails with environment-related errors such as missing C++ standard headers or libraries, see the [FAQ](./docs/en/FAQ.md) first.
 
 The hardware platforms supported by different CATLASS releases and the required minimum [CANN](https://www.hiascend.com/en/cann/download) versions are shown in the following table:
 

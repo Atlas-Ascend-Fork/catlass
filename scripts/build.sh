@@ -49,7 +49,6 @@ function show_help() {
     echo "  --msdebug       Enable msdebug support"
     echo "  --simulator     Compile example in simulator mode"
     echo "  --enable_profiling [Deprecated]Enable profiling"
-    echo "  --enable_print  Enable built-in compiler print feature"
     echo "  --enable_ascendc_dump   [Deprecated]Enable AscendC dump API"
     echo "  --tests         Enable building targets in tests"
     echo "  -DCATLASS_ARCH  NPU arch. Supports 2201(AtlasA2/A3)/3510(Ascend950PR/DT)."
@@ -104,9 +103,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable_ascendc_dump)
             echo "${WARN}`--enable_ascendc_dump` is deprecated. The feature will be automatically enabled when debug code is inserted."
-            ;;
-        --enable_print)
-            CMAKE_OPTIONS+=("-DENABLE_PRINT=True")
             ;;
         --enable_mssanitizer)
             CMAKE_OPTIONS+=("-DENABLE_MSSANITIZER=True")

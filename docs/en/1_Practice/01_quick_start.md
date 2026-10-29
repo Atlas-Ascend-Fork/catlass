@@ -115,7 +115,6 @@ bash scripts/build.sh [options] <target>
   - `--debug`: Compiles in debug mode.
   - `--msdebug`: Enables [msDebug](https://www.hiascend.com/en/document/redirect/CannCommunityToolMsdebug). For details, see [Using msDebug in a CATLASS Sample Project](./evaluation/msdebug.md).
   - `--simulator`: Enables the simulator mode. After this option is enabled, the code will not run on an actual NPU. For details, see [CATLASS Sample Simulation](./evaluation/performance_tools.md#example-with-msprof-op-simulator).
-  - `--enable_print`: Enables the compiler's print functionality. For details, see [Device-Side Printing Based on `cce::printf`](./evaluation/print.md).
   - `-DCATLASS_ARCH`: Specifies the NPU architecture. Currently, `2201` (Atlas A2/A3 series products) and `3510` (Ascend 950PR&950DT series products) are supported. If not specified, the default is `2201`.
   - `-D<option>`: Passes other build options to CMake.
 
@@ -145,6 +144,8 @@ When the build fails, `build.sh` exits with a non-zero status and prints error m
 - `[ERROR]Multiple targets specified`: more than one sample name was specified.
 
 Other failures come from CMake configuration or the compiler. The output contains the file and line number of the error, which can be used to locate issues such as missing headers or mismatched architecture tags.
+
+If the build fails with a missing C++ standard header (for example, `fatal error: 'cstdint' file not found`) or a missing standard library at link time (for example, `unable to find library -lstdc++`), the usual cause is that the system C++ header/library search paths were not passed to the CANN compiler. See the [FAQ](../FAQ.md) for the workaround.
 
 ### Executing Operators
 

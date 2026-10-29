@@ -150,13 +150,13 @@ def multi_core_splitk_mmad_kernel(
             _splitk.task_per_aiv, dtype_gm_c, tla.AddressSpace.ub, 256
         )
         if tla.const_expr(dtype_gm_c == tla.Float16):
-            cast_to_gm_params = tla.params.CastParams(
+            cast_trait_zero = tla.params.CastParams(
                 reg_slot=tla.params.RegSlot.ZERO,
                 sat_mode=tla.params.SatMode.NOSAT,
                 round_mode=tla.params.RoundMode.CAST_FLOOR,
             )
         else:
-            cast_to_gm_params = tla.params.CastParams(
+            cast_trait_zero = tla.params.CastParams(
                 reg_slot=tla.params.RegSlot.ZERO,
                 sat_mode=tla.params.SatMode.NOSAT,
                 round_mode=tla.params.RoundMode.CAST_ROUND,
@@ -428,18 +428,22 @@ def multi_core_splitk_mmad_kernel(
         tla.set_flag(reduce_mte3_mte2)
 
         loop_range = tla.range(aiv_id, _splitk.reduce_loops, aiv_num)
+
+        _task_per_aiv = tla.as_numeric(_splitk.task_per_aiv).to(tla.Int64)
         for loop_idx in loop_range:
-            src_off = loop_idx * _splitk.task_per_aiv
-            remaining = _splitk.element_count - src_off
-            actual_tile_len = _splitk.task_per_aiv
-            if remaining < _splitk.task_per_aiv:
+            src_off = loop_idx.to(tla.Int64) * _task_per_aiv
+            remaining = tla.as_numeric(_splitk.element_count).to(
+                tla.Int64
+            ) - src_off.to(tla.Int64)
+            actual_tile_len = _task_per_aiv
+            if remaining < _task_per_aiv:
                 actual_tile_len = remaining
 
             tla.wait_flag(reduce_mte3_mte2)
 
             # Gather all split-K workspace rows for this flat M×N chunk into UB.
             gm_ws_gather = tla.make_tensor(
-                ws_base_ptr + src_off,
+                ws_base_ptr + src_off.to(tla.Int64),
                 tla.make_layout(
                     tla.make_shape(_splitk.splitk_factor, _splitk.task_per_aiv),
                     tla.make_stride(_splitk.element_count, 1),
@@ -464,9 +468,6 @@ def multi_core_splitk_mmad_kernel(
                 # Add workspace rows 1..factor-1 into row 0.
                 vec_chunk_shape = tla.make_shape(1, ELE_PER_VECTOR_BLOCK)
                 for sk_idx in tla.range(1, _splitk.splitk_factor):
-                    tla.local_mem_bar(
-                        tla.params.MemType.VEC_STORE, tla.params.MemType.VEC_LOAD
-                    )
                     for vl_idx in tla.range(_splitk.reduce_vl_loops):
                         reduce_acc_chunk = tla.tile_view(
                             ub_reduce_acc,
@@ -481,11 +482,15 @@ def multi_core_splitk_mmad_kernel(
                         reduce_acc_chunk.store(
                             reduce_acc_chunk.load() + reduce_src_chunk.load(),
                         )
+                    tla.local_mem_bar(
+                        tla.params.MemType.VEC_STORE, tla.params.MemType.VEC_LOAD
+                    )
 
                 if tla.const_expr(dtype_gm_c != tla.Float32):
                     # f32→f16/bf16 cast leaves values in low-16 of each B32 slot;
                     # DIST_PACK_B32 packs those halves densely (replaces deinterleave).
                     cast_mask = tla.create_mask(pattern=tla.mask.ALL, dtype=tla.Float32)
+                    store_mask = tla.create_mask(pattern=tla.mask.ALL, dtype=dtype_gm_c)
                     pack_store = NormalStoreParams(store_dist=StoreDist.DIST_PACK_B32)
                     ub_out_1d = tla.make_tensor(
                         ub_cast_ptr,
@@ -505,8 +510,8 @@ def multi_core_splitk_mmad_kernel(
                             tla.make_coord(cast_vl_idx),
                         )
                         acc_v = cast_acc_chunk.load()
-                        out_v = acc_v.to(dtype_gm_c, cast_to_gm_params, cast_mask)
-                        cast_out_chunk.store(out_v, pack_store)
+                        out_v = acc_v.to(dtype_gm_c, cast_trait_zero, cast_mask)
+                        cast_out_chunk.store(out_v, pack_store, mask=store_mask)
 
             tla.set_flag(reduce_v_mte3)
             tla.wait_flag(reduce_v_mte3)

@@ -152,13 +152,13 @@ def tail_multi_core_splitk_mmad_kernel(
     # Narrowing cast to GM C: f16 uses floor rounding, bf16 uses round-to-nearest.
     if tla.const_expr(dtype_gm_c != tla.Float32):
         if tla.const_expr(dtype_gm_c == tla.Float16):
-            cast_to_gm_params = tla.params.CastParams(
+            cast_trait_zero = tla.params.CastParams(
                 reg_slot=tla.params.RegSlot.ZERO,
                 sat_mode=tla.params.SatMode.NOSAT,
                 round_mode=tla.params.RoundMode.CAST_FLOOR,
             )
         else:
-            cast_to_gm_params = tla.params.CastParams(
+            cast_trait_zero = tla.params.CastParams(
                 reg_slot=tla.params.RegSlot.ZERO,
                 sat_mode=tla.params.SatMode.NOSAT,
                 round_mode=tla.params.RoundMode.CAST_ROUND,
@@ -615,6 +615,9 @@ def tail_multi_core_splitk_mmad_kernel(
                         cast_mask = tla.create_mask(
                             pattern=tla.mask.ALL, dtype=tla.Float32
                         )
+                        store_mask = tla.create_mask(
+                            pattern=tla.mask.ALL, dtype=dtype_gm_c
+                        )
                         pack_store = NormalStoreParams(
                             store_dist=StoreDist.DIST_PACK_B32
                         )
@@ -637,8 +640,8 @@ def tail_multi_core_splitk_mmad_kernel(
                                 tla.make_coord(cast_vl_idx),
                             )
                             acc_v = cast_acc_chunk.load()
-                            out_v = acc_v.to(dtype_gm_c, cast_to_gm_params, cast_mask)
-                            cast_out_chunk.store(out_v, pack_store)
+                            out_v = acc_v.to(dtype_gm_c, cast_trait_zero, cast_mask)
+                            cast_out_chunk.store(out_v, pack_store, mask=store_mask)
 
                 tla.set_flag(reduce_v_mte3)
                 tla.wait_flag(reduce_v_mte3)

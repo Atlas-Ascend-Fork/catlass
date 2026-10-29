@@ -327,13 +327,12 @@ def parse_host_apis() -> dict[str, APIEntry]:
             raise FileNotFoundError(f"host API source not found: {path}")
         entries.update(_collect_host_file(path))
     # Language-boundary topic: kept in the generator, not as a runtime stub.
-    jit = entries.get("jit")
     entries["Constexpr Callable arguments"] = APIEntry(
         name="Constexpr Callable arguments",
         qualified_name="Host language boundary · Constexpr Callable",
-        source_line=(jit.source_line + 1) if jit and jit.source_line else None,
+        source_line=None,
         docstring=CONSTEXPR_CALLABLE_DOC,
-        source_path=jit.source_path if jit else None,
+        source_path=None,
         is_concept=True,
     )
     return entries

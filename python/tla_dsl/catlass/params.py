@@ -114,7 +114,7 @@ class StoreDist:
 
 
 class MaskStoreDist:
-    """Mask store distribution modes (AscendC ``MaskDist`` / ``psts``)."""
+    """Mask store distribution modes."""
 
     DIST_NORM = "norm"
 
@@ -141,12 +141,12 @@ class NormalStoreParams(StoreParams):
 
 @dataclass
 class UnalignStoreParams(StoreParams):
-    """Unaligned UB vector store (lowers with ``unaligned_ub_access``).
+    """Unaligned UB vector store.
 
     With ``post_mode=update``, leave ``post_update_stride`` at default ``0``:
-    HIVM ``$eleSize`` / pointer advance use ``tile_extent`` (``origin_shape``;
-    dense only). Passing an explicit ``post_update_stride`` is rejected.
-    Returned ``next_ptr`` is the HW post-update pointer.
+    the window advances by ``tile_extent`` (``origin_shape``; dense only).
+    Passing an explicit ``post_update_stride`` is rejected. Returns the next
+    window tile from the post-update pointer.
     """
 
     post_mode: str = PostMode.POST_MODE_NORMAL
@@ -155,14 +155,12 @@ class UnalignStoreParams(StoreParams):
 
 @dataclass
 class BlockStoreParams(StoreParams):
-    """UB Block store with stride (AscendC ``DATA_BLOCK_COPY``).
+    """UB Block store with stride (8 DataBlocks per call).
 
     ``block_stride`` is in 32B DataBlock units. Unlike ``BlockLoadParams``,
     NORMAL mode has no software pre-offset: ``repeat_stride`` is only used
-    with ``post_mode=update`` (``StoreAlign<T, DATA_BLOCK_COPY,
-    POST_MODE_UPDATE>``, 32B DataBlock repeat stride; returns the next tile
-    from the ``vsstb`` POST pointer via an AIV bc helper — no HIVMC
-    ``vsstb.post``).
+    with ``post_mode=update`` (32B DataBlock repeat stride; returns the next
+    window tile).
     """
 
     block_stride: int = 0
@@ -172,12 +170,11 @@ class BlockStoreParams(StoreParams):
 
 @dataclass
 class MaskStoreParams(StoreParams):
-    """Continuous-aligned MaskSSA store (1/2/4-byte UB / ``psts``).
+    """Continuous-aligned MaskSSA store to 1/2/4-byte UB.
 
-    AscendC ``StoreAlign(__ubuf__ T*, MaskReg&)``: spill size is ``N/8`` from
-    the ``MaskSSA`` value. ``N`` must equal ``256 / sizeof(T)`` for the
-    destination UB element type (``T`` may be int or float of that width).
-    Hardware path is still ``psts.b8`` (``DIST_NORM``).
+    Spill size is ``N/8`` from the ``MaskSSA`` value. ``N`` must equal
+    ``256 / sizeof(T)`` for the destination UB element type (``T`` may be int
+    or float of that width). Default distribution is ``DIST_NORM``.
     """
 
     store_dist: str = MaskStoreDist.DIST_NORM
@@ -205,12 +202,12 @@ class NormalLoadParams(LoadParams):
 
 @dataclass
 class UnalignLoadParams(LoadParams):
-    """Unaligned UB vector load (lowers with ``unaligned_ub_access``).
+    """Unaligned UB vector load.
 
     With ``post_mode=update``, leave ``post_update_stride`` at default ``0``:
-    HIVM ``$cceVL`` / pointer advance use ``tile_extent`` (``origin_shape``;
-    dense only). Passing an explicit ``post_update_stride`` is rejected.
-    Returned ``next_ptr`` is the HW post-update pointer.
+    the window advances by ``tile_extent`` (``origin_shape``; dense only).
+    Passing an explicit ``post_update_stride`` is rejected. Returns
+    ``(vector, next_tile)`` from the post-update pointer.
     """
 
     post_mode: str = PostMode.POST_MODE_NORMAL
@@ -219,17 +216,15 @@ class UnalignLoadParams(LoadParams):
 
 @dataclass
 class BlockLoadParams(LoadParams):
-    """UB Block load with stride (AscendC ``DATA_BLOCK_COPY``).
+    """UB Block load with stride (8 DataBlocks per call).
 
     One load gathers 8 DataBlocks whose heads are ``block_stride``
     DataBlocks (32B units) apart; ``block_stride == 0`` repeats the first
-    DataBlock into all 8 slots. ``repeat_stride`` matches AscendC
-    ``vsldb`` / ``DATA_BLOCK_COPY`` naming: with ``post_mode=normal`` it is
-    a compile-time address pre-offset in 32B DataBlocks; with
-    ``post_mode=update`` it is the POST repeat stride in the same unit, and
-    the call returns ``(vector, next_tile)``. There is no HIVMC
-    ``vsldb.post``, so UPDATE lowers through an AIV bc helper. Both strides
-    must fit in 16 bits ([0, 65535]).
+    DataBlock into all 8 slots. With ``post_mode=normal``, ``repeat_stride``
+    is a compile-time address pre-offset in 32B DataBlocks; with
+    ``post_mode=update`` it is the post-update repeat stride in the same unit,
+    and the call returns ``(vector, next_tile)``. Both strides must fit in
+    16 bits ([0, 65535]).
     """
 
     block_stride: int = 0
@@ -384,7 +379,7 @@ class SatMode(enum.Enum):
 
 
 class RoundMode(enum.Enum):
-    """Rounding applied on precision loss (HIVM ``round_mode``)."""
+    """Rounding applied on precision loss."""
 
     CAST_ROUND = "cast_round"  # round to nearest, tie away from zero
     CAST_FLOOR = "cast_floor"  # round toward -inf
@@ -472,8 +467,7 @@ class HistogramsBinType(enum.Enum):
 class HistogramsType(enum.Enum):
     """Histogram kind selected by ``HistogramsParams.type``.
 
-    ``FREQUENCY`` → ``dhistv2`` (per-value counts);
-    ``ACCUMULATE`` → ``chistv2`` (prefix / CDF counts).
+    ``FREQUENCY`` — per-value counts; ``ACCUMULATE`` — prefix / CDF counts.
     """
 
     FREQUENCY = "frequency"
@@ -493,10 +487,10 @@ class HistogramsParams:
 
     Math (masked ``src`` lanes only; result is added onto prior ``dst``):
 
-    * **FREQUENCY** (``dhistv2``) — per-value counts in a half-range:
+    * **FREQUENCY** — per-value counts in a half-range:
       - ``BIN0``: ``dst[v] += #{src == v}`` for ``v ∈ [0, 127]``
       - ``BIN1``: ``dst[v - 128] += #{src == v}`` for ``v ∈ [128, 255]``
-    * **ACCUMULATE** (``chistv2``) — CDF over the full u8 domain, then split:
+    * **ACCUMULATE** — CDF over the full u8 domain, then split:
       - ``BIN0``: ``dst[n] += #{src <= n}`` for ``n ∈ [0, 127]``
       - ``BIN1``: ``dst[n] += #{src <= 128 + n}`` for ``n ∈ [0, 127]``
         (includes low-half inputs; not a ``[128, 255]``-only bucket)

@@ -32,17 +32,17 @@ class Img2colParams:
     filter shape.
 
     Feature-map extent, stride, dilation and padding accept runtime values.
-    Compile-time values are checked against the hardware field ranges. For
+    Compile-time values are checked against the documented ranges. For
     runtime values, callers must satisfy those ranges; violating them is
     undefined behavior. The filter shape is static so K windows can be
-    validated against whole C1 slices before emitting the hardware load.
+    validated against whole C1 slices before the load.
     """
 
     fmap_hw: tuple[IndexLike, IndexLike]
     filter_hw: tuple[int, int]
     stride_hw: tuple[IndexLike, IndexLike] = (1, 1)
     dilation_hw: tuple[IndexLike, IndexLike] = (1, 1)
-    # left, right, top, bottom -- the order the hardware's padList takes.
+    # left, right, top, bottom
     pad: tuple[IndexLike, IndexLike, IndexLike, IndexLike] = (0, 0, 0, 0)
     pad_value: int = 0
 
@@ -57,15 +57,7 @@ def img2col(
 ) -> None:
     """Directory: Experimental APIs
     Description:
-        Load an L1 feature-map tile into L0A, expanding it on the way with the
-        hardware's img2col unit.
-
-        This is the only convolution-specific instruction in the DSL. It turns an
-        `(hi, wi)` feature-map window into the implicit-GEMM matrix
-        `(M, K) = (ho * wo, cin1 * kh * kw * C0)`, applying padding, stride and
-        dilation as it goes. What comes out is an ordinary L0A operand, so
-        `tla.mmad` computes the convolution without knowing it is one -- the
-        convolution is a property of the *load*.
+        Load an L1 feature-map tile into L0A with img2col expansion for convolution.
 
         Parameters:
         - `dst` (`Tensor`): L0A tile, tagged `zN`, shaped `(M, K)`. Its shape gives
@@ -74,13 +66,21 @@ def img2col(
           L1 tile -- at no extra L1 traffic. Required.
         - `src` (`Tensor`): L1 feature-map tile, tagged `zNUnAlign`, which is the
           NC1HWC0 nesting `((h*w, 1), (C0, c1))`. Required.
-        - `params` (`Img2colParams`): the convolution geometry. Required.
+        - `params` (`Img2colParams`): Convolution geometry. Required.
+          - `fmap_hw` (`tuple`): Feature-map `(H, W)` extents. Required.
+          - `filter_hw` (`tuple[int, int]`): Filter `(kH, kW)`; compile-time
+            integers. Required.
+          - `stride_hw` (`tuple`): Stride `(sH, sW)`. Default `(1, 1)`.
+          - `dilation_hw` (`tuple`): Dilation `(dH, dW)`. Default `(1, 1)`.
+          - `pad` (`tuple`): Padding `(left, right, top, bottom)`. Default
+            `(0, 0, 0, 0)`.
+          - `pad_value` (`int`): Padding fill value. Default `0`.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.cube()`.
-        - Element type must be `f32`, `f16` or `bf16`: the A5 img2col path is
-          instantiated for 2- and 4-byte elements only, so there is no int8/fp8 route.
+        - Element type must be `f32`, `f16` or `bf16` (2- and 4-byte elements
+          only; no int8/fp8 route).
         - `src` and `dst` must share an element type.
         - Source channels come from the NC1HWC0 source shape, independently of
           the destination K window. Source C0/C1 and destination K extent and
@@ -92,8 +92,8 @@ def img2col(
         - `fmap_hw` entries must be in 1..65535, stride and dilation entries
           in 1..255, and each padding entry in 0..255. Compile-time constants
           outside these ranges are rejected. For runtime values, satisfying
-          these ranges is a caller precondition; violating it is undefined
-          behavior because the values are narrowed to hardware fields.
+          these ranges is a caller precondition; violating them is undefined
+          behavior.
         - Filter extents are compile-time integers in 1..511.
 
         Example:

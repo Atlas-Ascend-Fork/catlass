@@ -664,11 +664,30 @@ def cast(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> "Numeric":
-    """Cast ``obj`` to a concrete Numeric type.
+    """Directory: Scalar Compute
 
-    ``cast`` constructs the target type (``type_(obj)``). Cross-type SSA
-    conversion is done in ``Numeric.__init__`` / ``.to`` (via arith ops), not by
-    rebinding the raw SSA value.
+    Description:
+        Construct a concrete `Numeric` of type `type_` from `obj`.
+
+    Parameters:
+    - `obj` (`Any`): Source value (Python scalar or `Numeric`). Required.
+    - `type_` (`type[Numeric]`): Concrete target `Numeric` subclass. Required.
+
+    Constraints:
+    - Prefer calling inside a `@tla.kernel` body.
+    - `type_` must be a concrete `Numeric` subclass (not the abstract
+      `Numeric` / `Integer` / `Float` bases), unless `obj` is already that
+      abstract family.
+    - Unsupported source/target pairs raise `TypeError`.
+
+    Example:
+    ```python
+    @tla.kernel
+    def kernel() -> None:
+        x = tla.cast(0, tla.Int32)
+        y = tla.cast(1.5, tla.Float32)
+        tla.make_coord(x, y.to(tla.Int32))
+    ```
     """
     if not isinstance(type_, NumericMeta):
         raise TypeError(f"cast target must be a Numeric type, got {type_!r}")
@@ -741,7 +760,7 @@ def _mlir_f8e8m0() -> mlir_ir.Type:
 class Numeric(metaclass=NumericMeta, is_abstract=True):
     """Numeric type and value (``DslType`` / ``NumericMeta`` first-class).
 
-    Kernel API overview for external developers lives in the Numeric Scalars
+    Kernel API overview for external developers lives in the Scalar Compute
     section intro of ``docs/*/api/kernel_api_reference.md`` (generated from
     ``DIRECTORY_SECTIONS``), not as a standalone ``### Numeric`` entry.
 
@@ -895,37 +914,30 @@ class Numeric(metaclass=NumericMeta, is_abstract=True):
         round_mode: Any = None,
         loc: mlir_ir.Location | None = None,
     ) -> Any:
-        """Directory: Numeric Scalars
+        """Directory: Scalar Compute
 
         Description:
             Convert a scalar `Numeric` to another concrete type.
 
-            `round_mode` selects how float-to-int (and some float-to-float)
-            conversions round:
-            `ScalarRoundMode.NEAREST_EVEN` / `NEAREST_AWAY` / `FLOOR` /
-            `CEIL` / `ODD`. When omitted (or `TRUNC`), float-to-int truncates
-            toward zero.
-
             Parameters:
             - `dtype` (`type[Numeric] | type[int] | type[float] | type[bool]`):
-              Target type. Concrete `Numeric` subclasses (e.g. `Int32`,
-              `Float32`) produce another `Numeric`. Passing Python `int` /
-              `float` / `bool` extracts a host-side Python scalar when the
-              value is still a host constant. Required.
-            - `round_mode` (`ScalarRoundMode | None`): Optional scalar rounding
-              mode. Optional, default `None`.
+              Target type. A concrete `Numeric` subclass produces another
+              `Numeric`. Passing Python `int` / `float` / `bool` extracts a
+              host-side Python scalar when the value is still a host constant.
+              Required.
+            - `round_mode` (`ScalarRoundMode | None`): Float rounding mode
+              (`NEAREST_EVEN` / `NEAREST_AWAY` / `FLOOR` / `CEIL` / `ODD`).
+              Omitted / `TRUNC` truncates toward zero for float-to-int.
+              Optional, default `None`.
 
             Constraints:
             - Prefer calling inside a `@tla.kernel` body.
-            - When producing a DSL scalar, `dtype` must be a concrete type
-              such as `Int32` / `Float32` (not the abstract `Integer` /
-              `Float` / `Numeric` bases).
+            - When producing a DSL scalar, `dtype` must be a concrete
+              `Numeric` subclass, not the abstract `Integer` / `Float` /
+              `Numeric` bases.
             - Use `tla.params.ScalarRoundMode` here; do not pass
               `tla.params.RoundMode`.
             - Unsupported source/target pairs raise `TypeError`.
-            - Inside a `tla.vec.func(mode="simt")` region the conversion emits
-              the per-thread `tla.simt_cast`; outside one it emits the ordinary
-              scalar conversion.
 
             Example:
             ```python
@@ -1033,7 +1045,7 @@ class Numeric(metaclass=NumericMeta, is_abstract=True):
         *,
         loc: mlir_ir.Location | None = None,
     ) -> "Numeric":
-        """Directory: Numeric Scalars
+        """Directory: Scalar Compute
 
         Description:
             Reinterpret the bit pattern of a scalar `Numeric` as another
@@ -1202,20 +1214,10 @@ class Numeric(metaclass=NumericMeta, is_abstract=True):
 
 
 def as_numeric(obj: Any) -> Numeric:
-    """Directory: Numeric Scalars
+    """Directory: Scalar Compute
 
     Description:
         Convert a Python scalar into a DSL `Numeric`.
-
-        Call this before a value is updated under runtime control flow
-        (`if` / `tla.range` / `while` / expanded DSL `with` regions), or when
-        building a small fixed list/tuple of runtime scalars from literals.
-
-        Mapping rules:
-        - already-`Numeric` values are returned unchanged;
-        - `bool` → `Bool`;
-        - `int` in the signed 32-bit range → `Int32`, otherwise `Int64`;
-        - `float` → `Float32`.
 
         Parameters:
         - `obj` (`bool | int | float | Numeric`): Python scalar or an existing
@@ -1224,7 +1226,8 @@ def as_numeric(obj: Any) -> Numeric:
         Constraints:
         - Prefer calling inside a `@tla.kernel` body when the result is used
           as runtime state (rebound under control flow, loop bounds, etc.).
-        - Host-side construction from Python scalars is also fine for staging.
+        - Mapping: already-`Numeric` unchanged; `bool`→`Bool`; `int`→`Int32`
+          (or `Int64` if outside signed 32-bit); `float`→`Float32`.
         - User-defined objects and non-scalar containers are not accepted;
           conversion failure raises `ValueError`.
 
@@ -1248,6 +1251,26 @@ class Integer(
 
     @dsl_user_op
     def __invert__(self, *, loc: mlir_ir.Location | None = None) -> "Integer":
+        """Directory: Scalar Compute
+
+        Description:
+            Bitwise NOT of an integer `Numeric`: write `~Integer`.
+
+        Parameters:
+        - None. Use the unary `~` operator on a concrete integer `Numeric`.
+
+        Constraints:
+        - Prefer calling inside a `@tla.kernel` body.
+        - Receiver must be a concrete integer `Numeric`.
+
+        Example:
+        ```python
+        @tla.kernel
+        def kernel() -> None:
+            flags = ~tla.Int32(0)
+            tla.make_coord(flags, 0)
+        ```
+        """
         cls = typing_cast(type[Integer], type(self))
         if isinstance(self.value, (int, bool)):
             return cls(~int(self.value))
@@ -1281,15 +1304,10 @@ class Float(
 
     @dsl_user_op
     def sqrt(self, *, loc: mlir_ir.Location | None = None) -> "Float":
-        """Directory: Numeric Scalars
+        """Directory: Scalar Compute
 
         Description:
             Square root of a scalar float.
-
-            Scalar counterpart of `tla.sqrt`. Inside
-            `tla.vec.func(mode="simt")` it runs per-thread; elsewhere in the
-            kernel (including cube / SIMD vector regions and the kernel body)
-            it uses the core scalar math path.
 
             Parameters:
             - (none besides `self`)

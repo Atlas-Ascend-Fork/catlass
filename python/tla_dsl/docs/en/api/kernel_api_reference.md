@@ -18,118 +18,47 @@ The vector unit has two execution modes, and they are separate chapters below. *
 
 ## Table of Contents
 
-- [1. Experimental APIs](#1-experimental-apis)
-- [2. Basic Data Types and Operations](#2-basic-data-types-and-operations)
-- [3. Numeric Scalars](#3-numeric-scalars)
-- [4. Data Movement](#4-data-movement)
-- [5. Matrix Compute](#5-matrix-compute)
-- [6. SIMD Vector Compute](#6-simd-vector-compute)
-  - [6.1 Mask Compute](#61-mask-compute)
-  - [6.2 Basic Arithmetic](#62-basic-arithmetic)
-  - [6.3 Logical Compute](#63-logical-compute)
+- [1. Basic Data Types and Operations](#1-basic-data-types-and-operations)
+- [2. Scalar Compute](#2-scalar-compute)
+- [3. Data Movement](#3-data-movement)
+- [4. Matrix Compute](#4-matrix-compute)
+- [5. SIMD Vector Compute](#5-simd-vector-compute)
+  - [5.1 Mask Compute](#51-mask-compute)
+  - [5.2 Basic Arithmetic](#52-basic-arithmetic)
+  - [5.3 Logical Compute](#53-logical-compute)
+  - [5.4 Compare and Select](#54-compare-and-select)
+  - [5.5 Data Fill](#55-data-fill)
+  - [5.6 Discrete and Aggregate](#56-discrete-and-aggregate)
+  - [5.7 Data Rearrange](#57-data-rearrange)
+  - [5.8 Data Compress](#58-data-compress)
+  - [5.9 Type Conversion](#59-type-conversion)
+  - [5.10 Histogram Compute](#510-histogram-compute)
+- [6. SIMT Vector Compute](#6-simt-vector-compute)
+  - [6.1 Region Scope](#61-region-scope)
+  - [6.2 Element Access](#62-element-access)
+  - [6.3 Basic Arithmetic](#63-basic-arithmetic)
   - [6.4 Compare and Select](#64-compare-and-select)
-  - [6.5 Data Fill](#65-data-fill)
-  - [6.6 Discrete and Aggregate](#66-discrete-and-aggregate)
-  - [6.7 Data Rearrange](#67-data-rearrange)
-  - [6.8 Data Compress](#68-data-compress)
-  - [6.9 Type Conversion](#69-type-conversion)
-  - [6.10 Histogram](#610-histogram)
-- [7. SIMT Vector Compute](#7-simt-vector-compute)
-  - [7.1 Region Scope](#71-region-scope)
-  - [7.2 Thread Indexing](#72-thread-indexing)
-  - [7.3 Thread Synchronization](#73-thread-synchronization)
-  - [7.4 Element Access](#74-element-access)
-  - [7.5 Basic Arithmetic](#75-basic-arithmetic)
-  - [7.6 Compare and Select](#76-compare-and-select)
-  - [7.7 Type Conversion](#77-type-conversion)
-- [8. Sync Control](#8-sync-control)
-- [9. System Variable Access](#9-system-variable-access)
-- [10. Resource Management](#10-resource-management)
-- [11. Debug APIs](#11-debug-apis)
-- [12. Scopes and Control Flow](#12-scopes-and-control-flow)
-- [13. Data fill](#13-data-fill)
-- [14. Vector Compute](#14-vector-compute)
-  - [14.1 Data Rearrange](#141-data-rearrange)
+  - [6.5 Type Conversion](#65-type-conversion)
+- [7. Sync Control](#7-sync-control)
+- [8. System Variable Access](#8-system-variable-access)
+  - [8.1 Layout Tags](#81-layout-tags)
+  - [8.2 Pipes](#82-pipes)
+  - [8.3 On-chip Address Spaces](#83-on-chip-address-spaces)
+  - [8.4 Architecture Helpers](#84-architecture-helpers)
+- [9. Resource Management](#9-resource-management)
+- [10. Debug APIs](#10-debug-apis)
+- [11. Scopes and Control Flow](#11-scopes-and-control-flow)
+- [12. Experimental APIs](#12-experimental-apis)
 
 ---
 
-## 1. Experimental APIs
-
-APIs under `tla.experimental` may change or be removed without backward-compatibility guarantees. Use the ordinary `tla.kernel` and `tla.jit` decorators; this namespace does not select another compiler.
-
-### `experimental.img2col`
-
-**Source:** [`catlass.tla.experimental.img2col`](../../../catlass/tla/experimental/__init__.py#L51)
-
-Description:
-
-Load an L1 feature-map tile into L0A, expanding it on the way with the
-hardware's img2col unit.
-
-This is the only convolution-specific instruction in the DSL. It turns an
-`(hi, wi)` feature-map window into the implicit-GEMM matrix
-`(M, K) = (ho * wo, cin1 * kh * kw * C0)`, applying padding, stride and
-dilation as it goes. What comes out is an ordinary L0A operand, so
-`tla.mmad` computes the convolution without knowing it is one -- the
-convolution is a property of the *load*.
-
-Prototype:
-
-```python
-tla.experimental.img2col(dst: Tensor, src: Tensor, params: Img2colParams) -> None
-```
-
-Parameters:
-
-- `dst` (`Tensor`): L0A tile, tagged `zN`, shaped `(M, K)`. Its shape gives
-  the load's extents and its coord gives the start points, so M and K of the
-  implicit GEMM are tiled by aiming this at a different window of the same
-  L1 tile -- at no extra L1 traffic. Required.
-- `src` (`Tensor`): L1 feature-map tile, tagged `zNUnAlign`, which is the
-  NC1HWC0 nesting `((h*w, 1), (C0, c1))`. Required.
-- `params` (`Img2colParams`): the convolution geometry. Required.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.cube()`.
-- Element type must be `f32`, `f16` or `bf16`: the A5 img2col path is
-  instantiated for 2- and 4-byte elements only, so there is no int8/fp8 route.
-- `src` and `dst` must share an element type.
-- Source channels come from the NC1HWC0 source shape, independently of
-  the destination K window. Source C0/C1 and destination K extent and
-  K coordinate must be static. `filter_hw` must be compile-time integers.
-- The destination K extent and starting coordinate must cover whole
-  C1 slices (`kh * kw * C0` elements), within the source's full K axis.
-  Source channels and destination K extent must fit in 1..65535;
-  the destination K coordinate must fit in 0..65535.
-- `fmap_hw` entries must be in 1..65535, stride and dilation entries
-  in 1..255, and each padding entry in 0..255. Compile-time constants
-  outside these ranges are rejected. For runtime values, satisfying
-  these ranges is a caller precondition; violating it is undefined
-  behavior because the values are narrowed to hardware fields.
-- Filter extents are compile-time integers in 1..511.
-
-Example:
-
-```python
-with tla.cube():
-    # l1_fmap holds NC1HWC0; l1_filter holds the (K, N) weight matrix.
-    tla.experimental.img2col(l0_a, l1_fmap, tla.experimental.Img2colParams(
-        fmap_hw=(hi, wi), filter_hw=(3, 3), pad=(1, 1, 1, 1)))
-    tla.copy(l0_b, l1_filter)
-    tla.mmad(l0_c, l0_a, l0_b, init_c=True)
-```
-
----
-
-## 2. Basic Data Types and Operations
+## 1. Basic Data Types and Operations
 
 Construction and views for front-end structured values such as Shape / Coord / Stride / Layout / Tensor, plus pointer helpers.
 
 ### `make_shape`
 
-**Source:** [`catlass.core_api.make_shape`](../../../catlass/core_api.py#L4059)
+**Source:** [`catlass.core_api.make_shape`](../../../catlass/core_api.py#L4037)
 
 Description:
 
@@ -173,7 +102,7 @@ zn_shape = tla.make_shape((16, 8), (16, 4))
 
 ### `make_coord`
 
-**Source:** [`catlass.core_api.make_coord`](../../../catlass/core_api.py#L4100)
+**Source:** [`catlass.core_api.make_coord`](../../../catlass/core_api.py#L4078)
 
 Description:
 
@@ -204,7 +133,7 @@ coord = tla.make_coord(block_row, 0)
 
 ### `make_stride`
 
-**Source:** [`catlass.core_api.make_stride`](../../../catlass/core_api.py#L4129)
+**Source:** [`catlass.core_api.make_stride`](../../../catlass/core_api.py#L4107)
 
 Description:
 
@@ -266,7 +195,7 @@ nz_stride = tla.make_stride((1, 1024), (16, 256))
 
 ### `make_layout`
 
-**Source:** [`catlass.core_api.make_layout`](../../../catlass/core_api.py#L4189)
+**Source:** [`catlass.core_api.make_layout`](../../../catlass/core_api.py#L4167)
 
 Description:
 
@@ -289,8 +218,9 @@ Parameters:
 - `origin_shape` (`_Shape | None`): Logical working shape (true data size
   before alignment fill). Optional, default `None`. Copy / tiling use this
   logical size; physical packing lives in `shape` / `stride`.
-- `layoutTag` (`_LayoutTag | None`): Layout tag (e.g. `tla.arch.RowMajor`,
-  `tla.arch.zN`). Optional, default `None` (RowMajor).
+- `layoutTag` (`_LayoutTag | None`): Layout tag; see
+  **System Variable Access / Layout Tags**. Optional, default `None`
+  (`RowMajor`).
 
 Constraints:
 
@@ -329,17 +259,11 @@ zn = tla.make_layout(
 
 ### `make_layout_with_tag`
 
-**Source:** [`catlass.core_api.make_layout_with_tag`](../../../catlass/core_api.py#L4324)
+**Source:** [`catlass.core_api.make_layout_with_tag`](../../../catlass/core_api.py#L4303)
 
 Description:
 
-Compose a `!tla.layout` directly from a flat 2D logical shape, an element
-type and a layout tag (maps to
-`tla.make_layout` after the front end remaps the physical trees).
-
-`make_layout_with_tag` takes the extent straight from the
-caller, so an on-chip tile can be larger than the GM tile it is fed from
-(e.g. a K extent rounded up to 64 for MX mmad).
+Build an on-chip `!tla.layout` from a flat 2-D shape, element type, and layout tag.
 
 Prototype:
 
@@ -353,8 +277,9 @@ Parameters:
   an `int` or a runtime `Numeric` (dynamic leaf). Required.
 - `dtype` (`Numeric` subclass): Element type; drives the C0/fractal
   geometry of the remapped physical trees. Required.
-- `layoutTag` (`_LayoutTag | None`): Layout tag (e.g. `tla.arch.zN`).
-  Optional, default `None` (RowMajor).
+- `layoutTag` (`_LayoutTag | None`): Layout tag; see
+  **System Variable Access / Layout Tags**. Optional, default `None`
+  (`RowMajor`).
 
 Constraints:
 
@@ -367,11 +292,10 @@ Constraints:
 - The origin shape of the resulting layout equals `shape` (the aligned
   extent); pair with `tla.make_tensor(ptr, layout)` to land it on an
   on-chip pointer.
-- On-chip tags only: `zZMxScale` / `nNMxScale` require element type
-  `tla.Float8E8M0` (their C0 is fixed at 2 elements / 32 bytes by the
-  e8m0 format). The GM-side MxScale tags (`RowMajorMxScaleA`,
-  `ColMajorMxScaleA`, `RowMajorMxScaleB`, `ColMajorMxScaleB`) are
-  rejected.
+- This API accepts only: `RowMajor`, `ColumnMajor`, `zN`, `nZ`,
+  `zZMxScale`, `nNMxScale`, `L0Clayout`, `zNUnAlign`.
+- `zZMxScale` / `nNMxScale` require element type `tla.Float8E8M0`.
+  GM-side MxScale tags are rejected.
 
 Example:
 
@@ -385,7 +309,7 @@ t_l1a = tla.make_tensor(l1a, lay)
 
 ### `tile_view`
 
-**Source:** [`catlass.core_api.tile_view`](../../../catlass/core_api.py#L4482)
+**Source:** [`catlass.core_api.tile_view`](../../../catlass/core_api.py#L4455)
 
 Description:
 
@@ -420,27 +344,11 @@ tile = tla.tile_view(
 
 ### `get_tile`
 
-**Source:** [`catlass.core_api.get_tile`](../../../catlass/core_api.py#L4529)
+**Source:** [`catlass.core_api.get_tile`](../../../catlass/core_api.py#L4502)
 
 Description:
 
-Extract a sub-tile of a tensor as a new `!tla.tensor` built with
-`tla.make_tensor` over the source's backing pointer.
-
-The returned tensor shares the source's buffer geometry -- the
-`stride` tree passes through unchanged -- and carries:
-
-- `coord`: `coord + source.coord` (element offsets, per dim);
-- `origin_shape`: `shape` cropped against the source's `origin_shape`
-  (per dim `min(shape[d], origin[d] - coord[d])`), so the tile never
-  runs past the source's logical extent;
-- `shape`: the physical packing regenerated from the cropped extent
-  (for zN/nZ the same fractal decomposition `make_layout_with_tag`
-  would produce; for RowMajor/ColumnMajor the extent itself).
-
-Downstream ops see the tile's absolute coord and its own logical
-extent; for example `Tensor.fill` on the result covers exactly this
-tile.
+Extract a flat 2-D sub-tile of a tensor (shares the source buffer).
 
 Prototype:
 
@@ -459,6 +367,9 @@ Parameters:
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
+- Result `coord` is `coord + source.coord`; `origin_shape` is `shape`
+  cropped to the source extent; physical `shape` is regenerated from
+  that crop; `stride` is unchanged.
 - `coord` offsets must stay within the source's `origin_shape` -- the
   crop only trims the extent, it does not clamp the offsets.
 - Supported layout tags follow `tla.make_tensor` (RowMajor, ColumnMajor,
@@ -477,7 +388,7 @@ pad.fill(0)
 
 ### `make_tensor`
 
-**Source:** [`catlass.core_api.make_tensor`](../../../catlass/core_api.py#L4686)
+**Source:** [`catlass.core_api.make_tensor`](../../../catlass/core_api.py#L4646)
 
 Description:
 
@@ -522,7 +433,7 @@ tensor = tla.make_tensor(ptr, layout, coord=tla.make_coord(0, 0))
 
 ### `make_tensor_like`
 
-**Source:** [`catlass.core_api.make_tensor_like`](../../../catlass/core_api.py#L4891)
+**Source:** [`catlass.core_api.make_tensor_like`](../../../catlass/core_api.py#L4851)
 
 Description:
 
@@ -556,7 +467,7 @@ dst = tla.make_tensor_like(ptr, like=src_tile, layoutTag=tla.arch.RowMajor)
 
 ### `make_ptr`
 
-**Source:** [`catlass.core_api.make_ptr`](../../../catlass/core_api.py#L10024)
+**Source:** [`catlass.core_api.make_ptr`](../../../catlass/core_api.py#L9917)
 
 Description:
 
@@ -572,7 +483,7 @@ Parameters:
 
 - `dtype` (`type[Numeric] | None`): Pointee element type; `None` means
   `Int8`. Optional, default `None`.
-- `value` (`int | mlir_ir.Value | Numeric`): Address value (int, MLIR Value, or Numeric). Required.
+- `value` (`int | Numeric | address SSA`): Address value. Required.
 - `mem_space` (`AddressSpace`): Address space of the pointer. Optional, default `AddressSpace.gm`.
 - `assumed_align` (`int | None`): Assumed alignment in bytes. Optional, default `None`.
 
@@ -591,7 +502,7 @@ ptr = tla.make_ptr(tla.Float16, addr, mem_space=tla.AddressSpace.gm)
 
 ### `recast_ptr`
 
-**Source:** [`catlass.core_api.recast_ptr`](../../../catlass/core_api.py#L10078)
+**Source:** [`catlass.core_api.recast_ptr`](../../../catlass/core_api.py#L9971)
 
 Description:
 
@@ -621,11 +532,11 @@ ptr_f32 = tla.recast_ptr(ptr_f16, dtype=tla.Float32)
 
 ---
 
-## 3. Numeric Scalars
+## 2. Scalar Compute
 
 `Numeric` is the base of TLA DSL **scalar** types and values used inside `@tla.kernel`. Concrete types include integers (`tla.Int8` / `Int16` / `Int32` / `Int64` and unsigned variants), floats (`tla.Float16` / `BFloat16` / `Float32`, plus narrower formats), and `tla.Bool`. Construct values with the type, for example `tla.Int32(0)` or `tla.Float32(1.5)`.
 
-Use `Numeric` values for loop indices, coordinates, and other single-element state updated under runtime `if` / `tla.range` / `while`. Promote Python literals with `as_numeric`; change type with `Numeric.to`; reinterpret bits with `Numeric.bitcast`.
+Use `Numeric` values for loop indices, coordinates, and other single-element state updated under runtime `if` / `tla.range` / `while`. Promote Python literals with `as_numeric`; change type with `Numeric.to`; reinterpret bits with `Numeric.bitcast`; bitwise / math ops such as `~Integer` and `Float.sqrt`.
 
 The operators `+` `-` `*` `/` `//` `**` and the comparisons are
 evaluated on the core's own scalar unit, except inside a
@@ -639,19 +550,52 @@ Constraints:
 - Must be used inside a `@tla.kernel` body when the value participates in device-side control flow or computation.
 - A name reassigned under runtime `if` / `tla.range` / `while` must hold a `Numeric` (from `as_numeric` or a concrete type such as `tla.Int32(...)`). Plain Python `int` / `float` / `bool` cannot be carried as runtime state across that control flow.
 
+### `cast`
+
+**Source:** [`catlass.base_dsl.typing.cast`](../../../catlass/base_dsl/typing.py#L661)
+
+Description:
+
+Construct a concrete `Numeric` of type `type_` from `obj`.
+
+Prototype:
+
+```python
+tla.cast(obj: Any, type_: type['Numeric']) -> 'Numeric'
+```
+
+Parameters:
+
+- `obj` (`Any`): Source value (Python scalar or `Numeric`). Required.
+- `type_` (`type[Numeric]`): Concrete target `Numeric` subclass. Required.
+
+Constraints:
+
+- Prefer calling inside a `@tla.kernel` body.
+- `type_` must be a concrete `Numeric` subclass (not the abstract
+  `Numeric` / `Integer` / `Float` bases), unless `obj` is already that
+  abstract family.
+- Unsupported source/target pairs raise `TypeError`.
+
+Example:
+
+```python
+@tla.kernel
+def kernel() -> None:
+    x = tla.cast(0, tla.Int32)
+    y = tla.cast(1.5, tla.Float32)
+    tla.make_coord(x, y.to(tla.Int32))
+```
+
+---
+
 ### `Numeric.to`
 
-**Source:** [`catlass.base_dsl.typing.Numeric.to`](../../../catlass/base_dsl/typing.py#L891)
+**Source:** [`catlass.base_dsl.typing.Numeric.to`](../../../catlass/base_dsl/typing.py#L910)
 
 Description:
 
 Convert a scalar `Numeric` to another concrete type.
-
-`round_mode` selects how float-to-int (and some float-to-float)
-conversions round:
-`ScalarRoundMode.NEAREST_EVEN` / `NEAREST_AWAY` / `FLOOR` /
-`CEIL` / `ODD`. When omitted (or `TRUNC`), float-to-int truncates
-toward zero.
 
 Prototype:
 
@@ -662,25 +606,24 @@ Numeric.to(dtype: Any, *, round_mode: Any = None) -> Any
 Parameters:
 
 - `dtype` (`type[Numeric] | type[int] | type[float] | type[bool]`):
-  Target type. Concrete `Numeric` subclasses (e.g. `Int32`,
-  `Float32`) produce another `Numeric`. Passing Python `int` /
-  `float` / `bool` extracts a host-side Python scalar when the
-  value is still a host constant. Required.
-- `round_mode` (`ScalarRoundMode | None`): Optional scalar rounding
-  mode. Optional, default `None`.
+  Target type. A concrete `Numeric` subclass produces another
+  `Numeric`. Passing Python `int` / `float` / `bool` extracts a
+  host-side Python scalar when the value is still a host constant.
+  Required.
+- `round_mode` (`ScalarRoundMode | None`): Float rounding mode
+  (`NEAREST_EVEN` / `NEAREST_AWAY` / `FLOOR` / `CEIL` / `ODD`).
+  Omitted / `TRUNC` truncates toward zero for float-to-int.
+  Optional, default `None`.
 
 Constraints:
 
 - Prefer calling inside a `@tla.kernel` body.
-- When producing a DSL scalar, `dtype` must be a concrete type
-  such as `Int32` / `Float32` (not the abstract `Integer` /
-  `Float` / `Numeric` bases).
+- When producing a DSL scalar, `dtype` must be a concrete
+  `Numeric` subclass, not the abstract `Integer` / `Float` /
+  `Numeric` bases.
 - Use `tla.params.ScalarRoundMode` here; do not pass
   `tla.params.RoundMode`.
 - Unsupported source/target pairs raise `TypeError`.
-- Inside a `tla.vec.func(mode="simt")` region the conversion emits
-  the per-thread `tla.simt_cast`; outside one it emits the ordinary
-  scalar conversion.
 
 Example:
 
@@ -698,7 +641,7 @@ def kernel(n: int) -> None:
 
 ### `Numeric.bitcast`
 
-**Source:** [`catlass.base_dsl.typing.Numeric.bitcast`](../../../catlass/base_dsl/typing.py#L1030)
+**Source:** [`catlass.base_dsl.typing.Numeric.bitcast`](../../../catlass/base_dsl/typing.py#L1042)
 
 Description:
 
@@ -733,21 +676,11 @@ bits = tla.Float32(1.0).bitcast(tla.Int32)
 
 ### `as_numeric`
 
-**Source:** [`catlass.base_dsl.typing.as_numeric`](../../../catlass/base_dsl/typing.py#L1204)
+**Source:** [`catlass.base_dsl.typing.as_numeric`](../../../catlass/base_dsl/typing.py#L1216)
 
 Description:
 
 Convert a Python scalar into a DSL `Numeric`.
-
-Call this before a value is updated under runtime control flow
-(`if` / `tla.range` / `while` / expanded DSL `with` regions), or when
-building a small fixed list/tuple of runtime scalars from literals.
-
-Mapping rules:
-- already-`Numeric` values are returned unchanged;
-- `bool` → `Bool`;
-- `int` in the signed 32-bit range → `Int32`, otherwise `Int64`;
-- `float` → `Float32`.
 
 Prototype:
 
@@ -764,7 +697,8 @@ Constraints:
 
 - Prefer calling inside a `@tla.kernel` body when the result is used
   as runtime state (rebound under control flow, loop bounds, etc.).
-- Host-side construction from Python scalars is also fine for staging.
+- Mapping: already-`Numeric` unchanged; `bool`→`Bool`; `int`→`Int32`
+  (or `Int64` if outside signed 32-bit); `float`→`Float32`.
 - User-defined objects and non-scalar containers are not accepted;
   conversion failure raises `ValueError`.
 
@@ -781,18 +715,47 @@ def kernel(limit: int) -> None:
 
 ---
 
+### `~Integer`
+
+**Source:** [`catlass.base_dsl.typing.Integer.__invert__`](../../../catlass/base_dsl/typing.py#L1253)
+
+Description:
+
+Bitwise NOT of an integer `Numeric`: write `~Integer`.
+
+Prototype:
+
+```python
+~Integer -> 'Integer'
+```
+
+Parameters:
+
+- None. Use the unary `~` operator on a concrete integer `Numeric`.
+
+Constraints:
+
+- Prefer calling inside a `@tla.kernel` body.
+- Receiver must be a concrete integer `Numeric`.
+
+Example:
+
+```python
+@tla.kernel
+def kernel() -> None:
+    flags = ~tla.Int32(0)
+    tla.make_coord(flags, 0)
+```
+
+---
+
 ### `Float.sqrt`
 
-**Source:** [`catlass.base_dsl.typing.Float.sqrt`](../../../catlass/base_dsl/typing.py#L1283)
+**Source:** [`catlass.base_dsl.typing.Float.sqrt`](../../../catlass/base_dsl/typing.py#L1306)
 
 Description:
 
 Square root of a scalar float.
-
-Scalar counterpart of `tla.sqrt`. Inside
-`tla.vec.func(mode="simt")` it runs per-thread; elsewhere in the
-kernel (including cube / SIMD vector regions and the kernel body)
-it uses the core scalar math path.
 
 Prototype:
 
@@ -822,54 +785,18 @@ def kernel() -> None:
 
 ---
 
-## 4. Data Movement
+## 3. Data Movement
 
 Tensor copies between on-chip and global memory, and UB register load/store.
 
 ### `copy`
 
-**Source:** [`catlass.core_api.copy`](../../../catlass/core_api.py#L5589)
+**Source:** [`catlass.core_api.copy`](../../../catlass/core_api.py#L5549)
 
 Description:
 
-Copy data between tiles. The hardware path follows `src`/`dst` address spaces
-(vector: GM↔UB, UB→L1, UB→UB; cube: GM→L1, L1→L0A/L0B, L1→biasbuf, L0C→GM|UB|L1).
-UB→UB always uses the dedicated `MOV.UB.TO.UB` block move, so any element
-width (1-byte types included) and any row length are accepted. That move
-counts in whole 32-byte blocks, so a row that is not a whole number of
-blocks is rounded *up* and its alignment fill travels with it. Two
-geometries are therefore rejected rather than copied: a tile whose origin
-is not on a 32-byte boundary (which a sub-block view can produce), and a
-multi-row tile whose row pitch does not leave a whole number of blocks of
-slack for the rounded row, where the rounded row would run into the next
-one. Layout tags on the tiles select format conversion (for example
-ND→zN).
-A UB→UB copy whose destination is tagged `ColumnMajor` is a **transpose**:
-both tiles carry the same logical `(M, N)` shape and the bytes land as the
-`(N, M)` transpose, the same way the L0C→GM and L0C→UB routes express one.
-The engine is `VNCHWCONV`, the vector unit's native transpose, which moves
-whole 16-row by C0-column blocks, C0 being the elements in a 32-byte
-DataBlock (8 / 16 / 32 for 4 / 2 / 1-byte types). The tile must therefore
-be a whole number of those blocks: 16 rows by C0 columns, or 32 rows by 32
-columns for a 1-byte type, which needs four calls to cover its block.
-On the cube side, the contiguous-run routes are `GM`→`L1` and
-`L1`→`biasbuf`, and both spell a flat tile with `VectorLayout`.
-`VectorLayout` is rank-1 by definition, so the tile is `(N):(1)` and only
-its innermost extent is addressed. `RowMajor` does not spell either route
--- it stays a two-dimensional tag.
-
-A tile that spans more than one row cannot use `VectorLayout`, and the
-two routes differ in what is left. A multi-row `GM`→`L1` tile has the
-`zN` / `nZ` routes, which keep both dimensions. `L1`→`biasbuf` has no
-such alternative: the bias table is a flat `N`-element run, so a
-multi-row bias tile is not representable at all -- slice the row you need
-rather than loading a taller tile.
-The per-channel fixpipe dequant scale is the `GM`→`L1` flat route too:
-one `u64` word per output channel, built with `VectorLayout`.
-
-Copy / tiling sizes follow each tile's logical `origin_shape`
-(not the nested physical `shape`). Physical `shape` / `stride` describe
-how those logical elements are stored (alignment fill, zN packing, …).
+Copy a tile from `src` to `dst`. Supported routes and dtypes are listed
+after Constraints.
 
 Prototype:
 
@@ -881,95 +808,37 @@ Parameters:
 
 - `dst` (`Tensor`): Destination tile. Required.
 - `src` (`Tensor`): Source tile. Required.
-- `params` (`CopyParams | None`): Optional path-specific params
-  (`CopyL0C2DstParams`, `CopyUbToGmParams` / atomic, …). Default `None`.
-- **MX scale tiles** (`zZMxScale` / `nNMxScale` destinations) reach L1 as a
-  flat run of bytes, so the source tile must span full rows of its buffer.
-  Stack per-chunk scale blocks along rows; do not slice a wide scale buffer
-  along columns. This is checked only when the row pitch is statically
-  known -- a layout-dynamic tensor cannot be checked at compile time.
-- `scale` (`Tensor | None`): L1 tile of OCP `e8m0` shared exponents, one per
-  32 elements along K, which turns an L1→L0A/L0B load into a microscaling
-  (MX) load and lowers to `tla.copy_mx`. Carried as `i8`/`u8` storage because
-  MLIR has no e8m0 type, and tagged `tla.arch.zZMxScale` for an L0A
-  destination or `tla.arch.nNMxScale` for an L0B destination. Default `None`.
+- `params` (`CopyParams | None`): Path-specific params:
+  `CopyL0C2DstParams`, `CopyUbToGmParams`. Default `None`.
+- `scale` (`Tensor | None`): L1 OCP `e8m0` shared-exponent tile for
+  L1→L0A/L0B MX load. Stored as `i8`/`u8`; destination tag is
+  `tla.arch.zZMxScale` (L0A) or `tla.arch.nNMxScale` (L0B).
+  Default `None`.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
-- `scale` is only valid on the L1→L0A/L0B route, and the tile it loads must
-  then be consumed by `tla.mmad`, which becomes a microscaling matmul
-  because of this load. The scale is consumed by the load, not by the matmul:
-  the hardware's `mad_mx` takes no scale operand, so the MX association is
-  established when the operand lands in L0. This mirrors AscendC, where the
-  MX load is the five-argument overload of `LoadData` rather than a separate
-  entry point.
-- Must be called inside `tla.cube()` or `tla.vector()` (cube routes above
-  in `cube()`, vector routes in `vector()`).
-- Whole-tile DMA uses `tla.copy`. Register-level UB unaligned access uses
-  `tensor.load` / `tensor.store` with `UnalignLoadParams` /
-  `UnalignStoreParams` instead.
-- **Shapes not aligned to 32 bytes:** C0 is 32 bytes. For ND GM↔UB, prefer
-  a leading dimension whose byte size is a multiple of 32 (e.g. for
-  RowMajor f16, choose `N` so `N % 16 == 0`). If the true data size cannot
-  meet that for DMA, keep `origin_shape` as the real logical size and
-  either enlarge the physical layout to the aligned size, or use the
-  unaligned register load/store path above. For zN when `M` is not a
-  multiple of 16, use `tla.arch.zNUnAlign` instead of `zN`.
-
-Example:
-
-```python
-# --- 1) Aligned GM ↔ UB (RowMajor, 32B-friendly) ---
-# Before: x_gm[i, j] holds ND data; x_ub is empty. origin_shape==(M, N).
-with tla.vector():
-    tla.copy(dst=x_ub, src=x_gm)
-    # After: x_ub[i, j] == x_gm[i, j] for all logical (i, j) in origin_shape.
-    tla.copy(dst=y_gm, src=y_ub)
-
-# --- 2) ND → zN: GM RowMajor → L1 zN (layout change) ---
-# Before (logical): gm_a.origin_shape==(128, 64), RowMajor; element (r, c)
-#   sits at ND offset r*64+c.
-# After (physical on L1): l1_a uses nested zN shape/stride; the same
-#   logical (r, c) is zN-packed. l1_a.origin_shape stays (128, 64).
-l1_a = tla.make_tensor_like(l1_ptr, gm_a, layoutTag=tla.arch.zN)
-with tla.cube():
-    tla.copy(dst=l1_a, src=gm_a)
-
-# Explicit zN (same logical 128x64 f16) if not using make_tensor_like:
-l1_a = tla.make_tensor(
-    l1_ptr,
-    tla.make_layout(
-        tla.make_shape((16, 8), (16, 4)),
-        tla.make_stride((16, 256), (1, 2048)),
-        origin_shape=tla.make_shape(128, 64),
-        layoutTag=tla.arch.zN,
-    ),
-)
-
-# --- 3) M not a multiple of 16: zNUnAlign ---
-# Before: rows may be runtime and not a multiple of 16.
-l1_unalign = tla.make_tensor_like(l1_ptr, gm_tile, layoutTag=tla.arch.zNUnAlign)
-with tla.cube():
-    tla.copy(dst=l1_unalign, src=gm_tile)
-
-# --- 4) Flat contiguous run: VectorLayout ---
-# A 1-N bias row is one run of elements, not a (1, N) tile. Both
-# endpoints of the staging pipeline carry the same tag: GM -> L1 first,
-# then L1 -> the bias table buffer.
-gm_bias = tla.tile_view(gm_bias_full, tla.make_shape(n), tla.make_coord(0))
-l1_bias = tla.make_tensor_like(l1_bias_ptr, gm_bias, tla.arch.VectorLayout)
-l0_bias = tla.make_tensor_like(l0_bias_ptr, l1_bias, tla.arch.VectorLayout)
-with tla.cube():
-    tla.copy(dst=l1_bias, src=gm_bias)
-    tla.copy(dst=l0_bias, src=l1_bias)
-    tla.mmad(l0_c, l0_a, l0_b, init_c=True, unit_flag=0, bias=l0_bias)
-
-# Related (register path, not tla.copy): unaligned UB ↔ vector register
-#   with tla.vec.func(mode="simd"):
-#       x_reg = x_ub.load(tla.params.UnalignLoadParams())
-#       y_ub.store(y_reg, tla.params.UnalignStoreParams())
-```
+- Must be called inside `tla.cube()` or `tla.vector()`.
+- Copy size follows each tile's `origin_shape`.
+- `scale` is only valid on L1→L0A/L0B; the loaded tile must then be
+  consumed by `tla.mmad_mx`.
+- For MX scale destinations (`zZMxScale` / `nNMxScale`), the source
+  tile must span full L1 rows; stack scale blocks along rows.
+  Checked only when row pitch is statically known.
+- UB→UB counts in whole 32-byte blocks; rows round up. Rejected if the
+  origin is not 32B-aligned, or multi-row pitch cannot hold the rounded
+  row. Destination tagged `ColumnMajor` is a transpose: tile shape must
+  be whole 16×C0 blocks, or 32×32 for 1-byte types.
+- `GM`→`L1` / `L1`→`biasbuf` contiguous runs use rank-1 `VectorLayout`;
+  multi-row bias tiles are not representable — slice one row.
+- Whole-tile DMA uses `tla.copy`. For register-level UB unaligned
+  access, use `tensor.load` / `tensor.store` with `UnalignLoadParams` /
+  `UnalignStoreParams`.
+- **Shapes not aligned to 32 bytes:** C0 is 32 bytes. For ND GM↔UB,
+  prefer a leading dimension whose byte size is a multiple of 32.
+  Otherwise keep `origin_shape` as the real size and enlarge the
+  physical layout, or use unaligned load/store. For zN when `M` is
+  not a multiple of 16, use `tla.arch.zNUnAlign`.
 
 Supported cube copy routes without scale, `tla.copy(dst, src, scale=None)`
 
@@ -1046,6 +915,43 @@ Supported vector copy routes
 |`ub`|`zN`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
 |`ub`|`zNUnAlign`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
 
+Example:
+
+```python
+# --- 1) Aligned GM ↔ UB (RowMajor, 32B-friendly) ---
+with tla.vector():
+    tla.copy(dst=x_ub, src=x_gm)
+    tla.copy(dst=y_gm, src=y_ub)
+
+# --- 2) ND → zN: GM RowMajor → L1 zN ---
+l1_a = tla.make_tensor_like(l1_ptr, gm_a, layoutTag=tla.arch.zN)
+with tla.cube():
+    tla.copy(dst=l1_a, src=gm_a)
+
+# --- 3) M not a multiple of 16: zNUnAlign ---
+# Before: rows may be runtime and not a multiple of 16.
+l1_unalign = tla.make_tensor_like(l1_ptr, gm_tile, layoutTag=tla.arch.zNUnAlign)
+with tla.cube():
+    tla.copy(dst=l1_unalign, src=gm_tile)
+
+# --- 4) Flat contiguous run: VectorLayout ---
+# A 1-N bias row is one run of elements, not a (1, N) tile. Both
+# endpoints of the staging pipeline carry the same tag: GM -> L1 first,
+# then L1 -> the bias table buffer.
+gm_bias = tla.tile_view(gm_bias_full, tla.make_shape(n), tla.make_coord(0))
+l1_bias = tla.make_tensor_like(l1_bias_ptr, gm_bias, tla.arch.VectorLayout)
+l0_bias = tla.make_tensor_like(l0_bias_ptr, l1_bias, tla.arch.VectorLayout)
+with tla.cube():
+    tla.copy(dst=l1_bias, src=gm_bias)
+    tla.copy(dst=l0_bias, src=l1_bias)
+    tla.mmad(l0_c, l0_a, l0_b, init_c=True, unit_flag=0, bias=l0_bias)
+
+# Related (register path, not tla.copy): unaligned UB ↔ vector register
+#   with tla.vec.func(mode="simd"):
+#       x_reg = x_ub.load(tla.params.UnalignLoadParams())
+#       y_ub.store(y_reg, tla.params.UnalignStoreParams())
+```
+
 ---
 
 ### `Tensor.load`
@@ -1064,34 +970,64 @@ tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[Vecto
 
 Parameters:
 
-- `params` (`LoadParams | None`): Load mode. `None` / `NormalLoadParams` /
-  `UnalignLoadParams` / `BlockLoadParams` → `VectorSSA` (or a pair for
-  `DIST_DINTLV_B32`); `MaskLoadParams` → `MaskSSA`.
-  `NormalLoadParams.load_dist` selects a distribution mode:
-  `norm` (default), `brc_b32` (broadcast one b32 element to all lanes),
-  `dintlv_b32` (f32 deinterleave, dual results), `us_b8` / `us_b16`
-  (2x up-sample), `brc_b16` (broadcast one b16 element),
-  `unpack_b16` (zero-extend b16 to double width),
-  `e2b_b16` / `e2b_b32` (element-to-DataBlock broadcast),
-  `blk` (one 32-byte DataBlock broadcast to all 8).
-  `BlockLoadParams` is a stride-based `DataBlock` gather: one load gathers
-  8 blocks whose heads are `block_stride` blocks (32B `DataBlock` units)
-  apart; `block_stride == 0` repeats the first block into all
-  8 slots; `repeat_stride` is the compile-time address
-  pre-offset in 32B blocks.
-  `MaskLoadParams.load_dist` may be `DIST_NORM` (default bit-packed
-  mask load), `DIST_US` (bit upsample), or `DIST_DS` (bit
-  downsample). Optional, default `None`.
+- `params` (`LoadParams | None`): Load mode. Optional, default `None`.
+  - `None` / `NormalLoadParams` / `UnalignLoadParams` /
+    `BlockLoadParams` → `VectorSSA` (or a pair for
+    `DIST_DINTLV_B32`).
+  - `MaskLoadParams` → `MaskSSA`.
+  - `NormalLoadParams`:
+    - `load_dist` (`str`): `tla.params.LoadDist` token. Default
+      `DIST_NORM`.
+
+      | Value | Meaning |
+      |---|---|
+      | `DIST_NORM` | Default contiguous load |
+      | `DIST_BRC_B32` | Broadcast one b32 element to all lanes |
+      | `DIST_DINTLV_B32` | f32 deinterleave; dual results |
+      | `DIST_US_B8` / `DIST_US_B16` | 2x up-sample |
+      | `DIST_BRC_B16` | Broadcast one b16 element |
+      | `DIST_UNPACK_B16` | Zero-extend b16 to double width |
+      | `DIST_E2B_B16` / `DIST_E2B_B32` | Element-to-DataBlock broadcast |
+      | `DIST_BLK` | One 32-byte DataBlock broadcast to all 8 |
+
+    - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+      `POST_MODE_UPDATE`.
+    - `post_update_stride` (`Any`): Element stride when
+      `post_mode=POST_MODE_UPDATE`; `0` advances by `tile_extent`
+      (`origin_shape`). Default `0`.
+  - `UnalignLoadParams`:
+    - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+      `POST_MODE_UPDATE`.
+    - `post_update_stride` (`Any`): Must stay `0` (window advances
+      by `origin_shape` only). Default `0`.
+  - `BlockLoadParams`:
+    - `block_stride` (`int`): Heads apart in 32B DataBlocks; `0`
+      repeats the first block into all 8 slots. Default `0`.
+    - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+      `POST_MODE_UPDATE`.
+    - `repeat_stride` (`Any`): Compile-time pre-offset in 32B
+      blocks; with `POST_MODE_UPDATE`, the post-update stride.
+      Default `0`.
+  - `MaskLoadParams`:
+    - `load_dist` (`str`): `tla.params.MaskLoadDist` token.
+      Default `DIST_NORM`.
+
+      | Value | Meaning |
+      |---|---|
+      | `DIST_NORM` | Bit-packed mask load |
+      | `DIST_US` | Bit upsample |
+      | `DIST_DS` | Bit downsample |
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func()`; source tile must be UB.
 - Mask load ``DIST_NORM`` requires a 1/2/4-byte scalar UB element type.
-- Distribution modes fix the element width: `us_b8` needs i8/u8;
-  `brc_b16` / `us_b16` / `unpack_b16` / `e2b_b16` need 2-byte
-  (f16/bf16/i16/u16); `e2b_b32` needs 4-byte (f32/i32/u32);
-  `dintlv_b32` needs f32; `blk` works for any element size.
+- Distribution modes fix the element width: `DIST_US_B8` needs
+  i8/u8; `DIST_BRC_B16` / `DIST_US_B16` / `DIST_UNPACK_B16` /
+  `DIST_E2B_B16` need 2-byte (f16/bf16/i16/u16); `DIST_E2B_B32`
+  needs 4-byte (f32/i32/u32); `DIST_DINTLV_B32` needs f32;
+  `DIST_BLK` works for any element size.
 - `BlockLoadParams` requires a 2/4-byte element type
   (f32/f16/bf16/i32/u32/i16/u16); `block_stride` and
   `repeat_stride` must fit in [0, 65535].
@@ -1104,17 +1040,17 @@ Constraints:
   base + offset×sizeof(T)): ``DIST_NORM`` → ``VL/8``;
   ``DIST_US`` → ``VL/16``; ``DIST_DS`` → ``min(32, VL/4)``.
   On VL=256 this is 32B / 16B / 32B.
-- `post_mode=update` on `NormalLoadParams`: `post_update_stride=0`
-  (default) advances by `tile_extent` (`origin_shape`); an explicit
-  stride keeps fill / stride-advance decoupling.
-  `UnalignLoadParams` must leave `post_update_stride` at 0 (emit
-  always uses `origin_shape`; dense only). Rank-1 contiguous tile,
-  `DIST_NORM`, element type in `{f16, bf16, f32}`; returns
-  `(vector, next_tile)`. Inside `tla.vec.func`, assign `next_tile`
-  back with `tla.range` (`while` is not supported nested in
-  `vec.func`). The window must already be an origin tile
-  (`coord=0`); cut it with `tile_view` (or equivalent). UPDATE
-  never automatically folds non-zero coordinates.
+- `POST_MODE_UPDATE` requires a rank-1 contiguous tile,
+  `DIST_NORM`, and element type in `{f16, bf16, f32}`. Returns
+  `(vector, next_tile)`. Inside `tla.vec.func`, assign
+  `next_tile` back with `tla.range` (`while` is not supported
+  nested in `vec.func`). The window must already be an origin
+  tile (`coord=0`); cut it with `tile_view` (or equivalent).
+  UPDATE never automatically folds non-zero coordinates.
+  `NormalLoadParams`: `post_update_stride=0` (default) advances
+  by `tile_extent` (`origin_shape`); an explicit stride keeps
+  fill / stride-advance decoupling. `UnalignLoadParams` must
+  leave `post_update_stride` at `0` (dense `origin_shape` only).
 
 Example:
 
@@ -1135,7 +1071,7 @@ with tla.vec.func(mode="simd"):
 
 ### `Tensor.store`
 
-**Source:** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L989)
+**Source:** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L1019)
 
 Description:
 
@@ -1149,17 +1085,46 @@ tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mas
 
 Parameters:
 
-- `value` (`VectorSSA | MaskSSA`): `VectorSSA` or `MaskSSA` to store. Required.
-- `params` (`StoreParams | None`): Store mode. `None` / `NormalStoreParams` /
-  `UnalignStoreParams` / `BlockStoreParams` → vector store;
-  `MaskStoreParams` → mask store. `NormalStoreParams.store_dist`
-  additionally selects the first-element modes `first_element_b8` /
-  `first_element_b16` / `first_element_b32`: write only lane 0 of
-  the source register to the tile base, with the suffix fixing the
-  stored element width in bytes. With `post_mode=update`, returns
-  the next window. Optional, default `None`.
+- `value` (`VectorSSA | MaskSSA`): `VectorSSA` or `MaskSSA` to store.
+  Required.
+- `params` (`StoreParams | None`): Store mode. Optional, default
+  `None`.
+  - `None` / `NormalStoreParams` / `UnalignStoreParams` /
+    `BlockStoreParams` → vector store.
+  - `MaskStoreParams` → mask store.
+  - `NormalStoreParams`:
+    - `store_dist` (`str`): `tla.params.StoreDist` token. Default
+      `DIST_NORM`.
+
+      | Value | Meaning |
+      |---|---|
+      | `DIST_NORM` | Default contiguous store |
+      | `DIST_FIRST_ELEMENT_B8` | Write only lane 0 (1-byte) |
+      | `DIST_FIRST_ELEMENT_B16` | Write only lane 0 (2-byte) |
+      | `DIST_FIRST_ELEMENT_B32` | Write only lane 0 (4-byte) |
+
+    - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+      `POST_MODE_UPDATE`.
+    - `post_update_stride` (`Any`): Element stride when
+      `post_mode=POST_MODE_UPDATE`; `0` advances by `tile_extent`
+      (`origin_shape`). Default `0`.
+  - `UnalignStoreParams`:
+    - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+      `POST_MODE_UPDATE`.
+    - `post_update_stride` (`Any`): Must stay `0`. Default `0`.
+  - `BlockStoreParams`:
+    - `block_stride` (`int`): Heads apart in 32B DataBlocks.
+      Default `0`.
+    - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+      `POST_MODE_UPDATE`.
+    - `repeat_stride` (`Any`): Used with `POST_MODE_UPDATE` as the
+      post-update stride in 32B blocks. Default `0`.
+  - `MaskStoreParams`:
+    - `store_dist` (`str`): `tla.params.MaskStoreDist` token.
+      Default `DIST_NORM`.
 - `mask` (`MaskSSA | None`): Optional predicate for vector stores;
-  rejected by `MaskStoreParams` and first-element modes. Default `None`.
+  rejected by `MaskStoreParams` and first-element modes. Default
+  `None`.
 
 Constraints:
 
@@ -1168,13 +1133,14 @@ Constraints:
 - First-element modes require the stored value and the dest tile to
   use the suffix-matching element width (b8 → 1-byte, b16 → 2-byte,
   b32 → 4-byte); passing a predicate mask raises an error.
-- `post_mode=update` on `NormalStoreParams`: default
-  `post_update_stride=0` advances by `tile_extent` (`origin_shape`);
-  explicit stride is decoupled. `UnalignStoreParams` must leave
-  stride at 0 (emit uses `origin_shape`). Rank-1 contiguous tile,
-  `DIST_NORM`, element type in `{f16, bf16, f32}`; returns the next
-  tile. Inside `tla.vec.func`, assign it back with `tla.range`.
-  Same origin window (`coord=0`) contract as UPDATE `load`.
+- `POST_MODE_UPDATE` requires a rank-1 contiguous tile,
+  `DIST_NORM`, and element type in `{f16, bf16, f32}`; returns the
+  next tile. Inside `tla.vec.func`, assign it back with
+  `tla.range`. Same origin window (`coord=0`) contract as UPDATE
+  `load`. `NormalStoreParams`: default `post_update_stride=0`
+  advances by `tile_extent` (`origin_shape`); an explicit stride is
+  decoupled. `UnalignStoreParams` must leave stride at `0`
+  (dense `origin_shape` only).
 
 Example:
 
@@ -1188,26 +1154,61 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### `Tensor.__getitem__`
+### `Tensor.fill`
 
-**Source:** [`catlass.tla.tensor._Tensor.__getitem__`](../../../catlass/tla/tensor.py#L1367)
+**Source:** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1314)
 
 Description:
 
-Load one element of a tensor as a scalar (`tensor[i]` /
-`tensor[i, j]`).
-
-This is scalar, not vector, access: it reads a single element into a
-`Numeric` rather than filling a register. Inside
-`tla.vec.func(mode="simt")` it is the per-thread `tla.simt_load`,
-lowered against the outlined vector function's buffer parameter;
-everywhere else it is `tla.scalar_load`. That makes it the usual way
-a SIMT thread reads its own data -- see **SIMT Vector Compute**.
+Fill this L1 zN/nZ tile with a constant (currently only zero).
 
 Prototype:
 
 ```python
-tile.__getitem__(crd: Any) -> Any
+tile.fill(value: int | float) -> None
+```
+
+Parameters:
+
+- `value` (`int | float`): Trace-time scalar; only ``0`` is
+  supported (the device writes the zero bit pattern).
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function and
+  nested inside `tla.cube()`.
+- Destination must be an L1 tensor tagged ``zN`` or ``nZ``.
+- Fill covers ``[coord, coord + origin_shape)``; the C0 axis start
+  is aligned up to a 32-byte boundary, so a partial leading C0 unit
+  is left untouched.
+- Supported element types: the packed fp4/fp8 operand formats
+  (``f4e2m1``/``f4e1m2``/``f8e4m3fn``/``f8e5m2``), zero only.
+  Wider types, 8-bit integers and e8m0 scale tiles are not
+  supported.
+
+Example:
+
+```python
+# Zero the K-pad tail of an L1 A tile: tile first, then fill.
+pad = tla.get_tile(t_l1a, tla.make_coord(0, k_valid),
+                   tla.make_shape(m, k_l0 - k_valid))
+pad.fill(0)
+```
+
+---
+
+### `tensor[i]`
+
+**Source:** [`catlass.tla.tensor._Tensor.__getitem__`](../../../catlass/tla/tensor.py#L1403)
+
+Description:
+
+Load one tensor element as a scalar (`tensor[i]` / `tensor[i, j]`).
+
+Prototype:
+
+```python
+tensor[i] -> Any
 ```
 
 Parameters:
@@ -1241,25 +1242,18 @@ with tla.vec.func(mode="simt", thread_block_dim=256):
 
 ---
 
-### `Tensor.__setitem__`
+### `tensor[i] = value`
 
-**Source:** [`catlass.tla.tensor._Tensor.__setitem__`](../../../catlass/tla/tensor.py#L1486)
+**Source:** [`catlass.tla.tensor._Tensor.__setitem__`](../../../catlass/tla/tensor.py#L1514)
 
 Description:
 
-Store a scalar into one element of a tensor (`tensor[i] = value`).
-
-The counterpart of `Tensor.__getitem__`. Inside
-`tla.vec.func(mode="simt")` it is the per-thread `tla.simt_store`,
-lowered against the outlined vector function's buffer parameter;
-everywhere else it is `tla.scalar_store`. That makes it the usual way
-a SIMT thread writes its own results -- see
-**SIMT Vector Compute**.
+Store a scalar into one tensor element (`tensor[i] = value`).
 
 Prototype:
 
 ```python
-tile.__setitem__(crd: Any, data: Any) -> None
+tensor[i] = value
 ```
 
 Parameters:
@@ -1293,13 +1287,13 @@ with tla.vec.func(mode="simt", thread_block_dim=256):
 
 ---
 
-## 5. Matrix Compute
+## 4. Matrix Compute
 
 Cube-side matrix multiply-accumulate (`tla.mmad`).
 
 ### `mmad`
 
-**Source:** [`catlass.core_api.mmad`](../../../catlass/core_api.py#L6955)
+**Source:** [`catlass.core_api.mmad`](../../../catlass/core_api.py#L6843)
 
 Description:
 
@@ -1313,9 +1307,9 @@ tla.mmad(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = Non
 
 Parameters:
 
-- `acc` (`Tensor`): Accumulator / output tile (usually on L0C). Required.
-- `lhs` (`Tensor`): Left-hand matrix tile (usually on L0A). Required.
-- `rhs` (`Tensor`): Right-hand matrix tile (usually on L0B). Required.
+- `acc` (`Tensor`): Accumulator / output tile. Required.
+- `lhs` (`Tensor`): Left-hand matrix tile. Required.
+- `rhs` (`Tensor`): Right-hand matrix tile. Required.
 - `init_c` (`bool | Bool | None`): Whether to clear the accumulator first;
   defaults to `False` when omitted. Ignored when `bias` is provided, since
   the bias then decides what the accumulator starts from. Optional,
@@ -1341,16 +1335,10 @@ Constraints:
 - The `f8e4m3fn` and `f8e5m2` matmul both support non-MxScale matmul and MxScale matmul,
   in the tla.mmad op scale is unsupported.
 - `init_c` accepts only a Python `bool` or an `i1` SSA value.
+- When `bias` is set: tile must live in `biasbuf` with rank-1 `VectorLayout`,
+  element type matching `acc`, and length `N` matching `acc`'s N; stage it
+  with `GM`→`L1`→`biasbuf` `tla.copy` (see `copy`). `init_c` is ignored.
 - Unknown keyword arguments are not accepted; passing any raises an error.
-
-Example:
-
-```python
-# Before: l0a / l0b hold the current K-slice; l0c is the accumulator on L0C.
-with tla.cube():
-    tla.mmad(l0c, l0a, l0b, init_c=True, unit_flag=0b11)
-    # After: l0c accumulates lhs@rhs (cleared first when init_c=True).
-```
 
 Supported mmad dtypes
 
@@ -1365,26 +1353,26 @@ Supported mmad dtypes
 | `f8e5m2` | `f8e5m2` | `f32` |
 | `i8` | `i8` | `i32` |
 
+Example:
+
+```python
+# Before: l0a / l0b hold the current K-slice; l0c is the accumulator on L0C.
+with tla.cube():
+    tla.mmad(l0c, l0a, l0b, init_c=True, unit_flag=0b11)
+    # With bias (l0_bias already on biasbuf via copy):
+    # tla.mmad(l0c, l0a, l0b, bias=l0_bias)
+    # After: l0c accumulates lhs@rhs (cleared first when init_c=True).
+```
+
 ---
 
 ### `mmad_mx`
 
-**Source:** [`catlass.core_api.mmad_mx`](../../../catlass/core_api.py#L7085)
+**Source:** [`catlass.core_api.mmad_mx`](../../../catlass/core_api.py#L6978)
 
 Description:
 
-Emit a microscaling (MX) matrix-multiply-accumulate on TLA tiles.
-
-A separate op from `tla.mmad` because the cube has a dedicated `mad_mx`
-instruction, which AscendC exposes as `asc_mmad_mx`.
-
-Like that instruction, this takes **no scale argument**. `lhs`/`rhs` must
-have been loaded by `tla.copy` with its `scale` operand, which attaches the
-e8m0 block to the L0 tile; the hardware then reads the scale from a side
-buffer addressed off the L0 tile. Passing operands that were *not* loaded
-that way is an error, as is passing microscaling operands to `tla.mmad` --
-the two ops are not interchangeable, and nothing about the operands
-themselves reveals which is which.
+Microscaling (MX) matrix-multiply-accumulate on L0 tiles.
 
 Prototype:
 
@@ -1420,17 +1408,9 @@ Constraints:
 - The `f8e4m3fn` and `f8e5m2` matmul both support non-MxScale matmul and MxScale matmul,
   in the tla.mmad_mx op scale is needed.
 - Both operands must have been loaded by `tla.copy(..., scale=...)`.
-
-Example:
-
-```python
-# Before: l1a/l1b hold fp8 operands, l1sa/l1sb their e8m0 scale blocks.
-with tla.cube():
-    tla.copy(l0a, l1a, scale=l1sa)   # scale rides the load, not the matmul
-    tla.copy(l0b, l1b, scale=l1sb)
-    tla.mmad_mx(l0c, l0a, l0b, init_c=True)
-    # After: l0c accumulates the microscaled lhs@rhs.
-```
+- When `bias` is set: tile must live in `biasbuf` with rank-1 `VectorLayout`,
+  element type f32 matching `acc`, and length `N` matching `acc`'s N; stage
+  it with `GM`→`L1`→`biasbuf` `tla.copy` (see `copy`). `init_c` is ignored.
 
 Supported mmad_mx dtypes
 
@@ -1445,21 +1425,33 @@ Supported mmad_mx dtypes
 | `f8e5m2` | `f8e4m3fn` | `f32` |
 | `f8e5m2` | `f8e5m2` | `f32` |
 
+Example:
+
+```python
+# Before: l1a/l1b hold fp8 operands, l1sa/l1sb their e8m0 scale blocks.
+with tla.cube():
+    tla.copy(l0a, l1a, scale=l1sa)   # scale rides the load, not the matmul
+    tla.copy(l0b, l1b, scale=l1sb)
+    tla.mmad_mx(l0c, l0a, l0b, init_c=True)
+    # With bias: tla.mmad_mx(l0c, l0a, l0b, bias=l0_bias)
+    # After: l0c accumulates the microscaled lhs@rhs.
+```
+
 ---
 
-## 6. SIMD Vector Compute
+## 5. SIMD Vector Compute
 
 The default vector execution mode, entered with `tla.vec.func(mode="simd")`. The body operates on whole vector registers: data is staged into UB, viewed as tiles, loaded into `VectorSSA` values, and every op covers a full register under an optional lane mask. This is the path for regular, dense work, and the one every op below belongs to.
 
 Several entries here also have a per-thread form, used when the enclosing region is `tla.vec.func(mode="simt")`; each says so under `Constraints:`, and **SIMT Vector Compute** documents that mode.
 
-### 6.1 Mask Compute
+### 5.1 Mask Compute
 
 Mask creation and tail-mask updates.
 
 #### `create_mask`
 
-**Source:** [`catlass.core_api.create_mask`](../../../catlass/core_api.py#L10358)
+**Source:** [`catlass.core_api.create_mask`](../../../catlass/core_api.py#L10190)
 
 Description:
 
@@ -1474,8 +1466,8 @@ tla.create_mask(*, pattern: _MaskPattern | str | None = None, dtype: DTypeLike =
 Parameters:
 
 - `pattern` (`_MaskPattern | str | None`): Mask pattern token or its name
-  string. Required at runtime (`None` raises). Tokens live under `tla.mask`
-  (for example `tla.mask.ALL`, `tla.mask.VL8`):
+  string. Required at runtime (`None` raises). Tokens live under
+  `tla.mask`:
 
   | Pattern | Meaning |
   |---|---|
@@ -1515,7 +1507,7 @@ with tla.vec.func(mode="simd"):
 
 #### `update_mask`
 
-**Source:** [`catlass.core_api.update_mask`](../../../catlass/core_api.py#L10422)
+**Source:** [`catlass.core_api.update_mask`](../../../catlass/core_api.py#L10254)
 
 Description:
 
@@ -1546,13 +1538,13 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.2 Basic Arithmetic
+### 5.2 Basic Arithmetic
 
 Element-wise arithmetic and unary math ops. `VectorSSA` overloads `+` / `-` / `*` / `/` for `add` / `sub` / `mul` / `div` when no `mask=` is needed.
 
 #### `exp`
 
-**Source:** [`catlass.core_api.exp`](../../../catlass/core_api.py#L7967)
+**Source:** [`catlass.core_api.exp`](../../../catlass/core_api.py#L7852)
 
 Description:
 
@@ -1590,7 +1582,7 @@ with tla.vec.func(mode="simd"):
 
 #### `log`
 
-**Source:** [`catlass.core_api.log`](../../../catlass/core_api.py#L7994)
+**Source:** [`catlass.core_api.log`](../../../catlass/core_api.py#L7879)
 
 Description:
 
@@ -1628,7 +1620,7 @@ with tla.vec.func(mode="simd"):
 
 #### `sqrt`
 
-**Source:** [`catlass.core_api.sqrt`](../../../catlass/core_api.py#L8021)
+**Source:** [`catlass.core_api.sqrt`](../../../catlass/core_api.py#L7906)
 
 Description:
 
@@ -1675,7 +1667,7 @@ with tla.cube():
 
 #### `abs`
 
-**Source:** [`catlass.core_api.abs`](../../../catlass/core_api.py#L8057)
+**Source:** [`catlass.core_api.abs`](../../../catlass/core_api.py#L7942)
 
 Description:
 
@@ -1713,7 +1705,7 @@ with tla.vec.func(mode="simd"):
 
 #### `neg`
 
-**Source:** [`catlass.core_api.neg`](../../../catlass/core_api.py#L8084)
+**Source:** [`catlass.core_api.neg`](../../../catlass/core_api.py#L7969)
 
 Description:
 
@@ -1746,7 +1738,7 @@ with tla.vec.func(mode="simd"):
 
 #### `add`
 
-**Source:** [`catlass.core_api.add`](../../../catlass/core_api.py#L8449)
+**Source:** [`catlass.core_api.add`](../../../catlass/core_api.py#L8334)
 
 Description:
 
@@ -1787,7 +1779,7 @@ with tla.vec.func(mode="simd"):
 
 #### `sub`
 
-**Source:** [`catlass.core_api.sub`](../../../catlass/core_api.py#L8495)
+**Source:** [`catlass.core_api.sub`](../../../catlass/core_api.py#L8380)
 
 Description:
 
@@ -1825,7 +1817,7 @@ with tla.vec.func(mode="simd"):
 
 #### `mul`
 
-**Source:** [`catlass.core_api.mul`](../../../catlass/core_api.py#L8532)
+**Source:** [`catlass.core_api.mul`](../../../catlass/core_api.py#L8417)
 
 Description:
 
@@ -1864,7 +1856,7 @@ with tla.vec.func(mode="simd"):
 
 #### `max`
 
-**Source:** [`catlass.core_api.max`](../../../catlass/core_api.py#L8666)
+**Source:** [`catlass.core_api.max`](../../../catlass/core_api.py#L8551)
 
 Description:
 
@@ -1903,7 +1895,7 @@ with tla.vec.func(mode="simd"):
 
 #### `min`
 
-**Source:** [`catlass.core_api.min`](../../../catlass/core_api.py#L8667)
+**Source:** [`catlass.core_api.min`](../../../catlass/core_api.py#L8552)
 
 Description:
 
@@ -1942,7 +1934,7 @@ with tla.vec.func(mode="simd"):
 
 #### `div`
 
-**Source:** [`catlass.core_api.div`](../../../catlass/core_api.py#L8671)
+**Source:** [`catlass.core_api.div`](../../../catlass/core_api.py#L8556)
 
 Description:
 
@@ -1978,13 +1970,13 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.3 Logical Compute
+### 5.3 Logical Compute
 
 Bitwise and logical ops on Mask / Vector.
 
 #### `shift_left`
 
-**Source:** [`catlass.core_api.shift_left`](../../../catlass/core_api.py#L8341)
+**Source:** [`catlass.core_api.shift_left`](../../../catlass/core_api.py#L8226)
 
 Description:
 
@@ -2024,7 +2016,7 @@ with tla.vec.func(mode="simd"):
 
 #### `shift_right`
 
-**Source:** [`catlass.core_api.shift_right`](../../../catlass/core_api.py#L8377)
+**Source:** [`catlass.core_api.shift_right`](../../../catlass/core_api.py#L8262)
 
 Description:
 
@@ -2066,7 +2058,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_not`
 
-**Source:** [`catlass.core_api.bitwise_not`](../../../catlass/core_api.py#L8415)
+**Source:** [`catlass.core_api.bitwise_not`](../../../catlass/core_api.py#L8300)
 
 Description:
 
@@ -2099,7 +2091,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_and`
 
-**Source:** [`catlass.core_api.bitwise_and`](../../../catlass/core_api.py#L9304)
+**Source:** [`catlass.core_api.bitwise_and`](../../../catlass/core_api.py#L9179)
 
 Description:
 
@@ -2133,7 +2125,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_or`
 
-**Source:** [`catlass.core_api.bitwise_or`](../../../catlass/core_api.py#L9342)
+**Source:** [`catlass.core_api.bitwise_or`](../../../catlass/core_api.py#L9217)
 
 Description:
 
@@ -2167,7 +2159,7 @@ with tla.vec.func(mode="simd"):
 
 #### `bitwise_xor`
 
-**Source:** [`catlass.core_api.bitwise_xor`](../../../catlass/core_api.py#L9380)
+**Source:** [`catlass.core_api.bitwise_xor`](../../../catlass/core_api.py#L9255)
 
 Description:
 
@@ -2199,13 +2191,13 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.4 Compare and Select
+### 5.4 Compare and Select
 
 Vector compares that produce masks, and masked select.
 
 #### `where`
 
-**Source:** [`catlass.core_api.where`](../../../catlass/core_api.py#L8879)
+**Source:** [`catlass.core_api.where`](../../../catlass/core_api.py#L8764)
 
 Description:
 
@@ -2244,7 +2236,7 @@ with tla.vec.func(mode="simd"):
 
 #### `cmp`
 
-**Source:** [`catlass.core_api.cmp`](../../../catlass/core_api.py#L9227)
+**Source:** [`catlass.core_api.cmp`](../../../catlass/core_api.py#L9093)
 
 Description:
 
@@ -2260,7 +2252,16 @@ Parameters:
 
 - `lhs` (`VectorSSA`): Left-hand compare operand. Required.
 - `rhs` (`VectorSSA | Numeric | bool | int | float`): Right-hand compare operand (scalar or vector). Required.
-- `mode` (`str`): Compare mode, e.g. `'eq'` / `'lt'` / `'gt'`. Required.
+- `mode` (`str`): Compare mode. Required.
+
+  | Value | Meaning |
+  |---|---|
+  | `lt` | Less than |
+  | `le` | Less than or equal |
+  | `gt` | Greater than |
+  | `ge` | Greater than or equal |
+  | `eq` | Equal |
+  | `ne` | Not equal |
 - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
 
 Constraints:
@@ -2278,18 +2279,17 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.5 Data Fill
+### 5.5 Data Fill
 
 Constant fill and lane-index sequence construction.
 
 #### `full`
 
-**Source:** [`catlass.core_api.full`](../../../catlass/core_api.py#L7192)
+**Source:** [`catlass.core_api.full`](../../../catlass/core_api.py#L7078)
 
 Description:
 
-Fill a 1-D vector SSA with a Python scalar literal, or broadcast a
-one-lane vector fragment (e.g. a `VectorSSA.reduce` result) across every lane.
+Fill a vector SSA with a scalar, or broadcast a one-lane fragment.
 
 Prototype:
 
@@ -2328,7 +2328,7 @@ with tla.vec.func(mode="simd"):
 
 #### `arange`
 
-**Source:** [`catlass.core_api.arange`](../../../catlass/core_api.py#L7321)
+**Source:** [`catlass.core_api.arange`](../../../catlass/core_api.py#L7206)
 
 Description:
 
@@ -2360,7 +2360,7 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.6 Discrete and Aggregate
+### 5.6 Discrete and Aggregate
 
 Gather elements from a UB tensor by index, and masked reductions (`VectorSSA.reduce`).
 
@@ -2407,7 +2407,7 @@ with tla.vec.func(mode="simd"):
 
 #### `gather`
 
-**Source:** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9493)
+**Source:** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9368)
 
 Description:
 
@@ -2451,13 +2451,48 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.7 Data Rearrange
+### 5.7 Data Rearrange
 
 Interleave / deinterleave and related lane reshuffles.
 
+#### `pack`
+
+**Source:** [`catlass.core_api.pack`](../../../catlass/core_api.py#L8007)
+
+Description:
+
+Pack a predicate value into the low or high half of its destination
+predicate register.
+
+Prototype:
+
+```python
+tla.pack(src: MaskSSA, *, part: RegPart) -> MaskSSA
+```
+
+Parameters:
+
+- `src` (`MaskSSA`): Predicate register value to pack. Required.
+- `part` (`tla.RegPart`): Destination register half: `LOW` (low) or `HIGH` (high). Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.vec.func(mode="simd")`.
+- Mask inputs support `mask<64> -> mask<128>` and `mask<128> -> mask<256>`.
+
+Example:
+
+```python
+with tla.vec.func(mode="simd"):
+    packed = tla.pack(src, part=tla.RegPart.LOW)
+```
+
+---
+
 #### `interleave`
 
-**Source:** [`catlass.core_api.interleave`](../../../catlass/core_api.py#L8181)
+**Source:** [`catlass.core_api.interleave`](../../../catlass/core_api.py#L8066)
 
 Description:
 
@@ -2491,7 +2526,7 @@ with tla.vec.func(mode="simd"):
 
 #### `deinterleave`
 
-**Source:** [`catlass.core_api.deinterleave`](../../../catlass/core_api.py#L8259)
+**Source:** [`catlass.core_api.deinterleave`](../../../catlass/core_api.py#L8144)
 
 Description:
 
@@ -2525,13 +2560,13 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.8 Data Compress
+### 5.8 Data Compress
 
 Compress valid lanes under a mask.
 
 #### `squeeze`
 
-**Source:** [`catlass.core_api.squeeze`](../../../catlass/core_api.py#L8911)
+**Source:** [`catlass.core_api.squeeze`](../../../catlass/core_api.py#L8796)
 
 Description:
 
@@ -2562,7 +2597,7 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.9 Type Conversion
+### 5.9 Type Conversion
 
 Element-type conversion on the register-vector path.
 
@@ -2573,31 +2608,6 @@ Element-type conversion on the register-vector path.
 Description:
 
 Convert a register-resident vector to another element type.
-
-The lowering supports the signed integers `tla.Int8` .. `tla.Int64`,
-the unsigned integers `tla.UInt8` .. `tla.UInt32` on the reachable
-routes in `_CAST_UNSIGNED_ROUTES`, the floats `tla.Float16` /
-`tla.BFloat16` / `tla.Float32`, and the two OCP fp8 formats
-`tla.Float8E4M3FN` / `tla.Float8E5M2`. `tla.Bool` (i1),
-`tla.Float64` and `tla.Float8E8M0` are rejected.
-
-`tla.Float16` to `tla.BFloat16` uses one direct instruction and
-preserves all lanes. All round modes are supported. `sat_mode`
-must be `UNKNOWN`; `NOSAT` and `SAT` are rejected because the
-instruction has no saturation operand. `reg_slot` `ZERO` and `ONE`
-have the same effect for this equal-width conversion.
-
-An fp8 operand converts to and from `tla.Float32`, `tla.Float16` and
-`tla.BFloat16`. Only the f32 pair is a single instruction: the f16
-and bf16 pairs are expanded by the lowering into two casts through
-f32, exact on the widening leg and rounding once on the narrowing
-one. `f8e5m2 -> f16` instead uses an exact integer widen and a
-shift, because the two formats share a sign and exponent layout; it
-selects the same elements as the composed path, in two instructions
-rather than five. There is no
-fp8-to-fp8 re-encode -- the exponent ranges differ, which
-makes it a requantisation rather than a cast -- and no fp8-to-integer
-path.
 
 Prototype:
 
@@ -2618,8 +2628,11 @@ Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func()`.
+- Supported targets: signed i8..i64, unsigned u8..u32 on reachable
+  routes, f16/bf16/f32, f8e4m3fn/f8e5m2. Not supported: bool, f64,
+  f8e8m0, fp8-to-fp8, fp8-to-integer.
 - `reg_slot` `TWO` and `THREE` name a pack quarter. They are valid
-  on a 4x integer cast and the direct fp8<->f32 instruction.
+  on a 4x integer cast and the direct fp8<->f32 path.
 
 Example:
 
@@ -2637,7 +2650,7 @@ with tla.vec.func(mode="simd"):
 
 #### `VectorSSA.bitcast`
 
-**Source:** [`catlass.core_api.VectorSSA.bitcast`](../../../catlass/core_api.py#L755)
+**Source:** [`catlass.core_api.VectorSSA.bitcast`](../../../catlass/core_api.py#L733)
 
 Description:
 
@@ -2689,34 +2702,17 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-### 6.10 Histogram
+### 5.10 Histogram Compute
 
 Histogram accumulation on register-vector data.
 
 #### `histograms`
 
-**Source:** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8989)
+**Source:** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8874)
 
 Description:
 
-Reg-resident FREQUENCY / ACCUMULATE histogram.
-
-Lowers via AIV bc to ``dhistv2`` (FREQUENCY) or ``chistv2`` (ACCUMULATE).
-Does **not** use HIVMAVE / AscendNPU-IR hist ops.
-
-``params.mode`` selects the 128-lane half (``HistogramsBinType``);
-``params.type`` selects FREQUENCY / ACCUMULATE (``HistogramsType``).
-Their math differs — do **not** read ``BIN1`` as “[128, 255] only” under
-ACCUMULATE (see :class:`~catlass.params.HistogramsParams`).
-
-FREQUENCY (``dhistv2``): per-value counts in a half-range —
-``BIN0`` ``dst[v] += #{src == v}`` for ``v ∈ [0,127]``;
-``BIN1`` ``dst[v-128] += #{src == v}`` for ``v ∈ [128,255]``.
-
-ACCUMULATE (``chistv2``): CDF over the full u8 domain, then split —
-``BIN0`` ``dst[n] += #{src <= n}`` for ``n ∈ [0,127]``;
-``BIN1`` ``dst[n] += #{src <= 128+n}`` for ``n ∈ [0,127]``
-(low-half inputs contribute to ``BIN1``).
+Register-resident FREQUENCY or ACCUMULATE histogram.
 
 Prototype:
 
@@ -2729,18 +2725,16 @@ Parameters:
 - `src` (`VectorSSA`): ``i8``/``ui8`` source register (256 lanes). Required.
 - `dst` (`VectorSSA`): ``i16``/``ui16`` accumulator (128 lanes). Required.
   Accumulates onto the prior ``dst`` value. For a fresh histogram, pass
-  ``tla.full(0, dtype=...)`` first. Cross-call accumulate: pass the
-  previous result again.
+  ``tla.full(0, dtype=...)`` first.
 - `params` (`HistogramsParams`): ``mode`` (BIN0/BIN1) and ``type``
   (FREQUENCY/ACCUMULATE). Required.
 - `mask` (`MaskSSA`): Optional lane mask; default all-true.
 
-Returns:
-- `VectorSSA` updated histogram half (same type as ``dst``).
-
 Constraints:
 
 - Must be called inside `@tla.kernel` and `tla.vec.func()`.
+- FREQUENCY: half-range per-value counts. ACCUMULATE: CDF over u8 then
+  split; under ACCUMULATE, ``BIN1`` is not ``[128,255]``-only.
 
 Example:
 
@@ -2756,7 +2750,7 @@ with tla.vec.func(mode="simd"):
 
 ---
 
-## 7. SIMT Vector Compute
+## 6. SIMT Vector Compute
 
 The per-thread vector execution mode, entered with `tla.vec.func(mode="simt", thread_block_dim=...)`. The body is the program of *one thread*: each thread addresses memory by index through ordinary element access, with no tiles, no vector registers and no UB staging.
 
@@ -2770,9 +2764,9 @@ with tla.vector():
     tla.pipe_barrier(tla.pipes.ALL)
 ```
 
-The subsections below follow the same order as **SIMD Vector Compute**: what the region is and what may appear in it, then how a thread identifies itself, moves data, and computes.
+The subsections below follow the same order as **SIMD Vector Compute**: what the region is and what may appear in it, then how a thread moves data and computes. Thread index / block geometry / `sync_threads` live under **System Variable Access**.
 
-### 7.1 Region Scope
+### 6.1 Region Scope
 
 The region is declared by `tla.vec.func` (see **Scopes and Control Flow**), which owns the geometry rules, the 2048 threads-per-block limit and the scalar-only capture rule. On-chip scratch is allocated outside the region with `tla.allocate` (see **Resource Management**), and a pipe barrier goes after it, inside `tla.vector()`, as the example above does.
 
@@ -2783,7 +2777,7 @@ The body is per-thread scalar code. These are available:
 - Element access on a `gm` or `ub` tensor (`tensor[i]`, `tensor[i] = value`) -- see **Element Access** below.
 - Scalar arithmetic, comparison, selection and conversion on `Numeric` values, each emitting its per-thread op -- see **Basic Arithmetic**, **Compare and Select** and **Type Conversion** below.
 - `tla.range` loops and runtime `if`.
-- `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`, and the launch-level `tla.arch.block_idx` / `block_num` -- see **Thread Indexing** and **Thread Synchronization** below.
+- `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`, and the launch-level `tla.arch.block_idx` / `block_num` -- see **System Variable Access**.
 
 These are not, and are rejected when the kernel is compiled:
 
@@ -2793,13 +2787,629 @@ These are not, and are rejected when the kernel is compiled:
 - `while` loops, in any `tla.vec.func`; carry the iteration through `tla.range` instead.
 - A nested `tla.vec.func`.
 
-### 7.2 Thread Indexing
+### 6.2 Element Access
 
-A thread learns which elements are its own from its index within the block and the block's extents, and typically walks a strided slice of the data with `tla.range`, as the chapter example shows. `thread_block_dim` is the number of threads in this block; the number of blocks in the launch is `tla.arch.block_num` (see **System Variable Access**).
+A thread moves data by element access on a `gm` or `ub` tensor: `value = tensor[i]` and `tensor[i] = value`, which emit the per-thread `tla.simt_load` / `tla.simt_store`. The layout must be `RowMajor` or `ColumnMajor`, the logical rank 1 or 2, and sub-byte element types other than `Bool` are not supported. Both are documented as `tensor[i]` / `tensor[i] = value` under **Data Movement**.
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_out[tid] = gm_in[tid]
+```
+
+### 6.3 Basic Arithmetic
+
+Arithmetic and unary math on `Numeric` values keep their SIMD spelling inside a SIMT region but emit the per-thread op: `+` / `-` / `*` / `/` become `tla.simt_add` / `simt_sub` / `simt_mul` / `simt_div`, and `tla.exp` / `log` / `abs` / `sqrt` / `max` / `min` become their `simt_` forms. The entries are shared with **SIMD Vector Compute / Basic Arithmetic**, where each one states its SIMT form under `Constraints:`.
+
+`tla.exp` and `tla.log` are available *only* in this mode: the core's own scalar unit has neither, so the scalar form is rejected outside a SIMT region.
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    x = gm_in[tid]
+    gm_out[tid] = tla.sqrt(tla.exp(x) + tla.abs(x))
+```
+
+### 6.4 Compare and Select
+
+The comparisons emit `tla.simt_cmp` and produce a `Bool`, not a `MaskSSA`; `tla.where` on a `Bool` condition emits the per-thread `tla.simt_where`. The entries are shared with **SIMD Vector Compute / Compare and Select**.
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    a = gm_a[tid]
+    gm_out[tid] = tla.where(a > 0.0, a, -a)
+```
+
+### 6.5 Type Conversion
+
+`Numeric.to` emits the per-thread `tla.simt_cast` inside a SIMT region and the core's own scalar conversion outside one; the entry is under **Scalar Compute**. There is no per-thread equivalent of the register-vector `tla.cast`.
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_f32[tid] = gm_f16[tid].to(tla.Float32)
+```
+
+## 7. Sync Control
+
+In-core / cross-core flags, pipe barriers, mutexes, and local-memory barriers.
+
+### `flag`
+
+**Source:** [`catlass.core_api.flag`](../../../catlass/core_api.py#L5881)
+
+Description:
+
+Create an in-pipe synchronization flag between two pipes.
+
+Prototype:
+
+```python
+tla.flag(name: str, src_pipe: PipeLike, dst_pipe: PipeLike, id: int = -1) -> TlaFlag
+```
+
+Parameters:
+
+- `name` (`str`): In-pipe flag name. Required.
+- `src_pipe` (`PipeLike`): Source pipe id; see
+  **System Variable Access / Pipes**. Required.
+- `dst_pipe` (`PipeLike`): Destination pipe id; see
+  **System Variable Access / Pipes**. Required.
+- `id` (`int`): Hardware event id. Optional, default `-1` for automatic allocation.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Creates a flag handle; `set_flag`/`wait_flag` must be paired inside cube/vector regions.
+- `id` must be `-1` or `0..7`. Automatic allocation skips explicit ids for the same pipe pair.
+- Explicit ids may be reused; the caller must ensure their synchronization lifetimes do not overlap.
+
+Example:
+
+```python
+# MTE2 finishes a GM→UB copy, then VECTOR may consume the UB tile.
+ub_loaded = tla.flag("ub_loaded", src_pipe=tla.arch.MTE2, dst_pipe=tla.arch.VECTOR)
+with tla.vector():
+    tla.copy(dst=x_ub, src=x_gm)
+    tla.set_flag(ub_loaded)   # after copy: mark UB data ready
+    tla.wait_flag(ub_loaded)  # before compute: wait until ready
+```
+
+---
+
+### `cross_flag`
+
+**Source:** [`catlass.core_api.cross_flag`](../../../catlass/core_api.py#L5948)
+
+Description:
+
+Create a cross-core synchronization flag.
+
+Prototype:
+
+```python
+tla.cross_flag(name: str, *, mode: int = 2) -> TlaCrossFlag
+```
+
+Parameters:
+
+- `name` (`str`): Cross-core flag name. Required.
+- `mode` (`int`): Cross-core sync mode. Optional, default `2`.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- `mode` supports only 0/1/2/4; source/destination pipes are specified by the matching set/wait.
+
+Example:
+
+```python
+cf = tla.cross_flag("aic_aiv", mode=2)
+```
+
+---
+
+### `cross_core_set_flag`
+
+**Source:** [`catlass.core_api.cross_core_set_flag`](../../../catlass/core_api.py#L6024)
+
+Description:
+
+Set a cross-core flag on the given pipe.
+
+Prototype:
+
+```python
+tla.cross_core_set_flag(cross_flag_value: CrossFlagLike, pipe: PipeLike, aiv_id: int | None = None) -> None
+```
+
+Parameters:
+
+- `cross_flag_value` (`CrossFlagLike`): Cross-core flag from `tla.cross_flag`. Required.
+- `pipe` (`PipeLike`): Pipe that issues the set. Required.
+- `aiv_id` (`int | None`): Target AIV id; omit for broadcast/default routing. Optional, default `None`.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.cube()` or `tla.vector()`; when `mode=4`, `aiv_id` must be 0 or 1.
+
+Example:
+
+```python
+with tla.cube():
+    tla.cross_core_set_flag(cf, tla.arch.CUBE)
+    # mode=4: tla.cross_core_set_flag(cf, tla.arch.CUBE, aiv_id=0)
+```
+
+---
+
+### `cross_core_wait_flag`
+
+**Source:** [`catlass.core_api.cross_core_wait_flag`](../../../catlass/core_api.py#L6068)
+
+Description:
+
+Wait on a cross-core flag on the given pipe.
+
+Prototype:
+
+```python
+tla.cross_core_wait_flag(cross_flag_value: CrossFlagLike, pipe: PipeLike, aiv_id: int | None = None) -> None
+```
+
+Parameters:
+
+- `cross_flag_value` (`CrossFlagLike`): Cross-core flag from `tla.cross_flag`. Required.
+- `pipe` (`PipeLike`): Pipe that performs the wait. Required.
+- `aiv_id` (`int | None`): Target AIV id; omit for broadcast/default routing. Optional, default `None`.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.cube()` or `tla.vector()`; when `mode=4`, `aiv_id` must be 0 or 1.
+
+Example:
+
+```python
+with tla.vector():
+    tla.cross_core_wait_flag(cf, tla.arch.VECTOR)
+```
+
+---
+
+### `set_flag`
+
+**Source:** [`catlass.core_api.set_flag`](../../../catlass/core_api.py#L6111)
+
+Description:
+
+Set an in-pipe flag.
+
+Prototype:
+
+```python
+tla.set_flag(flag_value: FlagLike) -> None
+```
+
+Parameters:
+
+- `flag_value` (`FlagLike`): In-pipe flag from `tla.flag`. Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.cube()` or `tla.vector()`.
+
+Example:
+
+```python
+with tla.vector():
+    tla.set_flag(ub_loaded)
+```
+
+---
+
+### `wait_flag`
+
+**Source:** [`catlass.core_api.wait_flag`](../../../catlass/core_api.py#L6137)
+
+Description:
+
+Wait on an in-pipe flag.
+
+Prototype:
+
+```python
+tla.wait_flag(flag_value: FlagLike) -> None
+```
+
+Parameters:
+
+- `flag_value` (`FlagLike`): In-pipe flag from `tla.flag`. Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.cube()` or `tla.vector()`.
+
+Example:
+
+```python
+with tla.vector():
+    tla.wait_flag(ub_loaded)
+```
+
+---
+
+### `pipe_barrier`
+
+**Source:** [`catlass.core_api.pipe_barrier`](../../../catlass/core_api.py#L6163)
+
+Description:
+
+Insert a pipe barrier.
+
+Prototype:
+
+```python
+tla.pipe_barrier(pipe: PipeLike) -> None
+```
+
+Parameters:
+
+- `pipe` (`PipeLike`): Pipe on which to insert the barrier. Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.cube()` or `tla.vector()`.
+
+Example:
+
+```python
+with tla.vector():
+    tla.pipe_barrier(tla.arch.MTE2)
+```
+
+---
+
+### `mutex`
+
+**Source:** [`catlass.core_api.mutex`](../../../catlass/core_api.py#L6206)
+
+Description:
+
+Create a mutex for a named resource.
+
+Prototype:
+
+```python
+tla.mutex(resource: str, id: int = -1) -> TlaMutex
+```
+
+Parameters:
+
+- `resource` (`str`): Mutex resource name. Required.
+- `id` (`int`): Mutex instance id; `-1` means default. Optional, default `-1`.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- `resource` must be non-empty; `id` must be -1 or 0..31.
+
+Example:
+
+```python
+mtx = tla.mutex("l1_buf", id=0)
+```
+
+---
+
+### `mutex_guard`
+
+**Source:** [`catlass.core_api.mutex_guard`](../../../catlass/core_api.py#L6254)
+
+Description:
+
+Context manager that locks/unlocks one or more mutexes.
+
+Prototype:
+
+```python
+tla.mutex_guard(*mutexes: MutexLike) -> _MutexGuard
+```
+
+Parameters:
+
+- *`mutexes`* (`MutexLike`): One or more mutex objects. Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- The block must emit `copy` or `mmad`; do not explicitly lock/unlock inside the guard.
+
+Example:
+
+```python
+with tla.mutex_guard(mtx):
+    tla.copy(dst, src)
+```
+
+---
+
+### `mutex_lock`
+
+**Source:** [`catlass.core_api.mutex_lock`](../../../catlass/core_api.py#L6295)
+
+Description:
+
+Lock a mutex on the given pipe.
+
+Prototype:
+
+```python
+tla.mutex_lock(mutex_value: MutexLike, *, pipe: PipeLike) -> None
+```
+
+Parameters:
+
+- `mutex_value` (`MutexLike`): Mutex to lock. Required.
+- `pipe` (`PipeLike`): Pipe used for the lock. Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.cube()` or `tla.vector()`; `pipe` is required.
+- Which pipes are valid depends on the enclosing core: `SCALAR`, `CUBE`,
+  `MTE1`, `MTE2`, `MTE3` and `FIX` inside `tla.cube()`; `SCALAR`,
+  `VECTOR`, `MTE2` and `MTE3` inside `tla.vector()`. `ALL` has no mutex
+  form. A pipe the core does not support is reported when the kernel is
+  compiled, not at this call.
+
+Example:
+
+```python
+tla.mutex_lock(mtx, pipe=tla.arch.MTE2)
+# Scalar pipe, to guard a buffer the scalar unit reads or writes.
+# `tla.mutex` returns a value with this method form:
+mtx.lock(pipe=tla.arch.SCALAR)
+```
+
+---
+
+### `mutex_unlock`
+
+**Source:** [`catlass.core_api.mutex_unlock`](../../../catlass/core_api.py#L6333)
+
+Description:
+
+Unlock a mutex on the given pipe.
+
+Prototype:
+
+```python
+tla.mutex_unlock(mutex_value: MutexLike, *, pipe: PipeLike) -> None
+```
+
+Parameters:
+
+- `mutex_value` (`MutexLike`): Mutex to unlock. Required.
+- `pipe` (`PipeLike`): Pipe used for the unlock. Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.cube()` or `tla.vector()`; `pipe` is required.
+- Which pipes are valid depends on the enclosing core: `SCALAR`, `CUBE`,
+  `MTE1`, `MTE2`, `MTE3` and `FIX` inside `tla.cube()`; `SCALAR`,
+  `VECTOR`, `MTE2` and `MTE3` inside `tla.vector()`. `ALL` has no mutex
+  form. A pipe the core does not support is reported when the kernel is
+  compiled, not at this call.
+
+Example:
+
+```python
+tla.mutex_unlock(mtx, pipe=tla.arch.MTE2)
+# Scalar pipe, to guard a buffer the scalar unit reads or writes.
+# `tla.mutex` returns a value with this method form:
+mtx.unlock(pipe=tla.arch.SCALAR)
+```
+
+---
+
+### `local_mem_bar`
+
+**Source:** [`catlass.core_api.local_mem_bar`](../../../catlass/core_api.py#L6371)
+
+Description:
+
+Insert a local-memory barrier inside `vec.func` (encoded from a `MemType` pair).
+
+Prototype:
+
+```python
+tla.local_mem_bar(src: MemType, dst: MemType)
+```
+
+Parameters:
+
+- `src` (`MemType`): Source local memory type. Required.
+- `dst` (`MemType`): Destination local memory type. Required.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Must be called inside `tla.vec.func()`; `(src, dst)` must be a supported `MemType` pair.
+
+Example:
+
+```python
+with tla.vec.func(mode="simd"):
+    tla.local_mem_bar(tla.params.MemType.VEC_STORE, tla.params.MemType.VEC_LOAD)
+```
+
+---
+
+## 8. System Variable Access
+
+Architecture attributes on `tla.arch` / `tla.AddressSpace` (layout tags, pipes, on-chip address spaces, block helpers).
+
+### 8.1 Layout Tags
+
+Layout tags under `tla.arch` (`_LayoutTag`), used by `make_layout` / `make_tensor` / `make_tensor_like` / `copy`. Pass as `layoutTag=` / `layout_tag=`.
+
+**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10107)
+
+| Tag | Role |
+|---|---|
+| `tla.arch.RowMajor` | ND row-major |
+| `tla.arch.ColumnMajor` | ND column-major |
+| `tla.arch.VectorLayout` | Rank-1 contiguous run |
+| `tla.arch.zN` | Fractal zN (Cube A/B staging) |
+| `tla.arch.nZ` | Fractal nZ |
+| `tla.arch.L0Clayout` | L0C accumulator layout |
+| `tla.arch.zNUnAlign` | zN without M-axis fractal blocking |
+| `tla.arch.zZMxScale` | On-chip MX scale for L0A |
+| `tla.arch.nNMxScale` | On-chip MX scale for L0B |
+| `tla.arch.RowMajorMxScaleA` | GM MX scale A, row-major |
+| `tla.arch.ColMajorMxScaleA` | GM MX scale A, column-major |
+| `tla.arch.RowMajorMxScaleB` | GM MX scale B, row-major |
+| `tla.arch.ColMajorMxScaleB` | GM MX scale B, column-major |
+
+Constraints:
+
+- Tokens are ordinary attributes on `tla.arch`; they do not emit ops.
+- Individual APIs may accept only a subset; see each entry's Constraints.
+
+Example:
+
+```python
+tag = tla.arch.RowMajor
+```
+
+### 8.2 Pipes
+
+Pipe identifiers under `tla.arch`, used by `flag` / `pipe_barrier` / `mutex_*` / cross-core sync.
+
+**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10100)
+
+| Pipe | Role |
+|---|---|
+| `tla.arch.SCALAR` | Scalar pipe |
+| `tla.arch.VECTOR` | Vector pipe |
+| `tla.arch.CUBE` | Cube pipe |
+| `tla.arch.MTE1` | MTE1 |
+| `tla.arch.MTE2` | MTE2 |
+| `tla.arch.MTE3` | MTE3 |
+| `tla.arch.FIX` | Fixpipe |
+
+Constraints:
+
+- Available pipes depend on the enclosing `tla.cube()` / `tla.vector()` region; see each sync API's Constraints.
+- `ALL` is not exposed on `tla.arch` for these APIs.
+
+Example:
+
+```python
+pipe = tla.arch.MTE2
+```
+
+### 8.3 On-chip Address Spaces
+
+On-chip members of `tla.AddressSpace`, used by `allocate` / `get_capacity_in_bytes`.
+
+**Source:** [`catlass.address_space.AddressSpace`](../../../catlass/address_space.py#L16)
+
+| Address space | Role |
+|---|---|
+| `tla.AddressSpace.l1` | L1 |
+| `tla.AddressSpace.l0a` | L0A |
+| `tla.AddressSpace.l0b` | L0B |
+| `tla.AddressSpace.l0c` | L0C |
+| `tla.AddressSpace.ub` | UB |
+| `tla.AddressSpace.biasbuf` | Bias table (C2) for `mmad` / `mmad_mx` `bias` |
+
+Constraints:
+
+- `allocate` / `get_capacity_in_bytes` reject `gm` and `generic`.
+- Stage bias with `GM`→`L1`→`biasbuf` `tla.copy`, then pass the `biasbuf` tile to `mmad` / `mmad_mx` as `bias=`.
+- `make_ptr` may also use `tla.AddressSpace.gm` / `generic`; see that entry.
+
+Example:
+
+```python
+scope = tla.AddressSpace.ub
+```
+
+### 8.4 Architecture Helpers
+
+Callable helpers on `tla.arch`: block / thread indexing, SIMT `sync_threads`, on-chip capacity, and dynamic UB.
+
+#### `arch.block_idx`
+
+**Source:** [`catlass.core_api.arch_block_idx`](../../../catlass/core_api.py#L9547)
+
+Description:
+
+Return the block index of the current AI core in the launch (`Int32`).
+
+Prototype:
+
+```python
+tla.arch.block_idx() -> Int32
+```
+
+Parameters:
+
+- None.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+
+Example:
+
+```python
+bid = tla.arch.block_idx()
+```
+
+---
+
+#### `arch.sub_block_idx`
+
+**Source:** [`catlass.core_api.arch_sub_block_idx`](../../../catlass/core_api.py#L9570)
+
+Description:
+
+Return the sub-block index within the current block (`Int32`).
+
+Prototype:
+
+```python
+tla.arch.sub_block_idx() -> Int32
+```
+
+Parameters:
+
+- None.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+
+Example:
+
+```python
+sid = tla.arch.sub_block_idx()
+```
+
+---
 
 #### `arch.thread_idx`
 
-**Source:** [`catlass.core_api.arch_thread_idx`](../../../catlass/core_api.py#L9690)
+**Source:** [`catlass.core_api.arch_thread_idx`](../../../catlass/core_api.py#L9593)
 
 Description:
 
@@ -2841,59 +3451,9 @@ with tla.vec.func(mode="simt", thread_block_dim=256):
 
 ---
 
-#### `arch.thread_block_dim`
-
-**Source:** [`catlass.core_api.arch_thread_block_dim`](../../../catlass/core_api.py#L9791)
-
-Description:
-
-Return the enclosing thread block's `(x, y, z)` extents.
-
-These are the values the region was declared with in
-`tla.vec.func(thread_block_dim=...)`, read back as `Int32` so a thread
-can use them in index arithmetic -- most often as the stride of the loop
-over the elements it owns.
-
-This is the *thread* geometry of one block, not the grid: the number of
-blocks (AI Cores) in the launch is `tla.arch.block_num()`.
-
-Prototype:
-
-```python
-tla.arch.thread_block_dim() -> tuple[Int32, Int32, Int32]
-```
-
-Parameters:
-
-- None.
-
-Returns:
-- `tuple[Int32, Int32, Int32]`: the block's `(x, y, z)` thread extents.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Only available inside `tla.vec.func(mode="simt")`.
-
-Example:
-
-```python
-with tla.vec.func(mode="simt", thread_block_dim=256):
-    tid, _, _ = tla.arch.thread_idx()
-    nthreads, _, _ = tla.arch.thread_block_dim()
-    for i in tla.range(tid, N, nthreads):
-        gm_out[i] = gm_in[i]
-```
-
----
-
-### 7.3 Thread Synchronization
-
-Barrier across the threads of one block. Cross-core and pipe synchronization stay outside the region -- see **Sync Control**.
-
 #### `arch.sync_threads`
 
-**Source:** [`catlass.core_api.arch_sync_threads`](../../../catlass/core_api.py#L9734)
+**Source:** [`catlass.core_api.arch_sync_threads`](../../../catlass/core_api.py#L9637)
 
 Description:
 
@@ -2939,556 +3499,168 @@ with tla.vec.func(mode="simt", thread_block_dim=THREADS):
 
 ---
 
-### 7.4 Element Access
+#### `arch.block_num`
 
-A thread moves data by element access on a `gm` or `ub` tensor: `value = tensor[i]` and `tensor[i] = value`, which emit the per-thread `tla.simt_load` / `tla.simt_store`. The layout must be `RowMajor` or `ColumnMajor`, the logical rank 1 or 2, and sub-byte element types other than `Bool` are not supported. Both are documented as `Tensor.__getitem__` / `Tensor.__setitem__` under **Data Movement**, which is also where the SIMD staging copies live.
-
-```python
-with tla.vec.func(mode="simt", thread_block_dim=256):
-    tid, _, _ = tla.arch.thread_idx()
-    gm_out[tid] = gm_in[tid]
-```
-
-### 7.5 Basic Arithmetic
-
-Arithmetic and unary math on `Numeric` values keep their SIMD spelling inside a SIMT region but emit the per-thread op: `+` / `-` / `*` / `/` become `tla.simt_add` / `simt_sub` / `simt_mul` / `simt_div`, and `tla.exp` / `log` / `abs` / `sqrt` / `max` / `min` become their `simt_` forms. The entries are shared with **SIMD Vector Compute / Basic Arithmetic**, where each one states its SIMT form under `Constraints:`.
-
-`tla.exp` and `tla.log` are available *only* in this mode: the core's own scalar unit has neither, so the scalar form is rejected outside a SIMT region.
-
-```python
-with tla.vec.func(mode="simt", thread_block_dim=256):
-    tid, _, _ = tla.arch.thread_idx()
-    x = gm_in[tid]
-    gm_out[tid] = tla.sqrt(tla.exp(x) + tla.abs(x))
-```
-
-### 7.6 Compare and Select
-
-The comparisons emit `tla.simt_cmp` and produce a `Bool`, not a `MaskSSA`; `tla.where` on a `Bool` condition emits the per-thread `tla.simt_where`. The entries are shared with **SIMD Vector Compute / Compare and Select**.
-
-```python
-with tla.vec.func(mode="simt", thread_block_dim=256):
-    tid, _, _ = tla.arch.thread_idx()
-    a = gm_a[tid]
-    gm_out[tid] = tla.where(a > 0.0, a, -a)
-```
-
-### 7.7 Type Conversion
-
-`Numeric.to` emits the per-thread `tla.simt_cast` inside a SIMT region and the core's own scalar conversion outside one; the entry is under **Numeric Scalars**. There is no per-thread equivalent of the register-vector `tla.cast`.
-
-```python
-with tla.vec.func(mode="simt", thread_block_dim=256):
-    tid, _, _ = tla.arch.thread_idx()
-    gm_f32[tid] = gm_f16[tid].to(tla.Float32)
-```
-
-## 8. Sync Control
-
-In-core / cross-core flags, pipe barriers, mutexes, and local-memory barriers.
-
-### `flag`
-
-**Source:** [`catlass.core_api.flag`](../../../catlass/core_api.py#L5978)
+**Source:** [`catlass.core_api.arch_block_num`](../../../catlass/core_api.py#L9681)
 
 Description:
 
-Create an in-pipe synchronization flag between two pipes.
+Return the number of blocks (AI cores) in the launch (`Int32`).
+
+For the per-block thread extents inside a SIMT region, see
+`tla.arch.thread_block_dim`.
 
 Prototype:
 
 ```python
-tla.flag(name: str, src_pipe: PipeLike, dst_pipe: PipeLike, id: int = -1) -> TlaFlag
+tla.arch.block_num() -> Int32
 ```
 
 Parameters:
 
-- `name` (`str`): In-pipe flag name. Required.
-- `src_pipe` (`PipeLike`): Source pipe id (e.g. `tla.arch.MTE2`). Required.
-- `dst_pipe` (`PipeLike`): Destination pipe id (e.g. `tla.arch.VECTOR`). Required.
-- `id` (`int`): Hardware event id. Optional, default `-1` for automatic allocation.
+- None.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
-- Creates a flag handle; `set_flag`/`wait_flag` must be paired inside cube/vector regions.
-- `id` must be `-1` or `0..7`. Automatic allocation skips explicit ids for the same pipe pair.
-- Explicit ids may be reused; the caller must ensure their synchronization lifetimes do not overlap.
 
 Example:
 
 ```python
-# MTE2 finishes a GM→UB copy, then VECTOR may consume the UB tile.
-ub_loaded = tla.flag("ub_loaded", src_pipe=tla.arch.MTE2, dst_pipe=tla.arch.VECTOR)
-with tla.vector():
-    tla.copy(dst=x_ub, src=x_gm)
-    tla.set_flag(ub_loaded)   # after copy: mark UB data ready
-    tla.wait_flag(ub_loaded)  # before compute: wait until ready
-```
-
----
-
-### `cross_flag`
-
-**Source:** [`catlass.core_api.cross_flag`](../../../catlass/core_api.py#L6043)
-
-Description:
-
-Create a cross-core synchronization flag.
-
-Prototype:
-
-```python
-tla.cross_flag(name: str, *, mode: int = 2) -> TlaCrossFlag
-```
-
-Parameters:
-
-- `name` (`str`): Cross-core flag name. Required.
-- `mode` (`int`): Cross-core sync mode. Optional, default `2`.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- `mode` supports only 0/1/2/4; source/destination pipes are specified by the matching set/wait.
-
-Example:
-
-```python
-cf = tla.cross_flag("aic_aiv", mode=2)
-```
-
----
-
-### `cross_core_set_flag`
-
-**Source:** [`catlass.core_api.cross_core_set_flag`](../../../catlass/core_api.py#L6119)
-
-Description:
-
-Set a cross-core flag on the given pipe.
-
-Prototype:
-
-```python
-tla.cross_core_set_flag(cross_flag_value: CrossFlagLike, pipe: PipeLike, aiv_id: int | None = None) -> None
-```
-
-Parameters:
-
-- `cross_flag_value` (`CrossFlagLike`): Cross-core flag from `tla.cross_flag`. Required.
-- `pipe` (`PipeLike`): Pipe that issues the set. Required.
-- `aiv_id` (`int | None`): Target AIV id; omit for broadcast/default routing. Optional, default `None`.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.cube()` or `tla.vector()`; when `mode=4`, `aiv_id` must be 0 or 1.
-
-Example:
-
-```python
-with tla.cube():
-    tla.cross_core_set_flag(cf, tla.arch.CUBE)
-    # mode=4: tla.cross_core_set_flag(cf, tla.arch.CUBE, aiv_id=0)
-```
-
----
-
-### `cross_core_wait_flag`
-
-**Source:** [`catlass.core_api.cross_core_wait_flag`](../../../catlass/core_api.py#L6163)
-
-Description:
-
-Wait on a cross-core flag on the given pipe.
-
-Prototype:
-
-```python
-tla.cross_core_wait_flag(cross_flag_value: CrossFlagLike, pipe: PipeLike, aiv_id: int | None = None) -> None
-```
-
-Parameters:
-
-- `cross_flag_value` (`CrossFlagLike`): Cross-core flag from `tla.cross_flag`. Required.
-- `pipe` (`PipeLike`): Pipe that performs the wait. Required.
-- `aiv_id` (`int | None`): Target AIV id; omit for broadcast/default routing. Optional, default `None`.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.cube()` or `tla.vector()`; when `mode=4`, `aiv_id` must be 0 or 1.
-
-Example:
-
-```python
-with tla.vector():
-    tla.cross_core_wait_flag(cf, tla.arch.VECTOR)
-```
-
----
-
-### `set_flag`
-
-**Source:** [`catlass.core_api.set_flag`](../../../catlass/core_api.py#L6206)
-
-Description:
-
-Set an in-pipe flag.
-
-Prototype:
-
-```python
-tla.set_flag(flag_value: FlagLike) -> None
-```
-
-Parameters:
-
-- `flag_value` (`FlagLike`): In-pipe flag from `tla.flag`. Required.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.cube()` or `tla.vector()`.
-
-Example:
-
-```python
-with tla.vector():
-    tla.set_flag(ub_loaded)
-```
-
----
-
-### `wait_flag`
-
-**Source:** [`catlass.core_api.wait_flag`](../../../catlass/core_api.py#L6232)
-
-Description:
-
-Wait on an in-pipe flag.
-
-Prototype:
-
-```python
-tla.wait_flag(flag_value: FlagLike) -> None
-```
-
-Parameters:
-
-- `flag_value` (`FlagLike`): In-pipe flag from `tla.flag`. Required.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.cube()` or `tla.vector()`.
-
-Example:
-
-```python
-with tla.vector():
-    tla.wait_flag(ub_loaded)
-```
-
----
-
-### `pipe_barrier`
-
-**Source:** [`catlass.core_api.pipe_barrier`](../../../catlass/core_api.py#L6258)
-
-Description:
-
-Insert a pipe barrier.
-
-Prototype:
-
-```python
-tla.pipe_barrier(pipe: PipeLike) -> None
-```
-
-Parameters:
-
-- `pipe` (`PipeLike`): Pipe on which to insert the barrier. Required.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.cube()` or `tla.vector()`.
-
-Example:
-
-```python
-with tla.vector():
-    tla.pipe_barrier(tla.arch.MTE2)
-```
-
----
-
-### `mutex`
-
-**Source:** [`catlass.core_api.mutex`](../../../catlass/core_api.py#L6301)
-
-Description:
-
-Create a mutex for a named resource.
-
-Prototype:
-
-```python
-tla.mutex(resource: str, id: int = -1) -> TlaMutex
-```
-
-Parameters:
-
-- `resource` (`str`): Mutex resource name. Required.
-- `id` (`int`): Mutex instance id; `-1` means default. Optional, default `-1`.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- `resource` must be non-empty; `id` must be -1 or 0..31.
-
-Example:
-
-```python
-mtx = tla.mutex("l1_buf", id=0)
-```
-
----
-
-### `mutex_guard`
-
-**Source:** [`catlass.core_api.mutex_guard`](../../../catlass/core_api.py#L6349)
-
-Description:
-
-Context manager that locks/unlocks one or more mutexes.
-
-Prototype:
-
-```python
-tla.mutex_guard(*mutexes: MutexLike) -> _MutexGuard
-```
-
-Parameters:
-
-- *`mutexes`* (`MutexLike`): One or more mutex objects. Required.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- The block must emit `copy` or `mmad`; do not explicitly lock/unlock inside the guard.
-
-Example:
-
-```python
-with tla.mutex_guard(mtx):
-    tla.copy(dst, src)
-```
-
----
-
-### `mutex_lock`
-
-**Source:** [`catlass.core_api.mutex_lock`](../../../catlass/core_api.py#L6390)
-
-Description:
-
-Lock a mutex on the given pipe.
-
-Prototype:
-
-```python
-tla.mutex_lock(mutex_value: MutexLike, *, pipe: PipeLike) -> None
-```
-
-Parameters:
-
-- `mutex_value` (`MutexLike`): Mutex to lock. Required.
-- `pipe` (`PipeLike`): Pipe used for the lock. Required.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.cube()` or `tla.vector()`; `pipe` is required.
-- Which pipes are valid depends on the enclosing core: `SCALAR`, `CUBE`,
-  `MTE1`, `MTE2`, `MTE3` and `FIX` inside `tla.cube()`; `SCALAR`,
-  `VECTOR`, `MTE2` and `MTE3` inside `tla.vector()`. `ALL` has no mutex
-  form. A pipe the core does not support is reported when the kernel is
-  compiled, not at this call.
-
-Example:
-
-```python
-tla.mutex_lock(mtx, pipe=tla.arch.MTE2)
-# Scalar pipe, to guard a buffer the scalar unit reads or writes.
-# `tla.mutex` returns a value with this method form:
-mtx.lock(pipe=tla.arch.SCALAR)
-```
-
----
-
-### `mutex_unlock`
-
-**Source:** [`catlass.core_api.mutex_unlock`](../../../catlass/core_api.py#L6428)
-
-Description:
-
-Unlock a mutex on the given pipe.
-
-Prototype:
-
-```python
-tla.mutex_unlock(mutex_value: MutexLike, *, pipe: PipeLike) -> None
-```
-
-Parameters:
-
-- `mutex_value` (`MutexLike`): Mutex to unlock. Required.
-- `pipe` (`PipeLike`): Pipe used for the unlock. Required.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.cube()` or `tla.vector()`; `pipe` is required.
-- Which pipes are valid depends on the enclosing core: `SCALAR`, `CUBE`,
-  `MTE1`, `MTE2`, `MTE3` and `FIX` inside `tla.cube()`; `SCALAR`,
-  `VECTOR`, `MTE2` and `MTE3` inside `tla.vector()`. `ALL` has no mutex
-  form. A pipe the core does not support is reported when the kernel is
-  compiled, not at this call.
-
-Example:
-
-```python
-tla.mutex_unlock(mtx, pipe=tla.arch.MTE2)
-# Scalar pipe, to guard a buffer the scalar unit reads or writes.
-# `tla.mutex` returns a value with this method form:
-mtx.unlock(pipe=tla.arch.SCALAR)
-```
-
----
-
-### `local_mem_bar`
-
-**Source:** [`catlass.core_api.local_mem_bar`](../../../catlass/core_api.py#L6466)
-
-Description:
-
-Insert a local-memory barrier inside `vec.func` (encoded from a `MemType` pair).
-
-Prototype:
-
-```python
-tla.local_mem_bar(src: MemType, dst: MemType)
-```
-
-Parameters:
-
-- `src` (`MemType`): Source local memory type. Required.
-- `dst` (`MemType`): Destination local memory type. Required.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.vec.func()`; `(src, dst)` must be a supported `MemType` pair.
-
-Example:
-
-```python
-with tla.vec.func(mode="simd"):
-    tla.local_mem_bar(tla.params.MemType.VEC_STORE, tla.params.MemType.VEC_LOAD)
-```
-
----
-
-## 9. System Variable Access
-
-Architecture attributes on `tla.arch` (layout tags, pipe identifiers, block helpers, etc.).
-
-### `arch`
-
-**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10208)
-
-Description:
-
-Architecture attribute group under `tla.arch`: layout tags, pipe identifiers,
-on-chip memory-scope tokens, and block / SIMT helpers.
-
-Prototype:
-
-```python
-tla.arch
-```
-
-Parameters:
-
-- Layout tags (`_LayoutTag`, used by `make_layout` / `make_tensor` /
-  `make_tensor_like`): `RowMajor`, `ColumnMajor`, `VectorLayout`, `zN`, `nZ`,
-  `L0Clayout`, `zNUnAlign`.
-- Pipe identifiers (used by `flag` / `pipe_barrier` / `mutex_*` /
-  cross-core sync): `SCALAR`, `VECTOR`, `CUBE`, `MTE1`, `MTE2`, `MTE3`, `FIX`.
-- Memory-scope tokens (used by `local_mem_bar` and related APIs): `L1`,
-  `L0A`, `L0B`, `L0C`, `UB`.
-- Callables (return `Int32` or `tuple[Int32, Int32, Int32]` as noted):
-  - `block_idx()`: Block index for the current AI core in the launch.
-  - `block_num()`: Number of blocks (AI cores) in the launch.
-  - `sub_block_idx()`: Sub-block index within the current block.
-  - `thread_idx()`: SIMT thread index `(x, y, z)` inside the thread block
-    (only inside `tla.vec.func(mode="simt")`; documented under
-    **SIMT Vector Compute / Thread Indexing**).
-  - `thread_block_dim()`: SIMT thread-block extents `(x, y, z)`
-    (only inside `tla.vec.func(mode="simt")`; documented under
-    **SIMT Vector Compute / Thread Indexing**).
-  - `sync_threads()`: Barrier across threads of the enclosing SIMT
-    `tla.vec.func` (only inside `mode="simt"`; documented under
-    **SIMT Vector Compute / Thread Synchronization**).
-  - `get_capacity_in_bytes(mem_scope)`: Byte capacity of an on-chip memory
-    space for the compile target. Takes a `tla.AddressSpace` token
-    (`tla.AddressSpace.l1` / `l0a` / `l0b` / `l0c` / `ub`). Returns a plain
-    `int`; valid on host and inside a kernel (folds to a constant).
-  - `get_dyn_ub(dtype, byte_alignment=None)`: Pointer to the dynamic UB
-    allocation -- UB whose size the launch chooses, rather than the compiler.
-    The region starts above every `tla.allocate`, and `ub=` at launch says
-    how much of it is backed. At most one per kernel: carve it up
-    with pointer arithmetic. Ask for what the kernel uses -- on SIMT the UB
-    left unclaimed becomes Data Cache.
-
-Constraints:
-
-- Layout tags / pipe identifiers / memory-scope tokens are ordinary attributes
-  on the `tla.arch` object (Python has no C++-style namespace); they do not
-  emit compute ops by themselves.
-- `block_idx` / `block_num` / `sub_block_idx` / `thread_idx` /
-  `thread_block_dim` / `sync_threads` are callables and must be used inside a
-  `@tla.kernel`-decorated kernel function.
-- `thread_idx` / `thread_block_dim` / `sync_threads` additionally require
-  nesting inside `tla.vec.func(mode="simt")`.
-
-Example:
-
-```python
-# Layout tag for make_layout / make_tensor:
-tag = tla.arch.RowMajor
-# Pipe id for flag / barrier / mutex:
-pipe = tla.arch.MTE2
-# Runtime block helpers:
-bid = tla.arch.block_idx()
 nblocks = tla.arch.block_num()
-# On-chip memory capacity (host or kernel side):
+```
+
+---
+
+#### `arch.thread_block_dim`
+
+**Source:** [`catlass.core_api.arch_thread_block_dim`](../../../catlass/core_api.py#L9707)
+
+Description:
+
+Return the enclosing thread block's `(x, y, z)` extents.
+
+These are the values the region was declared with in
+`tla.vec.func(thread_block_dim=...)`, read back as `Int32` so a thread
+can use them in index arithmetic -- most often as the stride of the loop
+over the elements it owns.
+
+This is the *thread* geometry of one block, not the grid: the number of
+blocks (AI Cores) in the launch is `tla.arch.block_num()`.
+
+Prototype:
+
+```python
+tla.arch.thread_block_dim() -> tuple[Int32, Int32, Int32]
+```
+
+Parameters:
+
+- None.
+
+Returns:
+- `tuple[Int32, Int32, Int32]`: the block's `(x, y, z)` thread extents.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- Only available inside `tla.vec.func(mode="simt")`.
+
+Example:
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    nthreads, _, _ = tla.arch.thread_block_dim()
+    for i in tla.range(tid, N, nthreads):
+        gm_out[i] = gm_in[i]
+```
+
+---
+
+#### `arch.get_capacity_in_bytes`
+
+**Source:** [`catlass.core_api.arch_get_capacity_in_bytes`](../../../catlass/core_api.py#L9754)
+
+Description:
+
+Return the byte capacity of an on-chip memory space for the compile
+target.
+
+Prototype:
+
+```python
+tla.arch.get_capacity_in_bytes(mem_scope: AddressSpace) -> int
+```
+
+Parameters:
+
+- `mem_scope` (`AddressSpace`): On-chip space to query; see
+  **System Variable Access / On-chip Address Spaces**. Required.
+
+Constraints:
+
+- Only on-chip `AddressSpace` members; `gm` / `generic` are rejected.
+- Host-time constant: legal on host and inside a `@tla.kernel`. Inside a
+  kernel it folds at trace time (no runtime op).
+
+Example:
+
+```python
 l1_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.l1)
 ub_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.ub)
 ```
 
 ---
 
-## 10. Resource Management
+#### `arch.get_dyn_ub`
+
+**Source:** [`catlass.core_api.arch_get_dyn_ub`](../../../catlass/core_api.py#L9864)
+
+Description:
+
+Return a pointer to the dynamic UB region (size set at launch via `ub=`).
+
+Prototype:
+
+```python
+tla.arch.get_dyn_ub(dtype: type[Numeric], byte_alignment: int | None = None) -> Pointer
+```
+
+Parameters:
+
+- `dtype` (`type[Numeric]`): Pointee element type. Required.
+- `byte_alignment` (`int | None`): Pointer alignment in bytes, spelled
+  as `tla.allocate` spells it. Optional; defaults to the element type's
+  width.
+
+Constraints:
+
+- Must be called inside a `@tla.kernel`-decorated kernel function.
+- UB only; region sits above static `tla.allocate` buffers.
+- At most one region per kernel; carve sub-buffers with pointer arithmetic.
+- Request only what the kernel uses (unused UB can become Data Cache).
+- The extent is not bounds-checked in the kernel.
+
+Example:
+
+```python
+base = tla.arch.get_dyn_ub(tla.Float32, byte_alignment=256)
+lo = tla.make_tensor(base, layout)
+hi = tla.make_tensor(base + HALF, layout)
+...
+artifact(out, block_num=1, ub=64 * 1024)
+```
+
+---
+
+## 9. Resource Management
 
 On-chip scratch allocation via `allocate`.
 
 ### `allocate`
 
-**Source:** [`catlass.core_api.allocate`](../../../catlass/core_api.py#L9894)
+**Source:** [`catlass.core_api.allocate`](../../../catlass/core_api.py#L9798)
 
 Description:
 
@@ -3504,13 +3676,15 @@ Parameters:
 
 - `shape` (`ShapeLike`): Shape of the allocation. Required.
 - `dtype` (`type[Numeric]`): Element numeric type. Required.
-- `mem_scope` (`AddressSpace`): Address space (e.g. L1 / UB). Required.
+- `mem_scope` (`AddressSpace`): On-chip address space; see
+  **System Variable Access / On-chip Address Spaces**. Required.
 - `byte_alignment` (`int`): Byte alignment requirement. Required.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
-- `mem_scope` must be an on-chip address space (l1/l0a/l0b/l0c/ub), not gm/generic; `shape` must be fully static.
+- `mem_scope` must be on-chip (`l1` / `l0a` / `l0b` / `l0c` / `ub`),
+  not `gm` / `generic`; `shape` must be fully static.
 - Scratch for a `tla.vec.func(mode="simt")` region must be allocated
   *outside* that region and viewed with `tla.make_tensor`: a SIMT region
   establishes no UB base of its own, and outlining passes the buffer to
@@ -3529,13 +3703,13 @@ ptr = tla.allocate(
 
 ---
 
-## 11. Debug APIs
+## 10. Debug APIs
 
 In-kernel scalar / tensor debug printing.
 
 ### `print`
 
-**Source:** [`catlass.core_api.print`](../../../catlass/core_api.py#L3888)
+**Source:** [`catlass.core_api.print`](../../../catlass/core_api.py#L3866)
 
 Description:
 
@@ -3574,13 +3748,13 @@ with tla.cube():
 
 ---
 
-## 12. Scopes and Control Flow
+## 11. Scopes and Control Flow
 
 Cube / Vector / `vec.func` regions and kernel-side loop ranges.
 
 ### `range`
 
-**Source:** [`catlass.core_api.range`](../../../catlass/core_api.py#L6518)
+**Source:** [`catlass.core_api.range`](../../../catlass/core_api.py#L6423)
 
 Description:
 
@@ -3614,7 +3788,7 @@ for i in tla.range(0, n, 1):
 
 ### `range_constexpr`
 
-**Source:** [`catlass.core_api.range_constexpr`](../../../catlass/core_api.py#L6568)
+**Source:** [`catlass.core_api.range_constexpr`](../../../catlass/core_api.py#L6473)
 
 Description:
 
@@ -3653,7 +3827,7 @@ for k in tla.range_constexpr(0, 4):
 
 ### `cube`
 
-**Source:** [`catlass.core_api.cube`](../../../catlass/core_api.py#L6619)
+**Source:** [`catlass.core_api.cube`](../../../catlass/core_api.py#L6524)
 
 Description:
 
@@ -3685,7 +3859,7 @@ with tla.cube():
 
 ### `vector`
 
-**Source:** [`catlass.core_api.vector`](../../../catlass/core_api.py#L6641)
+**Source:** [`catlass.core_api.vector`](../../../catlass/core_api.py#L6546)
 
 Description:
 
@@ -3717,32 +3891,11 @@ with tla.vector():
 
 ### `vec.func`
 
-**Source:** [`catlass.core_api._vec_func`](../../../catlass/core_api.py#L6675)
+**Source:** [`catlass.core_api._vec_func`](../../../catlass/core_api.py#L6580)
 
 Description:
 
-Enter a vector-function region (`tla.vec.func`), in one of two execution
-modes.
-
-With `mode="simd"` (the default) the body is register-vector / mask
-compute: it operates on whole vector registers loaded from UB, and every
-op covers a full register.
-
-With `mode="simt"` the body is the program of a single thread. The
-region declares how many threads the block runs with
-`thread_block_dim`, the body is outlined into a per-thread function that
-the enclosing core launches, and each thread addresses memory by index
-through element access (`tensor[i]`) rather than through tiles and
-vector registers. A thread identifies its own work with
-`tla.arch.thread_idx()` and `tla.arch.thread_block_dim()`, and threads
-of a block synchronize with `tla.arch.sync_threads()`. See
-**SIMT Vector Compute** for the model.
-
-A SIMT region establishes no UB base of its own, so on-chip scratch must
-be allocated with `tla.allocate` outside the region and viewed with
-`tla.make_tensor`; outlining passes the buffer to the per-thread
-function. A SIMT region may coexist with `tla.cube()` regions in the
-same kernel.
+Enter a vector-function region (`tla.vec.func`) in `simd` or `simt` mode.
 
 Prototype:
 
@@ -3752,10 +3905,11 @@ tla.vec.func(*, mode: str = 'simd', thread_block_dim: int | tuple[int, int, int]
 
 Parameters:
 
-- `mode` (`str`): Execution mode; `simd` (default) or `simt`. Optional,
-  default `"simd"`.
-- `thread_block_dim` (`int | tuple[int, int, int] | list[int] | None`): SIMT thread-block shape; only valid with
-  `mode="simt"`. An `int n` means `(n, 1, 1)`. Optional, default `None`.
+- `mode` (`str`): `simd` (default, register-vector / mask) or `simt`
+  (per-thread). Optional, default `"simd"`.
+- `thread_block_dim` (`int | tuple[int, int, int] | list[int] | None`):
+  SIMT thread-block shape; only valid with `mode="simt"`. An `int n`
+  means `(n, 1, 1)`. Optional, default `None`.
 
 Constraints:
 
@@ -3769,6 +3923,9 @@ Constraints:
   not exceed 2048 threads per block.
 - A SIMT region may only capture scalar runtime values from the kernel
   body; captures of `index`-typed values are rejected.
+- SIMT: allocate on-chip scratch with `tla.allocate` outside the region;
+  index work with `tla.arch.thread_idx` / `thread_block_dim`, sync with
+  `tla.arch.sync_threads`.
 
 Example:
 
@@ -3787,110 +3944,72 @@ with tla.vector():
 
 ---
 
-## 13. Data fill
+## 12. Experimental APIs
 
-### `Tensor.fill`
+APIs under `tla.experimental` may change or be removed without backward-compatibility guarantees. Use the ordinary `tla.kernel` and `tla.jit` decorators; this namespace does not select another compiler.
 
-**Source:** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1254)
+### `experimental.img2col`
+
+**Source:** [`catlass.tla.experimental.img2col`](../../../catlass/tla/experimental/__init__.py#L51)
 
 Description:
 
-Fill this whole L1 zN/nZ tile with a value. The
-fill region is the tile itself: ``[self.coord, self.coord +
-self.origin_shape)`` over the tile's logical 2-D (M, N) axes.
-Along the layout's C0 axis (32 bytes) the start coordinate is
-aligned up to the C0 boundary before filling, so only whole
-C0 units inside the tile are written and partial elements at
-the start are left untouched (cover the residue another way
--- in the MX pad flow the GM->L1 copy brings it).
-
-For a concrete fp8 (one C0 unit = 32 bytes) zN example, take
-a tile (e.g. from `tla.get_tile`) at coord ``(0, 40)`` with
-``origin_shape = (16, 56)``:
-
-```text
-    N   0               32  40          64              96
-                                        ^   C0 boundary: start 40 aligns up to 64
-    M
-    0   - - - - - - - - - - + + + + + + * * * * * * * *
-    1   - - - - - - - - - - + + + + + + * * * * * * * *
-    :   (rows 2 .. 14 identical)
-   15   - - - - - - - - - - + + + + + + * * * * * * * *
-```
-
-Legend: `*` = written by the device: the whole C0 units
-``[64, 96)`` (the tile end 40 + 56 = 96 is already C0-aligned).
-`+` = inside the tile but not written: cols 40..63 are a
-partial C0 unit. `-` = outside the tile. The M axis has no
-C0 alignment here: for zN the C0 axis is N.
+Load an L1 feature-map tile into L0A with img2col expansion for convolution.
 
 Prototype:
 
 ```python
-tile.fill(value: int | float) -> None
+tla.experimental.img2col(dst: Tensor, src: Tensor, params: Img2colParams) -> None
 ```
 
 Parameters:
 
-- `value` (`int | float`): Trace-time scalar; only ``0`` is
-  supported (the device writes the zero bit pattern).
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function and
-  nested inside `tla.cube()`.
-- Destination must be an L1 tensor tagged ``zN`` or ``nZ``.
-- Supported element types: the packed fp4/fp8 operand formats
-  (``f4e2m1``/``f4e1m2``/``f8e4m3fn``/``f8e5m2``), zero only.
-  Wider types, 8-bit integers and e8m0 scale tiles are not
-  supported.
-
-Example:
-
-```python
-# Zero the K-pad tail of an L1 A tile: tile first, then fill.
-pad = tla.get_tile(t_l1a, tla.make_coord(0, k_valid),
-                   tla.make_shape(m, k_l0 - k_valid))
-pad.fill(0)
-```
-
----
-
-## 14. Vector Compute
-
-### 14.1 Data Rearrange
-
-#### `pack`
-
-**Source:** [`catlass.core_api.pack`](../../../catlass/core_api.py#L8122)
-
-Description:
-
-Pack a predicate value into the low or high half of its destination
-predicate register.
-
-Prototype:
-
-```python
-tla.pack(src: MaskSSA, *, part: RegPart) -> MaskSSA
-```
-
-Parameters:
-
-- `src` (`MaskSSA`): Predicate register value to pack. Required.
-- `part` (`tla.RegPart`): Destination register half: `LOW` (low) or `HIGH` (high). Required.
+- `dst` (`Tensor`): L0A tile, tagged `zN`, shaped `(M, K)`. Its shape gives
+  the load's extents and its coord gives the start points, so M and K of the
+  implicit GEMM are tiled by aiming this at a different window of the same
+  L1 tile -- at no extra L1 traffic. Required.
+- `src` (`Tensor`): L1 feature-map tile, tagged `zNUnAlign`, which is the
+  NC1HWC0 nesting `((h*w, 1), (C0, c1))`. Required.
+- `params` (`Img2colParams`): Convolution geometry. Required.
+  - `fmap_hw` (`tuple`): Feature-map `(H, W)` extents. Required.
+  - `filter_hw` (`tuple[int, int]`): Filter `(kH, kW)`; compile-time
+    integers. Required.
+  - `stride_hw` (`tuple`): Stride `(sH, sW)`. Default `(1, 1)`.
+  - `dilation_hw` (`tuple`): Dilation `(dH, dW)`. Default `(1, 1)`.
+  - `pad` (`tuple`): Padding `(left, right, top, bottom)`. Default
+    `(0, 0, 0, 0)`.
+  - `pad_value` (`int`): Padding fill value. Default `0`.
 
 Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.vec.func(mode="simd")`.
-- Mask inputs support `mask<64> -> mask<128>` and `mask<128> -> mask<256>`.
+- Must be called inside `tla.cube()`.
+- Element type must be `f32`, `f16` or `bf16` (2- and 4-byte elements
+  only; no int8/fp8 route).
+- `src` and `dst` must share an element type.
+- Source channels come from the NC1HWC0 source shape, independently of
+  the destination K window. Source C0/C1 and destination K extent and
+  K coordinate must be static. `filter_hw` must be compile-time integers.
+- The destination K extent and starting coordinate must cover whole
+  C1 slices (`kh * kw * C0` elements), within the source's full K axis.
+  Source channels and destination K extent must fit in 1..65535;
+  the destination K coordinate must fit in 0..65535.
+- `fmap_hw` entries must be in 1..65535, stride and dilation entries
+  in 1..255, and each padding entry in 0..255. Compile-time constants
+  outside these ranges are rejected. For runtime values, satisfying
+  these ranges is a caller precondition; violating them is undefined
+  behavior.
+- Filter extents are compile-time integers in 1..511.
 
 Example:
 
 ```python
-with tla.vec.func(mode="simd"):
-    packed = tla.pack(src, part=tla.RegPart.LOW)
+with tla.cube():
+    # l1_fmap holds NC1HWC0; l1_filter holds the (K, N) weight matrix.
+    tla.experimental.img2col(l0_a, l1_fmap, tla.experimental.Img2colParams(
+        fmap_hw=(hi, wi), filter_hw=(3, 3), pad=(1, 1, 1, 1)))
+    tla.copy(l0_b, l1_filter)
+    tla.mmad(l0_c, l0_a, l0_b, init_c=True)
 ```
 
 ---

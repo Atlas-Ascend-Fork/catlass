@@ -224,8 +224,6 @@ compiled(tx, ty, block_num=1)
 
 ### `Constexpr Callable arguments`
 
-**Source:** Host language boundary (not a callable API)
-
 Description:
 
 Covers the "Compile-time function" row in the [`kernel`](#kernel) parameter table

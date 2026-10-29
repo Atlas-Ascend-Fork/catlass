@@ -18,15 +18,20 @@ Do not regenerate this file from a glossary.
 接口说明与调用示例来自各 op 源码 docstring；所有接口均须在 `@tla.kernel` 装饰的
 kernel 函数体内调用。
 
+向量单元有两种执行模式，下文分章说明。**SIMD 向量计算**是默认路径：整寄存器覆盖
+已搬入 UB 的数据，适合规则稠密计算。**SIMT 向量计算**是一线程一元素、按索引寻址，
+适合不规则或难以靠 tiling 摊平的工作。部分标量接口随所在模式行为不同——元素访问与
+标量算术 / 比较 / 选择 / 转换在 SIMT 区域内均生成逐线程 op，各条目约束说明中会写明。
+
 ---
 
 ## 目录
 
 - [基本数据类型与操作](#基本数据类型与操作)
-- [标量 Numeric](#标量-numeric)
+- [标量计算](#标量计算)
 - [数据搬运](#数据搬运)
 - [矩阵运算](#矩阵运算)
-- [Vector 运算](#vector-运算)
+- [SIMD 向量计算](#simd-向量计算)
   - [Mask 计算](#mask-计算)
   - [基础算术](#基础算术)
   - [逻辑计算](#逻辑计算)
@@ -36,12 +41,23 @@ kernel 函数体内调用。
   - [数据重排](#数据重排)
   - [数据压缩](#数据压缩)
   - [类型转换](#类型转换)
+  - [直方图计算](#直方图计算)
+- [SIMT 向量计算](#simt-向量计算)
+  - [区域范围](#区域范围)
+  - [元素访问](#元素访问)
+  - [基础算术](#基础算术-1)
+  - [比较与选择](#比较与选择-1)
+  - [类型转换](#类型转换-1)
 - [同步控制](#同步控制)
 - [系统变量访问](#系统变量访问)
+  - [布局标签](#布局标签)
+  - [Pipe](#pipe)
+  - [片上 AddressSpace](#片上-addressspace)
+  - [架构辅助](#架构辅助)
 - [资源管理](#资源管理)
 - [调试接口](#调试接口)
 - [作用域和控制流](#作用域和控制流)
-- [Tile 数据填充](#tile-数据填充)
+- [实验性接口](#实验性接口)
 
 ---
 
@@ -206,8 +222,8 @@ tla.make_layout(shape: _Shape, stride: _Stride, *, origin_shape: _Shape | None =
   嵌套形态须与 `shape` 一致。
 - `origin_shape`（`_Shape | None`）：逻辑工作尺寸（对齐前的真实数据大小）。
   可选，默认 `None`。拷贝 / 切块按该逻辑尺寸；物理存放方式在 `shape` / `stride`。
-- `layoutTag`（`_LayoutTag | None`）：布局标签（如 `tla.arch.RowMajor`、
-  `tla.arch.zN`）。可选，默认 `None`（RowMajor）。
+- `layoutTag`（`_LayoutTag | None`）：布局标签，见 [布局标签](#布局标签)。
+  可选，默认 `None`（`RowMajor`）。
 
 约束说明：
 
@@ -249,11 +265,7 @@ zn = tla.make_layout(
 
 功能说明：
 
-由扁平二维逻辑 shape、元素类型与 layout tag 直接合成 `!tla.layout`
-（前端重映射物理树后对应 `tla.make_layout`）。
-
-`make_layout_with_tag` 直接采用调用方给出的 extent，因此片上 tile 可以
-大于为其供数的 GM tile（例如 MX mmad 将 K 向上取整到 64）。
+由平铺 2-D shape、元素类型与 layout tag 构造片上 `!tla.layout`。
 
 函数原型：
 
@@ -266,8 +278,8 @@ tla.make_layout_with_tag(shape: tuple, dtype: Any, layoutTag: _LayoutTag | None 
 - `shape`（`tuple`）：扁平二维逻辑 extent `(rows, cols)`。每个叶子为
   `int` 或运行时 `Numeric`（动态叶子）。必填。
 - `dtype`（`Numeric` 子类）：元素类型；决定重映射物理树的 C0/分块几何。必填。
-- `layoutTag`（`_LayoutTag | None`）：布局标签（如 `tla.arch.zN`）。
-  可选，默认 `None`（RowMajor）。
+- `layoutTag`（`_LayoutTag | None`）：布局标签，见 [布局标签](#布局标签)。
+  可选，默认 `None`（`RowMajor`）。
 
 约束说明：
 
@@ -278,10 +290,10 @@ tla.make_layout_with_tag(shape: tuple, dtype: Any, layoutTag: _LayoutTag | None 
   由调用方拥有。
 - 结果 layout 的 origin shape 等于 `shape`（对齐后的 extent）；配合
   `tla.make_tensor(ptr, layout)` 落到片上指针。
-- 仅片上 tag：`zZMxScale` / `nNMxScale` 要求元素类型 `tla.Float8E8M0`
-  （其 C0 由 e8m0 格式固定为 2 元素 / 32 字节）。GM 侧 MxScale tag
-  （`RowMajorMxScaleA`、`ColMajorMxScaleA`、`RowMajorMxScaleB`、
-  `ColMajorMxScaleB`）会被拒绝。
+- 本接口仅支持：`RowMajor`、`ColumnMajor`、`zN`、`nZ`、`zZMxScale`、
+  `nNMxScale`、`L0Clayout`、`zNUnAlign`。
+- `zZMxScale` / `nNMxScale` 要求元素类型为 `tla.Float8E8M0`。GM 侧
+  MxScale tag 会被拒绝。
 
 调用示例：
 
@@ -334,21 +346,7 @@ tile = tla.tile_view(
 
 功能说明：
 
-从 tensor 抽取子 tile，基于源的底层指针用 `tla.make_tensor` 构造新的
-`!tla.tensor`。
-
-返回的 tensor 共享源的 buffer 几何——`stride` 树原样透传——并携带：
-
-- `coord`：`coord + source.coord`（各维元素偏移）；
-- `origin_shape`：相对源 `origin_shape` 裁剪后的 `shape`
-  （各维 `min(shape[d], origin[d] - coord[d])`），保证 tile 不会越过
-  源的逻辑范围；
-- `shape`：按裁剪后的 extent 重新生成的物理打包（zN/nZ 与
-  `make_layout_with_tag` 相同的分块分解；RowMajor/ColumnMajor 则为
-  extent 本身）。
-
-下游看到的是该 tile 的绝对坐标与自身逻辑范围；例如对结果调用
-`Tensor.fill` 只会填充这个 tile。
+从 tensor 切出平铺 2-D 子 tile（共享源缓冲）。
 
 函数原型：
 
@@ -522,7 +520,7 @@ ptr_f32 = tla.recast_ptr(ptr_f16, dtype=tla.Float32)
 
 ---
 
-## 标量 Numeric
+## 标量计算
 
 `Numeric` 是 TLA DSL 在 `@tla.kernel` 内使用的**标量**类型与值的基类。
 具体类型包括整数（`tla.Int8` / `Int16` / `Int32` / `Int64` 及无符号变体）、
@@ -531,7 +529,11 @@ ptr_f32 = tla.recast_ptr(ptr_f16, dtype=tla.Float32)
 
 循环下标、坐标，以及会在运行时 `if` / `tla.range` / `while` 中更新的单元素状态，
 请使用 `Numeric` 值。Python 字面量用 `as_numeric` 提升；改类型用 `Numeric.to`；
-按位宽重解释用 `Numeric.bitcast`。
+按位宽重解释用 `Numeric.bitcast`；按位 / 数学运算如 `~Integer`、`Float.sqrt`。
+
+运算符 `+` `-` `*` `/` `//` `**` 与比较运算走核内标量单元；但在
+`tla.vec.func(mode="simt")` 区域内各自变为对应的逐线程 op（`tla.simt_add`、
+`tla.simt_cmp` 等）。见 [SIMT 向量计算](#simt-向量计算)。
 
 约束说明：
 
@@ -542,17 +544,51 @@ ptr_f32 = tla.recast_ptr(ptr_f16, dtype=tla.Float32)
   （由 `as_numeric` 或具体类型如 `tla.Int32(...)` 得到）。普通 Python
   `int` / `float` / `bool` 无法作为运行时状态跨过上述控制流。
 
+### `cast`
+
+**源码：** [`catlass.base_dsl.typing.cast`](../../../catlass/base_dsl/typing.py#L661)
+
+功能说明：
+
+由 `obj` 构造类型为 `type_` 的具体 `Numeric`。
+
+函数原型：
+
+```python
+tla.cast(obj: Any, type_: type['Numeric']) -> 'Numeric'
+```
+
+参数说明：
+
+- `obj`（`Any`）：源值（Python 标量或 `Numeric`）。必填。
+- `type_`（`type[Numeric]`）：具体目标 `Numeric` 子类。必填。
+
+约束说明：
+
+- 建议在 `@tla.kernel` 函数体内调用。
+- `type_` 须为具体 `Numeric` 子类（不是抽象基类 `Numeric` / `Integer` /
+  `Float`），除非 `obj` 已属于该抽象族。
+- 不支持的源/目标组合会抛出 `TypeError`。
+
+调用示例：
+
+```python
+@tla.kernel
+def kernel() -> None:
+    x = tla.cast(0, tla.Int32)
+    y = tla.cast(1.5, tla.Float32)
+    tla.make_coord(x, y.to(tla.Int32))
+```
+
+---
+
 ### `Numeric.to`
 
 **源码：** [`catlass.base_dsl.typing.Numeric.to`](../../../catlass/base_dsl/typing.py#L891)
 
 功能说明：
 
-将标量 `Numeric` 转换为另一种具体类型。
-
-`round_mode` 选择浮点转整数（以及部分浮点转浮点）的舍入方式：
-`ScalarRoundMode.NEAREST_EVEN` / `NEAREST_AWAY` / `FLOOR` /
-`CEIL` / `ODD`。省略（或 `TRUNC`）时，浮点转整数向零截断。
+将标量 `Numeric` 转为另一具体类型。
 
 函数原型：
 
@@ -563,15 +599,17 @@ Numeric.to(dtype: Any, *, round_mode: Any = None) -> Any
 参数说明：
 
 - `dtype`（`type[Numeric] | type[int] | type[float] | type[bool]`）：
-  目标类型。具体 `Numeric` 子类（如 `Int32`、`Float32`）得到另一个 `Numeric`；
-  传入 Python `int` / `float` / `bool` 时，若值仍是 Host 常量，则提取 Host 侧
-  Python 标量。必填。
-- `round_mode`（`ScalarRoundMode | None`）：可选标量舍入模式。可选，默认 `None`。
+  目标类型。具体 `Numeric` 子类得到另一个 `Numeric`；传入 Python
+  `int` / `float` / `bool` 时，若值仍是 Host 常量，则提取 Host 侧 Python
+  标量。必填。
+- `round_mode`（`ScalarRoundMode | None`）：浮点舍入模式：
+  `NEAREST_EVEN`、`NEAREST_AWAY`、`FLOOR`、`CEIL`、`ODD`；省略或
+  `TRUNC` 表示 float→int 向零截断。可选，默认 `None`。
 
 约束说明：
 
 - 优先在 `@tla.kernel` 函数体内调用。
-- 产出 DSL 标量时，`dtype` 须为具体类型（如 `Int32` / `Float32`），不能是抽象的
+- 产出 DSL 标量时，`dtype` 须为具体 `Numeric` 子类，不能是抽象的
   `Integer` / `Float` / `Numeric`。
 - 此处使用 `tla.params.ScalarRoundMode`；不要传入 `tla.params.RoundMode`。
 - 不支持的源/目标组合会抛出 `TypeError`。
@@ -629,17 +667,7 @@ bits = tla.Float32(1.0).bitcast(tla.Int32)
 
 功能说明：
 
-将 Python 标量转换为 DSL `Numeric`。
-
-在运行时控制流（`if` / `tla.range` / `while` / 展开的 DSL `with` 区域）中更新之前，
-或从字面量组装少量固定运行时标量 list/tuple 时，请调用本接口。
-
-映射规则：
-
-- 已是 `Numeric` 的值原样返回；
-- `bool` → `Bool`；
-- 落在有符号 32 位范围内的 `int` → `Int32`，否则 → `Int64`；
-- `float` → `Float32`。
+将 Python 标量转为 DSL `Numeric`。
 
 函数原型：
 
@@ -671,16 +699,47 @@ def kernel(limit: int) -> None:
 
 ---
 
-### `Float.sqrt`
+### `~Integer`
 
-**源码：** [`catlass.base_dsl.typing.Float.sqrt`](../../../catlass/base_dsl/typing.py#L1283)
+**源码：** [`catlass.base_dsl.typing.Integer.__invert__`](../../../catlass/base_dsl/typing.py#L1253)
 
 功能说明：
 
-标量浮点平方根。
+整数 `Numeric` 的按位取反：写 `~Integer`。
 
-对应 `tla.sqrt` 的标量形态。在 `tla.vec.func(mode="simt")` 内按线程执行；
-在 kernel 其他位置（含 cube / SIMD vector 区域与 kernel 函数体）走核内标量数学路径。
+函数原型：
+
+```python
+~Integer -> 'Integer'
+```
+
+参数说明：
+
+- 无。对具体整数 `Numeric` 使用一元 `~` 运算符。
+
+约束说明：
+
+- 建议在 `@tla.kernel` 函数体内调用。
+- 接收者须为具体整数 `Numeric`。
+
+调用示例：
+
+```python
+@tla.kernel
+def kernel() -> None:
+    flags = ~tla.Int32(0)
+    tla.make_coord(flags, 0)
+```
+
+---
+
+### `Float.sqrt`
+
+**源码：** [`catlass.base_dsl.typing.Float.sqrt`](../../../catlass/base_dsl/typing.py#L1306)
+
+功能说明：
+
+标量浮点的平方根。
 
 函数原型：
 
@@ -715,51 +774,11 @@ def kernel() -> None:
 
 ### `copy`
 
-**源码：** [`catlass.core_api.copy`](../../../catlass/core_api.py#L5515)
+**源码：** [`catlass.core_api.copy`](../../../catlass/core_api.py#L5585)
 
 功能说明：
 
-在 tile 之间拷贝数据。硬件通路由 `src`/`dst` 地址空间决定（vector：GM↔UB、UB→L1、
-UB→UB；cube：GM→L1、L1→L0A/L0B、L0C→GM|UB|L1）。
-UB→UB 一律走专用的 `MOV.UB.TO.UB` 块搬运，因此支持所有元素宽度（含 1 字节类型）
-与任意行长度。该搬运以 32 字节块为单位计数，所以当每行不是 32 字节块的整数倍时，
-行长度会向上取整，该行自身的 32 字节对齐填充也随之一起搬运。因此有两种几何形状会
-被拒绝，而不会被拷贝：一是起始地址不在 32 字节边界上的 tile（子块视图可能产生这种
-情况）；二是行间距不足以容纳取整后整行的多行 tile，此时取整后的行会越界写入下一行。
-目的 tile 打 `ColumnMajor` tag 的 UB→UB 拷贝是**转置**：两侧 tile 带同样的逻辑
-形状 `(M, N)`，落到内存里的是 `(N, M)` 的转置结果，与 L0C→GM、L0C→UB 表达转置的
-方式一致。底层由 `VNCHWCONV`（vector 单元原生的转置指令）实现，它一次搬运 16 行 ×
-C0 列的整块数据，C0 为一个 32 字节 DataBlock 内的元素个数（4 / 2 / 1 字节类型分别
-为 8 / 16 / 32）；1 字节类型需要四次调用才能覆盖其 32×32 的块。因此 tile 的形状
-必须是整数个这样的块：16 行 × C0 列，1 字节类型为 32 行 × 32 列。
-两侧 layout tag 选择格式转换（例如 ND→zN）。
-
-vector 通路支持的元素类型：
-
-| 通路 | 源 layout → 目的 layout | 元素类型 |
-|---|---|---|
-| GM → UB | `RowMajor` → `RowMajor` | `f32`、`f16`、`bf16`、`i32`、`i16`、`i8`、`f8e4m3fn`、`f8e5m2` |
-| UB → GM | `RowMajor` → `RowMajor` | 同上 |
-| UB → UB | `RowMajor` → `RowMajor` | `f32`、`f16`、`bf16`、`i32`、`i16`、`i8`、`f8e4m3fn`、`f8e5m2` |
-| UB → UB | `RowMajor` → `ColumnMajor`（转置） | 同上 |
-| UB → L1 | `RowMajor` → `zN` | `f32`、`f16`、`bf16`、`i8`、`f8e4m3fn`、`f8e5m2` |
-| UB → L1 | `zN` → `zN` | 同上 |
-| UB → L1 | `zNUnAlign` → `zN` | 同上 |
-
-UB → L1 的目的 layout 只能是 `zN`；没有以 UB 为源、`nZ` 为目的的通路。`i16` /
-`i32` 只有 GM↔UB 与 UB→UB，没有 UB→L1。
-
-`zN` 源的 UB tile 需要先在 UB 里按 zN 摆好：用 `BlockStoreParams` 的带 stride
-block store 把每行分块写入打了 `zN` tag 的 UB view（见
-`examples/end_to_end/basic_mixed/basic_mixed_store_zN.py` 与
-`basic_mixed_store_zNUnAlign.py`，两者都用 `--dtype` 跑遍该通路支持的全部元素
-类型）。分块长度按元素类型算：一个 vector register 是 256 字节，block store
-一次搬满它的 8 个 `DataBlock`，所以一块是 `256 / sizeof(T)` 个元素。8 位类型
-（`i8` / fp8）的 block store 与 GM↔UB、UB→L1 拷贝一样按字节宽度与 stride
-搬运，不依赖元素类型的标量语义。
-
-拷贝 / 切块大小按各 tile 的逻辑 `origin_shape`（不是嵌套物理 `shape`）。
-物理 `shape` / `stride` 描述这些逻辑元素如何存放（凑齐对齐长度、zN 打包等）。
+将 tile 从 `src` 拷到 `dst`。支持的通路与 dtype 见约束说明后的表格。
 
 函数原型：
 
@@ -771,90 +790,50 @@ tla.copy(dst: Tensor, src: Tensor, params: CopyParams | None = None, *, scale: T
 
 - `dst`（`Tensor`）：目的 tile。必填。
 - `src`（`Tensor`）：源 tile。必填。
-- `params`（`CopyParams | None`）：可选通路参数
-  （`CopyL0C2DstParams`、`CopyUbToGmParams` / atomic 等）。默认 `None`。
-- **MX scale tile**（目的为 `zZMxScale` / `nNMxScale`）在 L1 上按整行字节平铺，
-  源 tile 须覆盖缓冲区整行；按行堆叠各 chunk 的 scale block，不要沿列切宽 buffer。
-  仅在行 pitch 为编译期常量时可检查；layout 动态的 tensor 无法在编译期校验。
-- `scale`（`Tensor | None`）：L1 上的 OCP `e8m0` 共享指数 tile（沿 K 每 32 个元素一份），
-  使 L1→L0A/L0B 变为 microscaling（MX）load，并下沉为 `tla.copy_mx`。因 MLIR 无
-  e8m0 类型，以 `i8`/`u8` 存储；目的为 L0A 时 tag `tla.arch.zZMxScale`，为 L0B 时
-  tag `tla.arch.nNMxScale`。默认 `None`。
+- `params`（`CopyParams | None`）：通路参数：`CopyL0C2DstParams`、
+  `CopyUbToGmParams`。默认 `None`。
+- `scale`（`Tensor | None`）：L1 上的 OCP `e8m0` 共享指数 tile，用于
+  L1→L0A/L0B 的 MX load。以 `i8`/`u8` 存储；目的为 L0A 时 tag
+  `tla.arch.zZMxScale`，为 L0B 时 tag `tla.arch.nNMxScale`。默认 `None`。
 
 约束说明：
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
-- `scale` 仅对 L1→L0A/L0B 通路有效；由此加载的 tile 随后须由 `tla.mmad` /
-  `tla.mmad_mx` 消费。scale 由 load 消费，而非 matmul 参数——硬件 `mad_mx`
-  没有 scale 操作数，MX 关联在操作数进入 L0 时建立（对齐 AscendC 五参数
-  `LoadData` 重载）。
-- 须在 `tla.cube()` 或 `tla.vector()` 内调用（上述 cube 通路在 `cube()`，
-  vector 通路在 `vector()`）。
+- 须在 `tla.cube()` 或 `tla.vector()` 内调用。
+- 拷贝大小按各 tile 的 `origin_shape`。
+- `scale` 仅对 L1→L0A/L0B 有效；由此加载的 tile 随后须由 `tla.mmad_mx` 消费。
+- MX scale 目的（`zZMxScale` / `nNMxScale`）要求源 tile 覆盖 L1 整行，
+  并按行堆叠 scale block。仅在行 pitch 为编译期常量时可检查。
+- UB→UB 按整 32 字节块计数，行向上取整。起始未 32B 对齐、或多行 pitch
+  容不下取整行时拒绝。目的 tag 为 `ColumnMajor` 时为转置：tile 形状须为
+  整块 16×C0，1 字节类型为 32×32。
+- `GM`→`L1` / `L1`→`biasbuf` 连续平铺用 rank-1 `VectorLayout`；多行 bias
+  tile 不可表示，请切出单行。
 - 整 tile DMA 使用 `tla.copy`。寄存器级 UB 非对齐访问请改用
   `tensor.load` / `tensor.store`，并传入 `UnalignLoadParams` /
   `UnalignStoreParams`。
 - **尺寸未按 32 字节对齐时：** C0 为 32 字节。ND GM↔UB 时，优先让主导维的
-  字节数是 32 的倍数（如 RowMajor f16 选 `N` 使 `N % 16 == 0`）。若真实数据
-  大小做不到这一点，请保持 `origin_shape` 为真实逻辑尺寸，并把物理 layout
-  放大到对齐后的尺寸，或改用上方非对齐寄存器 load/store。zN 在 `M` 不是 16
-  的整数倍时，用 `tla.arch.zNUnAlign` 而非 `zN`。
-
-调用示例：
-
-```python
-# --- 1) 对齐 GM ↔ UB（RowMajor，满足 32 字节对齐） ---
-# 前：x_gm[i, j] 为 ND 数据；x_ub 为空。origin_shape==(M, N)。
-with tla.vector():
-    tla.copy(dst=x_ub, src=x_gm)
-    # 后：对 origin_shape 内所有逻辑 (i, j)，x_ub[i, j] == x_gm[i, j]。
-    tla.copy(dst=y_gm, src=y_ub)
-
-# --- 2) ND → zN：GM RowMajor → L1 zN（排布变化） ---
-# 前（逻辑）：gm_a.origin_shape==(128, 64)，RowMajor；元素 (r, c)
-#   的 ND 偏移为 r*64+c。
-# 后（L1 物理）：l1_a 使用嵌套 zN shape/stride，同一逻辑 (r, c) 按 zN 存放；
-#   l1_a.origin_shape 仍为 (128, 64)。
-l1_a = tla.make_tensor_like(l1_ptr, gm_a, layoutTag=tla.arch.zN)
-with tla.cube():
-    tla.copy(dst=l1_a, src=gm_a)
-
-# 不用 make_tensor_like 时的显式 zN（同一逻辑 128x64 f16）：
-l1_a = tla.make_tensor(
-    l1_ptr,
-    tla.make_layout(
-        tla.make_shape((16, 8), (16, 4)),
-        tla.make_stride((16, 256), (1, 2048)),
-        origin_shape=tla.make_shape(128, 64),
-        layoutTag=tla.arch.zN,
-    ),
-)
-
-# --- 3) M 不是 16 的倍数：zNUnAlign ---
-# 前：rows 可能为运行期值，且不是 16 的倍数。
-l1_unalign = tla.make_tensor_like(l1_ptr, gm_tile, layoutTag=tla.arch.zNUnAlign)
-with tla.cube():
-    tla.copy(dst=l1_unalign, src=gm_tile)
-
-# 相关（寄存器路径，不是 tla.copy）：UB ↔ vector 寄存器非对齐访问
-#   with tla.vec.func(mode="simd"):
-#       x_reg = x_ub.load(tla.params.UnalignLoadParams())
-#       y_ub.store(y_reg, tla.params.UnalignStoreParams())
-```
+  字节数是 32 的倍数。否则保持 `origin_shape` 为真实尺寸并放大物理
+  layout，或改用非对齐 load/store。zN 在 `M` 不是 16 的整数倍时，用
+  `tla.arch.zNUnAlign`。
 
 无 scale 的 Cube 拷贝通路，`tla.copy(dst, src, scale=None)`
 
 |`src_addr`|`src_layout`|`dst_addr`|`dst_layout`|`dtypes`|
 |----------|------------|----------|------------|--------|
-|`gm`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
-|`gm`|`ColumnMajor`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`ColumnMajor`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`zNUnAlign`|`l1`|`zNUnAlign`|`f32`,`f16`,`bf16`|
 |`gm`|`RowMajorMxScaleA`|`l1`|`zZMxScale`|`f8e8m0`|
 |`gm`|`ColMajorMxScaleA`|`l1`|`zZMxScale`|`f8e8m0`|
 |`gm`|`RowMajorMxScaleB`|`l1`|`nNMxScale`|`f8e8m0`|
 |`gm`|`ColMajorMxScaleB`|`l1`|`nNMxScale`|`f8e8m0`|
-|`l1`|`zN`|`l0a`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
-|`l1`|`nZ`|`l0a`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
-|`l1`|`zN`|`l0b`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
-|`l1`|`nZ`|`l0b`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
+|`gm`|`VectorLayout`|`l1`|`VectorLayout`|`f32`,`i32`,`u64`|
+|`l1`|`VectorLayout`|`biasbuf`|`VectorLayout`|`f32`,`i32`|
+|`l1`|`zN`|`l0a`|`zN`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`|
+|`l1`|`nZ`|`l0a`|`zN`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`|
+|`l1`|`zN`|`l0b`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`|
+|`l1`|`nZ`|`l0b`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`|
 
 带 scale 的 Cube 拷贝通路（供 `tla.mmad_mx`），即
 `tla.copy(dst=l0a|l0b, src=l1, scale=scale)`；scale 仅支持 `f8e8m0`，
@@ -892,24 +871,59 @@ fixpipe 支持随路 quant 与 relu；quant 模式支持 `NO_QUANT`、`PER_TENSO
 |`l1`|`zN`|`-`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
 |`ub`|`RowMajor`|`nosplit`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
 |`ub`|`ColumnMajor`|`nosplit`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
+|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
 
 Vector 拷贝通路
 
 |`src_addr`|`src_layout`|`dst_addr`|`dst_layout`|`dtypes`|
 |----------|------------|----------|------------|--------|
-|`gm`|`RowMajor`|`ub`|`RowMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`f8e4m3fn`,`f8e5m2`|
-|`ub`|`RowMajor`|`gm`|`RowMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`f8e4m3fn`,`f8e5m2`|
+|`gm`|`RowMajor`|`ub`|`RowMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`|
+|`ub`|`RowMajor`|`gm`|`RowMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`|
 |`ub`|`RowMajor`|`ub`|`RowMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`f8e4m3fn`,`f8e5m2`|
 |`ub`|`RowMajor`|`ub`|`ColumnMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`f8e4m3fn`,`f8e5m2`|
 |`ub`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
 |`ub`|`zN`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
 |`ub`|`zNUnAlign`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
 
+调用示例：
+
+```python
+# --- 1) 对齐 GM ↔ UB（RowMajor，满足 32 字节对齐） ---
+# 前：x_gm[i, j] 为 ND 数据；x_ub 为空。origin_shape==(M, N)。
+with tla.vector():
+    tla.copy(dst=x_ub, src=x_gm)
+    # 后：对 origin_shape 内所有逻辑 (i, j)，x_ub[i, j] == x_gm[i, j]。
+    tla.copy(dst=y_gm, src=y_ub)
+
+# --- 2) ND → zN：GM RowMajor → L1 zN（排布变化） ---
+l1_a = tla.make_tensor_like(l1_ptr, gm_a, layoutTag=tla.arch.zN)
+with tla.cube():
+    tla.copy(dst=l1_a, src=gm_a)
+
+# --- 3) M 不是 16 的倍数：zNUnAlign ---
+l1_unalign = tla.make_tensor_like(l1_ptr, gm_tile, layoutTag=tla.arch.zNUnAlign)
+with tla.cube():
+    tla.copy(dst=l1_unalign, src=gm_tile)
+
+# 相关（寄存器路径，不是 tla.copy）：UB ↔ vector 寄存器非对齐访问
+#   with tla.vec.func(mode="simd"):
+#       x_reg = x_ub.load(tla.params.UnalignLoadParams())
+#       y_ub.store(y_reg, tla.params.UnalignStoreParams())
+```
+
 ---
 
 ### `Tensor.load`
 
 **源码：** [`catlass.tla.tensor._Tensor.load`](../../../catlass/tla/tensor.py#L533)
+
 功能说明：
 
 将本 UB tensor tile 载入 vector 或 mask SSA（`tile.load`）。
@@ -922,30 +936,56 @@ tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[Vecto
 
 参数说明：
 
-- `params`（`LoadParams | None`）：载入模式。`None` / `NormalLoadParams` /
-  `UnalignLoadParams` / `BlockLoadParams` → `VectorSSA`（`DIST_DINTLV_B32`
-  时可为二元组）；`MaskLoadParams` → `MaskSSA`。
-  `NormalLoadParams.load_dist` 选择分发模式：`norm`（默认）、
-  `brc_b32`（单个 b32 元素广播到全部 lane）、`dintlv_b32`（f32 解交织，
-  双返回值）、`us_b8` / `us_b16`（2 倍上采样）、`brc_b16`（单个 b16 元素
-  广播）、`unpack_b16`（b16 零扩展到双倍宽度）、`e2b_b16` / `e2b_b32`
-  （元素到 DataBlock 广播）、`blk`（一个 32 字节 DataBlock 广播到全部 8 个）。
-  `BlockLoadParams` 为跨步 `DataBlock` 收集：一次 `load` 收集 8 个 `DataBlock`，
-  块头间隔 `block_stride` 个 `DataBlock`（32B 单位）；`block_stride == 0`
-  时将首个 `DataBlock` 复制到全部 8 槽；`repeat_stride` 为编译期地址
-  预偏移，单位 32B `DataBlock`。
-  `MaskLoadParams.load_dist` 可为 `DIST_NORM`（默认，bit-packed 掩码载入）、
-  `DIST_US`（bit 上采样）或 `DIST_DS`（bit 下采样）。可选，默认 `None`。
+- `params`（`LoadParams | None`）：载入模式。可选，默认 `None`。
+  - `None` / `NormalLoadParams` / `UnalignLoadParams` /
+    `BlockLoadParams` → `VectorSSA`（`DIST_DINTLV_B32` 时可为二元组）。
+  - `MaskLoadParams` → `MaskSSA`。
+  - `NormalLoadParams`：
+    - `load_dist`（`str`）：`tla.params.LoadDist` token。默认 `DIST_NORM`。
+
+      | 取值 | 含义 |
+      |---|---|
+      | `DIST_NORM` | 默认连续载入 |
+      | `DIST_BRC_B32` | 单个 b32 元素广播到全部 lane |
+      | `DIST_DINTLV_B32` | f32 解交织；双返回值 |
+      | `DIST_US_B8` / `DIST_US_B16` | 2 倍上采样 |
+      | `DIST_BRC_B16` | 单个 b16 元素广播 |
+      | `DIST_UNPACK_B16` | b16 零扩展到双倍宽度 |
+      | `DIST_E2B_B16` / `DIST_E2B_B32` | 元素到 DataBlock 广播 |
+      | `DIST_BLK` | 一个 32 字节 DataBlock 广播到全部 8 个 |
+
+    - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）或 `POST_MODE_UPDATE`。
+    - `post_update_stride`（`Any`）：`post_mode=POST_MODE_UPDATE` 时的元素步长；
+      `0` 表示按 `tile_extent`（`origin_shape`）推进。默认 `0`。
+  - `UnalignLoadParams`：
+    - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）或 `POST_MODE_UPDATE`。
+    - `post_update_stride`（`Any`）：须保持为 `0`（仅按 `origin_shape`
+      推进窗口）。默认 `0`。
+  - `BlockLoadParams`：
+    - `block_stride`（`int`）：块头间隔，单位为 32B DataBlock；`0` 时将首块
+      复制到全部 8 槽。默认 `0`。
+    - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）或 `POST_MODE_UPDATE`。
+    - `repeat_stride`（`Any`）：编译期地址预偏移（32B 块单位）；
+      `POST_MODE_UPDATE` 时为推进步长。默认 `0`。
+  - `MaskLoadParams`：
+    - `load_dist`（`str`）：`tla.params.MaskLoadDist` token。默认
+      `DIST_NORM`。
+
+      | 取值 | 含义 |
+      |---|---|
+      | `DIST_NORM` | bit-packed 掩码载入 |
+      | `DIST_US` | bit 上采样 |
+      | `DIST_DS` | bit 下采样 |
 
 约束说明：
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.vec.func()` 内调用；源 tile 须位于 UB。
 - Mask 载入 `DIST_NORM` 要求 UB 元素类型为 1/2/4 字节标量。
-- 分发模式限定元素宽度：`us_b8` 要求 i8/u8；`brc_b16` / `us_b16` /
-  `unpack_b16` / `e2b_b16` 要求 2 字节（f16/bf16/i16/u16）；`e2b_b32`
-  要求 4 字节（f32/i32/u32）；`dintlv_b32` 要求 f32；`blk` 适用于任意
-  元素宽度。
+- 分发模式限定元素宽度：`DIST_US_B8` 要求 i8/u8；`DIST_BRC_B16` /
+  `DIST_US_B16` / `DIST_UNPACK_B16` / `DIST_E2B_B16` 要求 2 字节
+  （f16/bf16/i16/u16）；`DIST_E2B_B32` 要求 4 字节（f32/i32/u32）；
+  `DIST_DINTLV_B32` 要求 f32；`DIST_BLK` 适用于任意元素宽度。
 - `BlockLoadParams` 要求 2/4 字节元素类型（f32/f16/bf16/i32/u32/i16/u16）；
   `block_stride` 与 `repeat_stride` 须在 [0, 65535] 范围内。
 - `DIST_US` / `DIST_DS`：UB 元素类型可为任意 b8/b16/b32/b64 标量。
@@ -955,14 +995,13 @@ tile.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple[Vecto
 - 掩码载入字节偏移对齐（UB 字节地址 `base + offset×sizeof(T)`）：
   `DIST_NORM` → `VL/8`；`DIST_US` → `VL/16`；`DIST_DS` → `min(32, VL/4)`。
   VL=256 时为 32B / 16B / 32B。
-- `post_mode=update` 要求 rank-1 连续 tile、`DIST_NORM`，且元素类型为
-  `f16` / `bf16` / `f32`。Align：`post_update_stride=0`（默认）按 `tile_extent`
-  （`origin_shape`）推进；显式值保留填充与 stride 解耦。UnAlign：保持默认 `0`
-  （显式传入会拒绝；emit 始终用 `origin_shape`），每趟自含双指令（`vldas` +
-  `vldus.post`）。UPDATE `load` 前后勿用其它名字别名同一窗口。调用返回
-  `(vector, next_tile)`。在 `tla.vec.func` 内须用 `tla.range` 赋回 `next_tile`
-  （`while` 尚不支持嵌在 `vec.func` 内），循环才把它收成 SCF 游标。UPDATE 要求窗口已是原点窗（`coord=0`）；
-  用 `tile_view`（或等价方式）切出所需 tile，环内外均不自动折非零坐标。
+- `POST_MODE_UPDATE` 要求 rank-1 连续 tile、`DIST_NORM`，且元素类型为
+  `f16` / `bf16` / `f32`。返回 `(vector, next_tile)`。在 `tla.vec.func` 内须用
+  `tla.range` 赋回 `next_tile`（`while` 尚不支持嵌在 `vec.func` 内）。窗口须
+  已是原点窗（`coord=0`）；用 `tile_view`（或等价方式）切出所需 tile，UPDATE
+  不会自动折非零坐标。`NormalLoadParams`：`post_update_stride=0`（默认）按
+  `tile_extent`（`origin_shape`）推进；显式值保留填充与 stride 解耦。
+  `UnalignLoadParams` 须保持 `post_update_stride=0`（仅密集 `origin_shape`）。
 
 调用示例：
 
@@ -977,19 +1016,14 @@ with tla.vec.func(mode="simd"):
         tla.params.MaskLoadParams(load_dist=tla.params.MaskLoadDist.DIST_DS)
     )
     y = tla.where(preg, x_reg, min_reg)
-    for _ in tla.range(n):
-        x_reg, x_ub = x_ub.load(
-            tla.params.NormalLoadParams(
-                post_mode=tla.params.PostMode.POST_MODE_UPDATE,
-            )
-        )
 ```
 
 ---
 
 ### `Tensor.store`
 
-**源码：** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L989)
+**源码：** [`catlass.tla.tensor._Tensor.store`](../../../catlass/tla/tensor.py#L997)
+
 功能说明：
 
 将 vector 或 mask SSA 写回本 UB tensor tile（`tile.store`）。
@@ -1003,12 +1037,34 @@ tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mas
 参数说明：
 
 - `value`（`VectorSSA | MaskSSA`）：要写入的 `VectorSSA` 或 `MaskSSA`。必填。
-- `params`（`StoreParams | None`）：写回模式。`None` / `NormalStoreParams` /
-  `UnalignStoreParams` / `BlockStoreParams` → vector 写回；`MaskStoreParams` → mask 写回。
-  `NormalStoreParams.store_dist` 另可选 first-element 模式：`first_element_b8` /
-  `first_element_b16` / `first_element_b32`——仅将源寄存器 lane 0 写入 tile
-  基址，后缀限定写出的元素字节宽度。若 `post_mode=update`，则返回下一扇窗口，
-  由调用方赋回（`tile = tile.store(...)`）。可选，默认 `None`。
+- `params`（`StoreParams | None`）：写回模式。可选，默认 `None`。
+  - `None` / `NormalStoreParams` / `UnalignStoreParams` /
+    `BlockStoreParams` → vector 写回。
+  - `MaskStoreParams` → mask 写回。
+  - `NormalStoreParams`：
+    - `store_dist`（`str`）：`tla.params.StoreDist` token。默认 `DIST_NORM`。
+
+      | 取值 | 含义 |
+      |---|---|
+      | `DIST_NORM` | 默认连续写回 |
+      | `DIST_FIRST_ELEMENT_B8` | 仅写 lane 0（1 字节） |
+      | `DIST_FIRST_ELEMENT_B16` | 仅写 lane 0（2 字节） |
+      | `DIST_FIRST_ELEMENT_B32` | 仅写 lane 0（4 字节） |
+
+    - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）或 `POST_MODE_UPDATE`。
+    - `post_update_stride`（`Any`）：`post_mode=POST_MODE_UPDATE` 时的元素步长；
+      `0` 表示按 `tile_extent`（`origin_shape`）推进。默认 `0`。
+  - `UnalignStoreParams`：
+    - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）或 `POST_MODE_UPDATE`。
+    - `post_update_stride`（`Any`）：须保持为 `0`。默认 `0`。
+  - `BlockStoreParams`：
+    - `block_stride`（`int`）：块头间隔，单位 32B DataBlock。默认 `0`。
+    - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）或 `POST_MODE_UPDATE`。
+    - `repeat_stride`（`Any`）：仅在 `POST_MODE_UPDATE` 时用作推进步长
+      （32B 块单位）。默认 `0`。
+  - `MaskStoreParams`：
+    - `store_dist`（`str`）：`tla.params.MaskStoreDist` token。默认
+      `DIST_NORM`。
 - `mask`（`MaskSSA | None`）：vector 写回的可选谓词；与 `MaskStoreParams` 及
   first-element 模式均不可同时使用。默认 `None`。
 
@@ -1018,14 +1074,12 @@ tile.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mas
 - 须在 `tla.vec.func()` 内调用；目标 tile 须位于 UB。
 - first-element 模式要求被写值与目标 tile 的元素宽度匹配后缀
   （b8 → 1 字节，b16 → 2 字节，b32 → 4 字节）；传入谓词 `mask` 会报错。
-- `post_mode=update` 要求 rank-1 连续 tile、`DIST_NORM`，且元素类型为
-  `f16` / `bf16` / `f32`。Align：`post_update_stride=0`（默认）按 `tile_extent`
-  （`origin_shape`）推进；显式值保留填充/stride 解耦。UnAlign：保持默认 `0`
-  （显式传入会拒绝；emit 始终用 `origin_shape`），每趟自含双指令（空 ureg +
-  `vstus.post` + `vstas`）。UPDATE `store` 前后勿用其它名字别名同一窗口。
-  在 `tla.vec.func` 内须用 `tla.range` 赋回返回的 tile（`while` 尚不支持嵌在
-  `vec.func` 内），循环才把它收成和其它携带的 tile 一样的 tensor。与
-  UPDATE `load` 相同：调用前须为原点窗（`coord=0`）。
+- `POST_MODE_UPDATE` 要求 rank-1 连续 tile、`DIST_NORM`，且元素类型为
+  `f16` / `bf16` / `f32`；返回下一扇窗口。在 `tla.vec.func` 内须用
+  `tla.range` 赋回。与 UPDATE `load` 相同：调用前须为原点窗（`coord=0`）。
+  `NormalStoreParams`：默认 `post_update_stride=0` 按 `tile_extent`
+  （`origin_shape`）推进；显式 stride 与填充解耦。`UnalignStoreParams` 须
+  保持 stride 为 `0`（仅密集 `origin_shape`）。
 
 调用示例：
 
@@ -1035,13 +1089,122 @@ with tla.vec.func(mode="simd"):
     y_ub.store(y_reg, tla.params.UnalignStoreParams())
     y_ub.store(y_reg, tla.params.NormalStoreParams(
         store_dist=tla.params.StoreDist.DIST_FIRST_ELEMENT_B16))
-    for _ in tla.range(n):
-        y_ub = y_ub.store(
-            y_reg,
-            tla.params.NormalStoreParams(
-                post_mode=tla.params.PostMode.POST_MODE_UPDATE,
-            ),
-        )
+```
+
+---
+
+### `Tensor.fill`
+
+**源码：** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1254)
+功能说明：
+
+用常量填充本 L1 zN/nZ tile（当前仅支持写零）。
+
+函数原型：
+
+```python
+tile.fill(value: int | float) -> None
+```
+
+参数说明：
+
+- `value`（`int | float`）：trace 期标量；当前仅支持 ``0``
+  （设备写入全零比特模式）。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用，并嵌套在 `tla.cube()` 内。
+- 目的地须为带 ``zN`` 或 ``nZ`` 标签的 L1 tensor。
+- 填充范围为 ``[coord, coord + origin_shape)``；C0 轴起点向上对齐到 32 字节
+  边界，前导的不完整 C0 单元不写。
+- 支持的元素类型：打包的 fp4/fp8 操作数格式
+  （``f4e2m1``/``f4e1m2``/``f8e4m3fn``/``f8e5m2``），且仅支持填零。
+  更宽类型、8 位整数与 e8m0 scale tile 不支持。
+
+调用示例：
+
+```python
+# 将 L1 A tile 的 K-pad 尾部清零：先切 tile，再 fill。
+pad = tla.get_tile(t_l1a, tla.make_coord(0, k_valid),
+                   tla.make_shape(m, k_l0 - k_valid))
+pad.fill(0)
+```
+
+---
+
+
+### `tensor[i]`
+
+**源码：** [`catlass.tla.tensor._Tensor.__getitem__`](../../../catlass/tla/tensor.py#L1403)
+
+功能说明：
+
+按坐标加载单个 tensor 元素为标量（`tensor[i]` / `tensor[i, j]`）。
+
+函数原型：
+
+```python
+tensor[i] -> Any
+```
+
+参数说明：
+
+- `crd`（`int | Int32 | tuple`）：元素坐标；每个逻辑维一个下标。必填。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+- tensor 须位于 `gm` 或 `ub`；`ub` tensor 须在 `tla.vector()` 内访问。
+- 布局须为 `RowMajor` 或 `ColumnMajor`。
+- 逻辑秩须为 1 或 2，且下标个数与秩一致。
+- 除 `Bool` 外不支持亚字节元素类型。
+- 拒绝 `None` / `_` 坐标；取子 tensor 请用 `tile_view`。
+
+调用示例：
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    value = gm_in[tid]
+```
+
+---
+
+### `tensor[i] = value`
+
+**源码：** [`catlass.tla.tensor._Tensor.__setitem__`](../../../catlass/tla/tensor.py#L1514)
+
+功能说明：
+
+将标量写入单个 tensor 元素（`tensor[i] = value`）。
+
+函数原型：
+
+```python
+tensor[i] = value
+```
+
+参数说明：
+
+- `crd`（`int | Int32 | tuple`）：元素坐标；每个逻辑维一个下标。必填。
+- `data`（`Numeric | int | float | mlir.ir.Value`）：写入值；Python 字面量
+  会转到 tensor 元素类型。必填。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+- tensor 须位于 `gm` 或 `ub`；`ub` tensor 须在 `tla.vector()` 内访问。
+- 布局须为 `RowMajor` 或 `ColumnMajor`。
+- 逻辑秩须为 1 或 2，且下标个数与秩一致。
+- 除 `Bool` 外不支持亚字节元素类型。
+- `Numeric` 类型须与 tensor 元素类型完全一致，无隐式提升；先用 `.to(...)` 转换。
+
+调用示例：
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_out[tid] = gm_a[tid] + gm_b[tid]
 ```
 
 ---
@@ -1052,7 +1215,7 @@ Cube 侧矩阵乘加（`tla.mmad` / `tla.mmad_mx`）。
 
 ### `mmad`
 
-**源码：** [`catlass.core_api.mmad`](../../../catlass/core_api.py#L6760)
+**源码：** [`catlass.core_api.mmad`](../../../catlass/core_api.py#L6843)
 
 功能说明：
 
@@ -1061,18 +1224,22 @@ Cube 侧矩阵乘加（`tla.mmad` / `tla.mmad_mx`）。
 函数原型：
 
 ```python
-tla.mmad(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = None, unit_flag: IndexLike | None = None, compute_order: ComputeOrder = ComputeOrder.M_FIRST, hf32_mode: HF32Mode = HF32Mode.HF32_DISABLE, **extra_kwargs: object) -> None
+tla.mmad(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = None, unit_flag: IndexLike | None = None, compute_order: ComputeOrder = ComputeOrder.M_FIRST, hf32_mode: HF32Mode = HF32Mode.HF32_DISABLE, bias: Tensor | None = None, **extra_kwargs: object) -> None
 ```
 
 参数说明：
 
-- `acc`（`Tensor`）：累加器 / 输出 tile（通常在 L0C）。必填。
-- `lhs`（`Tensor`）：左矩阵 tile（通常在 L0A）。必填。
-- `rhs`（`Tensor`）：右矩阵 tile（通常在 L0B）。必填。
-- `init_c`（`bool | Bool | None`）：是否先清零累加器；省略时默认为 `False`。可选，默认 `None`。
+- `acc`（`Tensor`）：累加器 / 输出 tile。必填。
+- `lhs`（`Tensor`）：左矩阵 tile。必填。
+- `rhs`（`Tensor`）：右矩阵 tile。必填。
+- `init_c`（`bool | Bool | None`）：是否先清零累加器；省略时默认为 `False`。
+  若提供 `bias`，则由 bias 决定累加起点，`init_c` 对该条指令无效。可选，默认 `None`。
 - `unit_flag`（`IndexLike | None`）：unit flag 控制位；省略时默认为 `0`。可选，默认 `None`。
 - `compute_order`（`ComputeOrder`）：M/N 计算方向优先级；默认 `M_FIRST`。
 - `hf32_mode`（`HF32Mode`）：FP32 操作数在 L0A/L0B 上、矩阵乘之前的 HF32 舍入模式。可选，默认 `HF32_DISABLE`。
+- `bias`（`Tensor | None`）：位于 bias 表缓冲（C2 / `biasbuf`）上的一维 `VectorLayout`
+  tile，长度为 `N`，元素类型与累加器一致；块内首次 matmul 从该 bias 起累加。
+  非 `None` 时累加器从 bias 起步而非 L0C 现值，故 `init_c` 对该指令无效。可选，默认 `None`。
 
 约束说明：
 
@@ -1080,6 +1247,9 @@ tla.mmad(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = Non
 - 须在 `tla.cube()` 内调用；`acc`/`lhs`/`rhs` 须为匹配的 L0 tile。
 - 支持的元素类型通路包括 `f16`/`bf16`/`f32`，以及任意 `f8e4m3fn` / `f8e5m2` 操作数配对，累加到 L0C 上的 fp32。
 - `init_c` 仅接受 Python `bool` 或 `i1` SSA 值。
+- 若设置 `bias`：tile 须在 `biasbuf`、rank-1 `VectorLayout`、元素类型与 `acc` 一致、
+  长度 `N` 与 `acc` 的 N 匹配；经 `GM`→`L1`→`biasbuf` 的 `tla.copy` 搬入（见 `copy`）。
+  此时忽略 `init_c`。
 - 不接受未知关键字参数；传入则报错。
 
 调用示例：
@@ -1088,6 +1258,8 @@ tla.mmad(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = Non
 # 前：l0a / l0b 为当前 K 切片；l0c 为 L0C 上的累加器。
 with tla.cube():
     tla.mmad(l0c, l0a, l0b, init_c=True, unit_flag=0b11)
+    # 带 bias（l0_bias 已由 copy 搬到 biasbuf）：
+    # tla.mmad(l0c, l0a, l0b, bias=l0_bias)
     # 后：l0c 累加 lhs@rhs（init_c=True 时先清零）。
 ```
 
@@ -1095,25 +1267,16 @@ with tla.cube():
 
 ### `mmad_mx`
 
-**源码：** [`catlass.core_api.mmad_mx`](../../../catlass/core_api.py#L6871)
+**源码：** [`catlass.core_api.mmad_mx`](../../../catlass/core_api.py#L6973)
 
 功能说明：
 
-在 TLA tile 上执行 microscaling（MX）矩阵乘累加。
-
-与 `tla.mmad` 分开，因为 Cube 有专用 `mad_mx` 指令（AscendC 暴露为
-`asc_mmad_mx`）。
-
-与该指令一样，本接口**不接受 scale 参数**。`lhs`/`rhs` 必须先通过带
-`scale` 操作数的 `tla.copy` 加载，从而把 e8m0 block 附着到 L0 tile；硬件再
-从 L0 tile 旁路缓冲读取 scale。传入未按此方式加载的操作数会报错；把
-microscaling 操作数传给 `tla.mmad` 同样会报错——两个 op 不可互换，操作数
-本身也无法区分属于哪条路径。
+在 L0 tile 上做 microscaling（MX）矩阵乘累加。
 
 函数原型：
 
 ```python
-tla.mmad_mx(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = None, unit_flag: IndexLike | None = None, compute_order: ComputeOrder = ComputeOrder.M_FIRST, **extra_kwargs: object) -> None
+tla.mmad_mx(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = None, unit_flag: IndexLike | None = None, compute_order: ComputeOrder = ComputeOrder.M_FIRST, bias: Tensor | None = None, **extra_kwargs: object) -> None
 ```
 
 参数说明：
@@ -1121,9 +1284,13 @@ tla.mmad_mx(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = 
 - `acc`（`Tensor`）：累加器 / 输出 tile，位于 L0C，始终为 fp32。必填。
 - `lhs`（`Tensor`）：左矩阵 tile，位于 L0A。必填。
 - `rhs`（`Tensor`）：右矩阵 tile，位于 L0B。必填。
-- `init_c`（`bool | Bool | None`）：是否先清零累加器；省略时默认为 `False`。可选，默认 `None`。
+- `init_c`（`bool | Bool | None`）：是否先清零累加器；省略时默认为 `False`。
+  若提供 `bias`，则由 bias 决定累加起点，`init_c` 对该条指令无效。可选，默认 `None`。
 - `unit_flag`（`IndexLike | None`）：unit flag 控制位；省略时默认为 `0`。可选，默认 `None`。
 - `compute_order`（`ComputeOrder`）：M/N 计算方向优先级；默认 `M_FIRST`。
+- `bias`（`Tensor | None`）：位于 bias 表缓冲（C2 / `biasbuf`）上的一维 `VectorLayout`
+  tile，长度为 `N`，始终为 f32（与累加器一致）；块内首次 matmul 从该 bias 起累加。
+  非 `None` 时累加器从 bias 起步而非 L0C 现值，故 `init_c` 对该指令无效。可选，默认 `None`。
 
 约束说明：
 
@@ -1132,6 +1299,9 @@ tla.mmad_mx(acc: Tensor, lhs: Tensor, rhs: Tensor, init_c: bool | Bool | None = 
 - 操作数须为 `f8e4m3fn`/`f8e5m2` 配对，或 `f4e2m1`/`f4e1m2` 配对；
   同一对内两种格式可混用，累加器为 fp32。
 - 两个操作数都必须经 `tla.copy(..., scale=...)` 加载。
+- 若设置 `bias`：tile 须在 `biasbuf`、rank-1 `VectorLayout`、元素类型 f32、
+  长度 `N` 与 `acc` 的 N 匹配；经 `GM`→`L1`→`biasbuf` 的 `tla.copy` 搬入（见 `copy`）。
+  此时忽略 `init_c`。
 
 调用示例：
 
@@ -1141,14 +1311,20 @@ with tla.cube():
     tla.copy(l0a, l1a, scale=l1sa)   # scale 随 load，不在 matmul 参数里
     tla.copy(l0b, l1b, scale=l1sb)
     tla.mmad_mx(l0c, l0a, l0b, init_c=True)
+    # 带 bias：tla.mmad_mx(l0c, l0a, l0b, bias=l0_bias)
     # 后：l0c 累加 microscaled 的 lhs@rhs。
 ```
 
 ---
 
-## Vector 运算
+## SIMD 向量计算
 
-寄存器 Vector 路径上的计算与 mask 操作，通常须在 `tla.vec.func()` 内调用。
+默认向量执行模式，以 `tla.vec.func(mode="simd")` 进入。主体在整寄存器上运算：数据
+先搬到 UB、按 tile 视图、`load` 成 `VectorSSA`，各 op 在可选 lane mask 下覆盖整寄存器。
+适合规则、稠密计算；下列接口均属此路径。
+
+部分接口在 `tla.vec.func(mode="simt")` 内还有逐线程形态，各条目约束说明中会写明；
+该模式见 [SIMT 向量计算](#simt-向量计算)。
 
 ### Mask 计算
 
@@ -1171,8 +1347,7 @@ tla.create_mask(*, pattern: _MaskPattern | str | None = None, dtype: DTypeLike =
 参数说明：
 
 - `pattern`（`_MaskPattern | str | None`）：掩码 pattern token 或其名字字符串。
-  运行时必填（传 `None` 会报错）。token 挂在 `tla.mask` 下（如
-  `tla.mask.ALL`、`tla.mask.VL8`）：
+  运行时必填（传 `None` 会报错）。token 挂在 `tla.mask` 下：
 
   | Pattern | 含义 |
   | --- | --- |
@@ -1915,13 +2090,23 @@ tla.cmp(lhs: VectorSSA, rhs: VectorSSA | Numeric | bool | int | float, mode: str
 
 - `lhs`（`VectorSSA`）：比较左操作数。必填。
 - `rhs`（`VectorSSA | Numeric | bool | int | float`）：比较右操作数（可为标量或 vector）。必填。
-- `mode`（`str`）：比较模式，如 `'eq'` / `'lt'` / `'gt'` 等。必填。
+- `mode`（`str`）：比较模式。必填。
+
+  | 取值 | 含义 |
+  |---|---|
+  | `lt` | 小于 |
+  | `le` | 小于等于 |
+  | `gt` | 大于 |
+  | `ge` | 大于等于 |
+  | `eq` | 等于 |
+  | `ne` | 不等于 |
+
 - `mask`（`MaskSSA | None`）：可选执行掩码；`None` 表示全有效。可选，默认 `None`。
 
 约束说明：
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
-- 须在 `tla.vec.func()` 内调用；`mode` 须为支持的比较模式名。
+- 须在 `tla.vec.func()` 内调用；`mode` 须为上表取值之一。
 
 调用示例：
 
@@ -1940,8 +2125,7 @@ with tla.vec.func(mode="simd"):
 
 功能说明：
 
-用 Python 标量字面量填充一维 vector SSA，或将单 lane 的 vector 片段
-（例如 `VectorSSA.reduce` 的结果）广播到全部 lane。
+用标量填充 vector SSA，或将单 lane 片段广播到全寄存器。
 
 函数原型：
 
@@ -2014,47 +2198,6 @@ with tla.vec.func(mode="simd"):
 
 按索引 gather，以及带 mask 的归约（`VectorSSA.reduce`）。
 
-#### `gather`
-
-**源码：** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9201)
-
-功能说明：
-
-按索引从 UB tile 或寄存器 gather 元素。
-
-两种形态：
-
-- **UB→Reg**：`x` 为 UB 上的 `Tensor`；`y` 为 `i32` 索引；可选 `mask`。
-- **Reg→Reg**：`x` 为 `VectorSSA`；`y` 为与 `x` 元素位宽相同的整数索引（`i8`/`u8`、`i16`/`u16` 或 `i32`/`u32`）；`result[i] = x[y[i] % VL]`。无 `mask`。
-
-函数原型：
-
-```python
-tla.gather(x: Tensor | VectorSSA, y: VectorSSA, *, mask: MaskSSA | None = None) -> VectorSSA
-```
-
-参数说明：
-
-- `x`（`Tensor | VectorSSA`）：源 tile（UB）或源寄存器。必填。
-- `y`（`VectorSSA`）：索引 vector 寄存器。必填。
-- `mask`（`MaskSSA | None`）：仅 UB→Reg 可选执行掩码；`None` 表示全有效。可选，默认 `None`。
-
-约束说明：
-
-- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
-- 须在 `tla.vec.func()` 内调用。
-- Tensor 源须位于 UB。
-
-调用示例：
-
-```python
-with tla.vec.func(mode="simd"):
-    vals = tla.gather(ub_tile, idx_i32)
-    w_brc = tla.gather(w, idx_u16)  # Reg→Reg
-```
-
----
-
 #### `VectorSSA.reduce`
 
 **源码：** [`catlass.core_api.VectorSSA.reduce`](../../../catlass/core_api.py#L576)
@@ -2092,6 +2235,47 @@ with tla.vec.func(mode="simd"):
     m = tla.create_mask(pattern=tla.mask.ALL, dtype=tla.Float32)
     total = src_reg.reduce(tla.ReductionOp.ADD, mask=m)
     broadcast = tla.full(total, dtype=tla.Float32)
+```
+
+---
+
+#### `gather`
+
+**源码：** [`catlass.core_api.gather`](../../../catlass/core_api.py#L9201)
+
+功能说明：
+
+按索引从 UB tile 或寄存器 gather 元素。
+
+两种形态：
+
+- **UB→Reg**：`x` 为 UB 上的 `Tensor`；`y` 为 `i32` 索引；可选 `mask`。
+- **Reg→Reg**：`x` 为 `VectorSSA`；`y` 为与 `x` 元素位宽相同的整数索引（`i8`/`u8`、`i16`/`u16` 或 `i32`/`u32`）；`result[i] = x[y[i] % VL]`。无 `mask`。
+
+函数原型：
+
+```python
+tla.gather(x: Tensor | VectorSSA, y: VectorSSA, *, mask: MaskSSA | None = None) -> VectorSSA
+```
+
+参数说明：
+
+- `x`（`Tensor | VectorSSA`）：源 tile（UB）或源寄存器。必填。
+- `y`（`VectorSSA`）：索引 vector 寄存器。必填。
+- `mask`（`MaskSSA | None`）：仅 UB→Reg 可选执行掩码；`None` 表示全有效。可选，默认 `None`。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+- 须在 `tla.vec.func()` 内调用。
+- Tensor 源须位于 UB。
+
+调用示例：
+
+```python
+with tla.vec.func(mode="simd"):
+    vals = tla.gather(ub_tile, idx_i32)
+    w_brc = tla.gather(w, idx_u16)  # Reg→Reg
 ```
 
 ---
@@ -2285,7 +2469,7 @@ VectorSSA.to(dst_type: Any, params: CastParams, mask: Any | None = None) -> Any
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.vec.func()` 内调用。
 - `reg_slot` 的 `TWO` 与 `THREE` 指向 pack 的四分之一，仅在位宽变化为 4 倍的整数
-  cast 以及直接的 fp8↔f32 指令上合法。
+  cast 以及直接的 fp8<->f32 指令上合法。
 - 线程级标量 cast 在 `mode="simt"` 下使用 `Numeric.to`；本方法是 vector（AVE）
   形态，始终需要 `CastParams`。
 
@@ -2350,6 +2534,159 @@ with tla.vec.func(mode="simd"):
 
 ---
 
+### 直方图计算
+
+寄存器向量上的直方图累加。
+
+#### `histograms`
+
+**源码：** [`catlass.core_api.histograms`](../../../catlass/core_api.py#L8865)
+
+功能说明：
+
+寄存器驻留的 FREQUENCY 或 ACCUMULATE 直方图。
+
+函数原型：
+
+```python
+tla.histograms(src: VectorSSA, dst: VectorSSA, params: HistogramsParams, mask: MaskSSA | None = None) -> VectorSSA
+```
+
+参数说明：
+
+- `src`（`VectorSSA`）：`i8` / `ui8` 源寄存器（256 lane）。必填。
+- `dst`（`VectorSSA`）：`i16` / `ui16` 累加器（128 lane）。必填。在已有
+  `dst` 值上累加；全新直方图须先传入 `tla.full(0, dtype=...)`。
+- `params`（`HistogramsParams`）：`mode`（BIN0/BIN1）与 `type`
+  （FREQUENCY/ACCUMULATE）。必填。
+- `mask`（`MaskSSA`）：可选 lane mask；默认全真。
+
+约束说明：
+
+- 须在 `@tla.kernel` 与 `tla.vec.func()` 内调用。
+- FREQUENCY：半区间逐值计数。ACCUMULATE：对 u8 做 CDF 再切分；ACCUMULATE 下
+  `BIN1` 并非仅表示 `[128,255]`。
+
+调用示例：
+
+```python
+hist_params = tla.params.HistogramsParams(
+    mode=tla.params.HistogramsBinType.BIN0,
+    type=tla.params.HistogramsType.ACCUMULATE,
+)
+with tla.vec.func(mode="simd"):
+    hist_lo = tla.full(0, dtype=tla.Int16)
+    hist_lo = tla.histograms(keys_u8, hist_lo, hist_params, mask=m)
+```
+
+---
+
+## SIMT 向量计算
+
+逐线程向量执行模式，以 `tla.vec.func(mode="simt", thread_block_dim=...)` 进入。
+函数体是*单线程*程序：各线程通过普通元素访问按索引寻址，无 tile、无向量寄存器、
+无 UB 暂存。
+
+```python
+with tla.vector():
+    with tla.vec.func(mode="simt", thread_block_dim=400):
+        tid, _, _ = tla.arch.thread_idx()
+        nthreads, _, _ = tla.arch.thread_block_dim()
+        for i in tla.range(tid, 400, nthreads):
+            gm_c[i] = gm_a[i] + gm_b[i]
+    tla.pipe_barrier(tla.pipes.ALL)
+```
+
+子节顺序与 [SIMD 向量计算](#simd-向量计算) 对齐：先说明区域能写什么，再说明线程如何搬数与计算。
+线程索引 / block 几何 / `sync_threads` 见 [系统变量访问](#系统变量访问)。
+
+### 区域范围
+
+区域由 `tla.vec.func` 声明（见 [作用域和控制流](#作用域和控制流)），负责几何规则、
+每 block 至多 2048 线程，以及仅允许捕获标量运行期值。片上 scratch 用
+`tla.allocate` 在区域外分配（见 [资源管理](#资源管理)）；区域结束后在
+`tla.vector()` 内做 pipe barrier，如上例。
+
+**SIMT 区域内可写内容**
+
+函数体是逐线程标量代码，可用：
+
+- 对 `gm` / `ub` tensor 的元素访问（`tensor[i]`、`tensor[i] = value`）——见下方
+  [元素访问](#元素访问)。
+- 对 `Numeric` 的标量算术、比较、选择与转换，各自生成逐线程 op——见下方
+  [基础算术](#基础算术-1)、[比较与选择](#比较与选择-1)、[类型转换](#类型转换-1)。
+- `tla.range` 循环与运行期 `if`。
+- `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`，以及 launch 级
+  `tla.arch.block_idx` / `block_num`——见 [系统变量访问](#系统变量访问)。
+
+编译时会拒绝：
+
+- 寄存器向量与 mask 相关——`VectorSSA` / `MaskSSA`、[SIMD 向量计算](#simd-向量计算)
+  下的算术与 mask 接口、`Tensor.load` / `Tensor.store`、`tla.full`、
+  `tla.create_mask`。SIMT 线程没有自己的向量寄存器。
+- `tla.copy`：DMA 需要捕获 tensor 本身，而 SIMT 区域只能捕获标量运行期值。
+  可在进入区域前完成搬数，或让各线程直接按索引访问全局内存。
+- `tla.local_mem_bar`、`tla.pipe_barrier`、`tla.print`。
+- 任意 `tla.vec.func` 内的 `while`；迭代请用 `tla.range`。
+- 嵌套的 `tla.vec.func`。
+
+### 元素访问
+
+线程通过对 `gm` / `ub` tensor 的元素访问搬数：`value = tensor[i]` 与
+`tensor[i] = value`，生成逐线程 `tla.simt_load` / `tla.simt_store`。布局须为
+`RowMajor` 或 `ColumnMajor`，逻辑秩为 1 或 2；除 `Bool` 外不支持亚字节元素类型。
+二者文档见 [数据搬运](#数据搬运) 中的 `tensor[i]` / `tensor[i] = value`。
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_out[tid] = gm_in[tid]
+```
+
+### 基础算术
+
+`Numeric` 上的算术与一元 math 在 SIMT 区域内仍用与 SIMD 相同的写法，但生成逐线程
+op：`+` / `-` / `*` / `/` 变为 `tla.simt_add` / `simt_sub` / `simt_mul` /
+`simt_div`；`tla.exp` / `log` / `abs` / `sqrt` / `max` / `min` 变为对应的
+`simt_` 形态。条目与 [SIMD 向量计算 / 基础算术](#基础算术) 共用，各条约束说明中写明
+SIMT 形态。
+
+`tla.exp` 与 `tla.log` *仅* 在此模式可用：核内标量单元没有它们，SIMT 区域外的
+标量形态会被拒绝。
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    x = gm_in[tid]
+    gm_out[tid] = tla.sqrt(tla.exp(x) + tla.abs(x))
+```
+
+### 比较与选择
+
+比较生成 `tla.simt_cmp`，结果为 `Bool` 而非 `MaskSSA`；对 `Bool` 条件的
+`tla.where` 生成逐线程 `tla.simt_where`。条目与
+[SIMD 向量计算 / 比较与选择](#比较与选择) 共用。
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    a = gm_a[tid]
+    gm_out[tid] = tla.where(a > 0.0, a, -a)
+```
+
+### 类型转换
+
+`Numeric.to` 在 SIMT 区域内生成逐线程 `tla.simt_cast`，区域外走核内标量转换；
+条目见 [标量计算](#标量计算)。寄存器向量的 `tla.cast` 没有逐线程对应物。
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_f32[tid] = gm_f16[tid].to(tla.Float32)
+```
+
+---
+
 ## 同步控制
 
 核内 / 跨核 flag、pipe barrier、mutex 与本地内存屏障。
@@ -2371,8 +2708,8 @@ tla.flag(name: str, src_pipe: PipeLike, dst_pipe: PipeLike, id: int = -1) -> Tla
 参数说明：
 
 - `name`（`str`）：管内 flag 名称。必填。
-- `src_pipe`（`PipeLike`）：源 pipe 标识（例如 `tla.arch.MTE2`）。必填。
-- `dst_pipe`（`PipeLike`）：目的 pipe 标识（例如 `tla.arch.VECTOR`）。必填。
+- `src_pipe`（`PipeLike`）：源 pipe 标识，见 [Pipe](#pipe)。必填。
+- `dst_pipe`（`PipeLike`）：目的 pipe 标识，见 [Pipe](#pipe)。必填。
 - `id`（`int`）：硬件事件 ID。可选，默认 `-1`，表示自动分配。
 
 约束说明：
@@ -2763,77 +3100,384 @@ with tla.vec.func(mode="simd"):
 
 ## 系统变量访问
 
-挂在 `tla.arch` 上的架构属性（布局标签、pipe、block 辅助等）。
+`tla.arch` / `tla.AddressSpace` 上的架构属性（布局标签、pipe、片上地址空间、
+block 辅助等）。
 
-### `arch`
+### 布局标签
 
-**源码：** [`catlass.core_api.arch`](../../../catlass/core_api.py#L9915)
+`tla.arch` 上的布局标签（`_LayoutTag`），供 `make_layout` / `make_tensor` /
+`make_tensor_like` / `copy` 使用，作为 `layoutTag=` / `layout_tag=` 传入。
 
-功能说明：
+**源码：** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10107)
 
-`tla.arch` 下的架构属性组：layout tag、pipe 标识、片上 memory-scope token，
-以及 block / SIMT 辅助接口。
-
-函数原型：
-
-```python
-tla.arch
-```
-
-参数说明：
-
-- 布局标签（`_LayoutTag`，供 `make_layout` / `make_tensor` /
-  `make_tensor_like` 使用）：`RowMajor`、`ColumnMajor`、`zN`、`nZ`、
-  `L0Clayout`、`zNUnAlign`。
-- Pipe 标识（供 `flag` / `pipe_barrier` / `mutex_*` / 跨核同步使用）：
-  `SCALAR`、`VECTOR`、`CUBE`、`MTE1`、`MTE2`、`MTE3`、`FIX`。
-- Memory-scope token（供 `local_mem_bar` 等相关接口使用）：`L1`、`L0A`、`L0B`、`L0C`、`UB`。
-- 可调用接口（返回 `Int32` 或如下注明的三元组）：
-  - `block_idx()`：当前 AI 核在本次 launch 中的 block 索引。
-  - `block_num()`：本次 launch 的 block（AI 核）数量。
-  - `sub_block_idx()`：当前 block 内的 sub-block 索引。
-  - `thread_idx()`：SIMT thread block 内的线程索引 `(x, y, z)`（仅可在
-    `tla.vec.func(mode="simt")` 内使用）。
-  - `thread_block_dim()`：SIMT thread-block 规模 `(x, y, z)`（仅可在
-    `tla.vec.func(mode="simt")` 内使用）。
-  - `sync_threads()`：对当前 SIMT `tla.vec.func` 内线程做 barrier（仅
-    `mode="simt"`）。
-  - `get_capacity_in_bytes(mem_scope)`：返回编译目标上某片上存储空间的字节容量。入参为 `tla.AddressSpace`（`tla.AddressSpace.l1` / `l0a` / `l0b` / `l0c` / `ub`）。返回普通 `int`；host 侧与 kernel 内均可使用（kernel 内会折叠为常量）。
-  - `get_dyn_ub(dtype, byte_alignment=None)`：返回动态 UB 区域的指针——该区域
-    的大小由 launch 决定，而非编译期决定。区域起始于所有 `tla.allocate` 之上，
-    launch 时用 `ub=` 指定实际提供多少字节。每个 kernel 至多声明
-    一个区域：需要多块缓冲时，用指针算术在该区域内切分。按 kernel 实际使用量
-    申请即可——SIMT 场景下未被 kernel 占用的 UB 会成为 Data Cache，申请过多会
-    让 Data Cache 变小从而拖慢访存。
+| Tag | 用途 |
+|---|---|
+| `tla.arch.RowMajor` | ND 行主序 |
+| `tla.arch.ColumnMajor` | ND 列主序 |
+| `tla.arch.VectorLayout` | 一维连续平铺 |
+| `tla.arch.zN` | 分形 zN（Cube A/B 暂存） |
+| `tla.arch.nZ` | 分形 nZ |
+| `tla.arch.L0Clayout` | L0C 累加器布局 |
+| `tla.arch.zNUnAlign` | 无 M 轴分形分块的 zN |
+| `tla.arch.zZMxScale` | L0A 片上 MX scale |
+| `tla.arch.nNMxScale` | L0B 片上 MX scale |
+| `tla.arch.RowMajorMxScaleA` | GM MX scale A，行主序 |
+| `tla.arch.ColMajorMxScaleA` | GM MX scale A，列主序 |
+| `tla.arch.RowMajorMxScaleB` | GM MX scale B，行主序 |
+| `tla.arch.ColMajorMxScaleB` | GM MX scale B，列主序 |
 
 约束说明：
 
-- layout tag / pipe 标识 / memory-scope token 是 `tla.arch` 对象上的普通属性
-  （Python 没有 C++ 式命名空间）；它们本身不会生成计算 op。
-- `block_idx` / `block_num` / `sub_block_idx` / `thread_idx` /
-  `thread_block_dim` / `sync_threads` 为可调用对象，须在 `@tla.kernel`
-  装饰的 kernel 函数体内使用。
-- `thread_idx` / `thread_block_dim` / `sync_threads` 还须嵌套在
-  `tla.vec.func(mode="simt")` 内。
+- token 是 `tla.arch` 上的普通属性，本身不生成 op。
+- 各 API 可能只接受子集，见对应条目的约束说明。
 
 调用示例：
 
 ```python
-# make_layout / make_tensor 用的 layout tag：
 tag = tla.arch.RowMajor
-# flag / barrier / mutex 用的 pipe 标识：
+```
+
+### Pipe
+
+`tla.arch` 上的 pipe 标识，供 `flag` / `pipe_barrier` / `mutex_*` / 跨核同步使用。
+
+**源码：** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10100)
+
+| Pipe | 用途 |
+|---|---|
+| `tla.arch.SCALAR` | Scalar pipe |
+| `tla.arch.VECTOR` | Vector pipe |
+| `tla.arch.CUBE` | Cube pipe |
+| `tla.arch.MTE1` | MTE1 |
+| `tla.arch.MTE2` | MTE2 |
+| `tla.arch.MTE3` | MTE3 |
+| `tla.arch.FIX` | Fixpipe |
+
+约束说明：
+
+- 可用 pipe 取决于所在 `tla.cube()` / `tla.vector()` 区域，见各同步接口约束。
+- 这些接口不通过 `tla.arch` 暴露 `ALL`。
+
+调用示例：
+
+```python
 pipe = tla.arch.MTE2
-# 运行时 block 辅助：
+```
+
+### 片上 AddressSpace
+
+`tla.AddressSpace` 的片上成员，供 `allocate` / `get_capacity_in_bytes` 使用。
+
+**源码：** [`catlass.address_space.AddressSpace`](../../../catlass/address_space.py#L16)
+
+| Address space | 用途 |
+|---|---|
+| `tla.AddressSpace.l1` | L1 |
+| `tla.AddressSpace.l0a` | L0A |
+| `tla.AddressSpace.l0b` | L0B |
+| `tla.AddressSpace.l0c` | L0C |
+| `tla.AddressSpace.ub` | UB |
+| `tla.AddressSpace.biasbuf` | Bias 表（C2），供 `mmad` / `mmad_mx` 的 `bias` |
+
+约束说明：
+
+- `allocate` / `get_capacity_in_bytes` 拒绝 `gm`、`generic`。
+- 用 `GM`→`L1`→`biasbuf` 的 `tla.copy` 搬入 bias，再把 `biasbuf` tile
+  传给 `mmad` / `mmad_mx` 的 `bias=`。
+- `make_ptr` 还可使用 `tla.AddressSpace.gm` / `generic`，见该条目。
+
+调用示例：
+
+```python
+scope = tla.AddressSpace.ub
+```
+
+### 架构辅助
+
+`tla.arch` 上的可调用辅助：block / thread 索引、SIMT `sync_threads`、片上容量与动态 UB。
+
+#### `arch.block_idx`
+
+**源码：** [`catlass.core_api.arch_block_idx`](../../../catlass/core_api.py#L9538)
+
+功能说明：
+
+返回当前 AI 核在本次 launch 中的 block 索引（`Int32`）。
+
+函数原型：
+
+```python
+tla.arch.block_idx() -> Int32
+```
+
+参数说明：
+
+- 无。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+
+调用示例：
+
+```python
 bid = tla.arch.block_idx()
+```
+
+---
+
+#### `arch.sub_block_idx`
+
+**源码：** [`catlass.core_api.arch_sub_block_idx`](../../../catlass/core_api.py#L9561)
+
+功能说明：
+
+返回当前 block 内的 sub-block 索引（`Int32`）。
+
+函数原型：
+
+```python
+tla.arch.sub_block_idx() -> Int32
+```
+
+参数说明：
+
+- 无。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+
+调用示例：
+
+```python
+sid = tla.arch.sub_block_idx()
+```
+
+---
+
+#### `arch.thread_idx`
+
+**源码：** [`catlass.core_api.arch_thread_idx`](../../../catlass/core_api.py#L9584)
+
+功能说明：
+
+返回调用线程在 thread block 内的索引 `(x, y, z)`。
+
+各分量为 `[0, thread_block_dim[i])` 的 `Int32`。未使用的分量解包到 `_`
+不产生开销。线程通常据此划分工作，例如用 `tla.range(tid, n, nthreads)`
+遍历自己负责的元素。
+
+函数原型：
+
+```python
+tla.arch.thread_idx() -> tuple[Int32, Int32, Int32]
+```
+
+参数说明：
+
+- 无。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+- 仅可在 `tla.vec.func(mode="simt")` 内使用。launch 级 AI 核索引见
+  `tla.arch.block_idx()`。
+
+调用示例：
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    gm_out[tid] = gm_in[tid]
+```
+
+---
+
+#### `arch.sync_threads`
+
+**源码：** [`catlass.core_api.arch_sync_threads`](../../../catlass/core_api.py#L9628)
+
+功能说明：
+
+对当前 SIMT `tla.vec.func` 内线程做 barrier。
+
+本 block 内所有线程到达后才继续；此前写入对本 block 其他线程可见。
+只同步同一 block 内线程，不是跨核 barrier，也不是 pipe barrier（后者见
+同步控制中的 flag / `tla.pipe_barrier`）。
+
+典型用法是两阶段归约：各线程把部分结果写到共享 UB，汇合后再由一线程合并。
+
+函数原型：
+
+```python
+tla.arch.sync_threads() -> None
+```
+
+参数说明：
+
+- 无。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+- 仅可在 `tla.vec.func(mode="simt")` 内使用。
+- 本 block 每个线程都必须到达；放在仅部分线程进入的分支会导致挂死。
+
+调用示例：
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=THREADS):
+    tid, _, _ = tla.arch.thread_idx()
+    ub_partial[tid] = my_partial
+    tla.arch.sync_threads()
+    if tid == 0:
+        ...  # thread 0 combines ub_partial[0:THREADS]
+```
+
+---
+
+#### `arch.block_num`
+
+**源码：** [`catlass.core_api.arch_block_num`](../../../catlass/core_api.py#L9672)
+
+功能说明：
+
+返回本次 launch 的 block（AI 核）数量（`Int32`）。
+
+SIMT 区域内的每 block 线程规模见 `tla.arch.thread_block_dim`。
+
+函数原型：
+
+```python
+tla.arch.block_num() -> Int32
+```
+
+参数说明：
+
+- 无。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+
+调用示例：
+
+```python
 nblocks = tla.arch.block_num()
-# 片上存储容量（host 侧或 kernel 内均可）：
+```
+
+---
+
+#### `arch.thread_block_dim`
+
+**源码：** [`catlass.core_api.arch_thread_block_dim`](../../../catlass/core_api.py#L9698)
+
+功能说明：
+
+返回当前 thread block 的 `(x, y, z)` 规模。
+
+即 `tla.vec.func(thread_block_dim=...)` 声明的值，读回为 `Int32`，供索引
+运算（常见作 `tla.range` 的步长）。这是单 block 的线程几何，不是 grid；
+launch 的 block 数见 `tla.arch.block_num()`。
+
+函数原型：
+
+```python
+tla.arch.thread_block_dim() -> tuple[Int32, Int32, Int32]
+```
+
+参数说明：
+
+- 无。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+- 仅可在 `tla.vec.func(mode="simt")` 内使用。
+
+调用示例：
+
+```python
+with tla.vec.func(mode="simt", thread_block_dim=256):
+    tid, _, _ = tla.arch.thread_idx()
+    nthreads, _, _ = tla.arch.thread_block_dim()
+    for i in tla.range(tid, N, nthreads):
+        gm_out[i] = gm_in[i]
+```
+
+---
+
+#### `arch.get_capacity_in_bytes`
+
+**源码：** [`catlass.core_api.arch_get_capacity_in_bytes`](../../../catlass/core_api.py#L9745)
+
+功能说明：
+
+返回编译目标上某片上存储空间的字节容量。
+
+函数原型：
+
+```python
+tla.arch.get_capacity_in_bytes(mem_scope: AddressSpace) -> int
+```
+
+参数说明：
+
+- `mem_scope`（`AddressSpace`）：要查询的片上空间，见
+  [片上 AddressSpace](#片上-addressspace)。必填。
+
+约束说明：
+
+- 仅接受片上 `AddressSpace`；拒绝 `gm` / `generic`。
+- host 侧常量查询：host 与 `@tla.kernel` 内均可调用；kernel 内在 trace
+  时折叠为常量（不生成 runtime op）。
+
+调用示例：
+
+```python
 l1_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.l1)
 ub_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.ub)
-# 动态 UB：大小在 launch 时确定，基址为编译期常量。
+```
+
+---
+
+#### `arch.get_dyn_ub`
+
+**源码：** [`catlass.core_api.arch_get_dyn_ub`](../../../catlass/core_api.py#L9856)
+
+功能说明：
+
+返回动态 UB 区域指针（长度由 launch 的 `ub=` 指定）。
+
+函数原型：
+
+```python
+tla.arch.get_dyn_ub(dtype: type[Numeric], byte_alignment: int | None = None) -> Pointer
+```
+
+参数说明：
+
+- `dtype`（`type[Numeric]`）：指针指向的元素类型。必填。
+- `byte_alignment`（`int | None`）：指针字节对齐，写法与 `tla.allocate` 相同。
+  可选；默认按元素类型宽度。
+
+约束说明：
+
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+- 仅 UB；区域位于静态 `tla.allocate` 之上。
+- 每个 kernel 至多一个区域；子缓冲用指针算术切分。
+- 按实际用量申请（未占用的 UB 可变为 Data Cache）。
+- kernel 内不做越界检查。
+
+调用示例：
+
+```python
 base = tla.arch.get_dyn_ub(tla.Float32, byte_alignment=256)
-lo = tla.make_tensor_like(base, gm_a, tla.arch.RowMajor)
-hi = tla.make_tensor_like(base + HALF, gm_b, tla.arch.RowMajor)
-# host 侧：artifact(..., ub=64 * 1024)
+lo = tla.make_tensor(base, layout)
+hi = tla.make_tensor(base + HALF, layout)
+...
+artifact(out, block_num=1, ub=64 * 1024)
 ```
 
 ---
@@ -2860,7 +3504,8 @@ tla.allocate(shape: ShapeLike, dtype: type[Numeric], mem_scope: AddressSpace, by
 
 - `shape`（`ShapeLike`）：分配块的形状。必填。
 - `dtype`（`type[Numeric]`）：元素数值类型。必填。
-- `mem_scope`（`AddressSpace`）：地址空间（如 L1 / UB）。必填。
+- `mem_scope`（`AddressSpace`）：片上地址空间，见
+  [片上 AddressSpace](#片上-addressspace)。必填。
 - `byte_alignment`（`int`）：字节对齐要求。必填。
 
 约束说明：
@@ -3069,7 +3714,7 @@ with tla.vector():
 
 功能说明：
 
-进入寄存器 vector / mask 计算用的 vector 函数区域（`tla.vec.func`）。
+进入 vector 函数区域（`tla.vec.func`），模式为 `simd` 或 `simt`。
 
 函数原型：
 
@@ -3079,14 +3724,24 @@ tla.vec.func(*, mode: str = 'simd', thread_block_dim: int | tuple[int, int, int]
 
 参数说明：
 
-- `mode`（`str`）：执行模式；`simd`（默认）或 `simt`。可选，默认 `"simd"`。
-- `thread_block_dim`（`int | tuple[int, int, int] | list[int] | None`）：SIMT thread-block 形状；仅在 `mode="simt"` 时有效。可选，默认 `None`。
+- `mode`（`str`）：`simd`（默认，寄存器 vector / mask）或 `simt`（逐线程）。
+  可选，默认 `"simd"`。
+- `thread_block_dim`（`int | tuple[int, int, int] | list[int] | None`）：SIMT
+  thread-block 形状；仅在 `mode="simt"` 时有效。传入 `int n` 表示 `(n, 1, 1)`。
+  可选，默认 `None`。
 
 约束说明：
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须嵌套在 `tla.vector()` 内。
 - 寄存器 vector / mask API 与 `local_mem_bar` 须在此区域内调用。
+- `mode` 须为 `"simd"` 或 `"simt"`。
+- `thread_block_dim` 在 `mode="simt"` 时必填，在 `mode="simd"` 时禁止。
+- `thread_block_dim` 各分量须为正，乘积不超过 2048。
+- SIMT 区域只能从 kernel 体捕获标量运行期值。
+- SIMT：片上 scratch 用 `tla.allocate` 在区域外分配；用
+  `tla.arch.thread_idx` / `thread_block_dim` 索引，用 `tla.arch.sync_threads`
+  同步。
 
 调用示例：
 
@@ -3098,65 +3753,62 @@ with tla.vector():
 
 ---
 
-## Tile 数据填充
+## 实验性接口
 
-对 L1 zN/nZ tensor 整 tile 填充（`Tensor.fill`）。
+`tla.experimental` 下的接口可能变更或移除，不保证向后兼容。仍使用普通的
+`tla.kernel` / `tla.jit` 装饰器；该命名空间不切换另一套编译器。
 
-### `Tensor.fill`
+### `experimental.img2col`
 
-**源码：** [`catlass.tla.tensor._Tensor.fill`](../../../catlass/tla/tensor.py#L1254)
+**源码：** [`catlass.tla.experimental.img2col`](../../../catlass/tla/experimental/__init__.py#L51)
+
 功能说明：
 
-用给定值填充整个 L1 zN/nZ tile。填充区域即该 tile 自身：在逻辑二维
-（M, N）轴上覆盖 ``[self.coord, self.coord + self.origin_shape)``。
-沿 layout 的 C0 轴（32 字节）会先把起点坐标向上对齐到 C0 边界再填充，
-因此只写入 tile 内完整的 C0 单元；起点处不完整的部分保持不动（残差需
-另途覆盖——MX pad 流程中通常由 GM→L1 copy 带入）。
-
-以具体 fp8（一个 C0 单元 = 32 字节）zN 为例：取一个（例如经
-`tla.get_tile` 得到的）tile，坐标 ``(0, 40)``，
-``origin_shape = (16, 56)``：
-
-```text
-    N   0               32  40          64              96
-                                        ^   C0 边界：起点 40 向上对齐到 64
-    M
-    0   - - - - - - - - - - + + + + + + * * * * * * * *
-    1   - - - - - - - - - - + + + + + + * * * * * * * *
-    :   （第 2 .. 14 行相同）
-   15   - - - - - - - - - - + + + + + + * * * * * * * *
-```
-
-图例：`*` = 设备写入：完整 C0 单元 ``[64, 96)``（tile 末端
-40 + 56 = 96 已 C0 对齐）。`+` = 落在 tile 内但未写入：列 40..63 是不
-完整的 C0 单元。`-` = tile 外。此处 M 轴无 C0 对齐：对 zN 而言 C0 轴是 N。
+将 L1 特征图 tile 以 img2col 展开加载到 L0A，供卷积使用。
 
 函数原型：
 
 ```python
-tile.fill(value: int | float) -> None
+tla.experimental.img2col(dst: Tensor, src: Tensor, params: Img2colParams) -> None
 ```
 
 参数说明：
 
-- `value`（`int | float`）：trace 期标量；当前仅支持 ``0``
-  （设备写入全零比特模式）。
+- `dst`（`Tensor`）：L0A tile，标签 `zN`，形状 `(M, K)`。形状给出加载范围，
+  coord 给出起点，因此同一 L1 tile 上瞄准不同窗口即可对隐式 GEMM 的 M/K 做分块，
+  不增加额外 L1 流量。必填。
+- `src`（`Tensor`）：L1 特征图 tile，标签 `zNUnAlign`，NC1HWC0 嵌套为
+  `((h*w, 1), (C0, c1))`。必填。
+- `params`（`Img2colParams`）：卷积几何。必填。
+  - `fmap_hw`（`tuple`）：特征图 `(H, W)`。必填。
+  - `filter_hw`（`tuple[int, int]`）：卷积核 `(kH, kW)`；须为编译期整数。必填。
+  - `stride_hw`（`tuple`）：步长 `(sH, sW)`。默认 `(1, 1)`。
+  - `dilation_hw`（`tuple`）：膨胀 `(dH, dW)`。默认 `(1, 1)`。
+  - `pad`（`tuple`）：填充 `(left, right, top, bottom)`。默认 `(0, 0, 0, 0)`。
+  - `pad_value`（`int`）：填充值。默认 `0`。
 
 约束说明：
 
-- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用，并嵌套在 `tla.cube()` 内。
-- 目的地须为带 ``zN`` 或 ``nZ`` 标签的 L1 tensor。
-- 支持的元素类型：打包的 fp4/fp8 操作数格式
-  （``f4e2m1``/``f4e1m2``/``f8e4m3fn``/``f8e5m2``），且仅支持填零。
-  更宽类型、8 位整数与 e8m0 scale tile 不支持。
+- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
+- 须在 `tla.cube()` 内调用。
+- 元素类型须为 `f32` / `f16` / `bf16`（仅 2、4 字节；无 int8/fp8 路径）。
+- `src` 与 `dst` 须同元素类型。
+- 源通道来自 NC1HWC0 源形状，与目的 K 窗口无关。源 C0/C1 与目的 K 范围及 K
+  坐标须为静态；`filter_hw` 须为编译期整数。
+- 目的 K 范围与起始坐标须覆盖完整 C1 切片（`kh * kw * C0` 个元素），且落在源
+  完整 K 轴内。源通道与目的 K 范围须在 1..65535；目的 K 坐标须在 0..65535。
+- `fmap_hw` 各分量须在 1..65535，stride / dilation 在 1..255，pad 各分量在
+  0..255。编译期常量超范围会被拒绝；运行期取值满足上述范围为调用方前置条件，
+  违反则行为未定义。
+- 卷积核尺寸为编译期整数，范围 1..511。
 
 调用示例：
 
 ```python
-# 将 L1 A tile 的 K-pad 尾部清零：先切 tile，再 fill。
-pad = tla.get_tile(t_l1a, tla.make_coord(0, k_valid),
-                   tla.make_shape(m, k_l0 - k_valid))
-pad.fill(0)
+with tla.cube():
+    # l1_fmap 为 NC1HWC0；l1_filter 为 (K, N) 权重矩阵。
+    tla.experimental.img2col(l0_a, l1_fmap, tla.experimental.Img2colParams(
+        fmap_hw=(hi, wi), filter_hw=(3, 3), pad=(1, 1, 1, 1)))
+    tla.copy(l0_b, l1_filter)
+    tla.mmad(l0_c, l0_a, l0_b, init_c=True)
 ```
-
----

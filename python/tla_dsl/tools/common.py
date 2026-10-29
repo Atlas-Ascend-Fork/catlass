@@ -202,9 +202,10 @@ def docstring_tail(doc: str) -> str:
     """Return the markdown an op appends after its last fenced code block.
 
     `_modify_doc_mmad` / `_modify_doc_copy`, which the reference generator runs
-    through `__modify_doc__`, append tables at the end of the docstring -- after
-    the Example block. They are standalone markdown, so they are rendered
-    outside the example with their own indentation dropped.
+    through `__modify_doc__`, append supported-route / dtype tables at the end
+    of the docstring (after the Example fence in the source text). The renderer
+    places that tail between Constraints and Example so the tables read as
+    path/constraint documentation rather than an afterthought.
     """
     text = dedent(doc)
     end = text.rfind("```")
@@ -299,13 +300,20 @@ def build_doc_tree(
         children = tuple(build_node(prefix + t) for t in child_titles)
         return DocNode(
             title=title,
-            apis=() if children else tuple(leaf_apis.get(path, ())),
+            # Keep APIs whose Directory is exactly this path even when nested
+            # subsections exist (e.g. System Variable Access + Layout Tags).
+            apis=tuple(leaf_apis.get(path, ())),
             children=children,
             intro=directory_intros.get(path, ""),
         )
 
     top = sorted({p for p in path_set if " / " not in p}, key=order_key)
     return DocNode(title=ROOT_TITLE, children=tuple(build_node(p) for p in top))
+
+
+def _callable_display_name(name: str) -> bool:
+    """True if ``name`` is a dotted identifier path (``foo``, ``Numeric.to``)."""
+    return bool(name) and all(part.isidentifier() for part in name.split("."))
 
 
 def format_signature(entry: APIEntry, *, default_source_path: Path) -> str:
@@ -315,6 +323,12 @@ def format_signature(entry: APIEntry, *, default_source_path: Path) -> str:
         return f"tla.{entry.name}"
     if entry.is_class:
         return f"class tla.{entry.name}"
+    # Expression-form display names (e.g. ``~Integer``, ``tensor[i]``): as-is,
+    # no ``()``. Assignment spellings (``tensor[i] = value``) omit ``->``.
+    if not _callable_display_name(entry.name):
+        if entry.returns and "=" not in entry.name:
+            return f"{entry.name} -> {entry.returns}"
+        return entry.name
 
     parts: list[str] = []
     saw_kwonly = False
@@ -358,8 +372,10 @@ def format_signature(entry: APIEntry, *, default_source_path: Path) -> str:
 def source_markdown(
     entry: APIEntry, docs_dir: Path, *, default_source_path: Path
 ) -> str:
-    if entry.is_concept:
-        return "**Source:** Host language boundary (not a callable API)"
+    # Concept / catalog entries: link to the declaration when we have a line;
+    # otherwise omit Source (no "not a callable API" placeholder).
+    if entry.is_concept and entry.source_line is None:
+        return ""
     if entry.source_line is None:
         if entry.is_env:
             return f"**Source:** environment variable `{entry.name}`"
@@ -396,16 +412,18 @@ def render_entry(
                 f"`{entry.name}` missing {label}:; please update {entry.qualified_name}"
             )
     h = "#" * heading_level
-    parts = [
-        f"{h} `{entry.name}`",
-        "",
-        source_markdown(entry, docs_dir, default_source_path=default_source_path),
-        "",
-        "Description:",
-        "",
-        sections["Description"],
-        "",
-    ]
+    parts = [f"{h} `{entry.name}`", ""]
+    source = source_markdown(entry, docs_dir, default_source_path=default_source_path)
+    if source:
+        parts.extend([source, ""])
+    parts.extend(
+        [
+            "Description:",
+            "",
+            sections["Description"],
+            "",
+        ]
+    )
     if not entry.is_concept:
         parts.extend(
             [
@@ -427,18 +445,23 @@ def render_entry(
             "",
             sections["Constraints"],
             "",
+        ]
+    )
+    tail = docstring_tail(entry.docstring)
+    if tail:
+        parts.extend([tail, ""])
+    parts.extend(
+        [
             "Example:",
             "",
             "```python",
             sections["Example"],
             "```",
             "",
+            "---",
+            "",
         ]
     )
-    tail = docstring_tail(entry.docstring)
-    if tail:
-        parts.extend([tail, ""])
-    parts.extend(["---", ""])
     return "\n".join(parts)
 
 
@@ -477,16 +500,9 @@ def render_doc_node(
     parts = [f"{'#' * heading_level} {numbered_title(section_number, node.title)}", ""]
     if node.intro:
         parts.extend([node.intro, ""])
-    for name in node.apis:
-        if name in entries:
-            parts.append(
-                render_entry(
-                    entries[name],
-                    heading_level + 1,
-                    docs_dir,
-                    default_source_path=default_source_path,
-                )
-            )
+    # Nested catalog subsections first, then APIs whose Directory is exactly
+    # this path (e.g. System Variable Access: Layout Tags / Pipes / …, then
+    # `arch.block_idx` / `arch.get_dyn_ub`).
     for idx, child in enumerate(node.children, start=1):
         parts.append(
             render_doc_node(
@@ -498,6 +514,16 @@ def render_doc_node(
                 default_source_path=default_source_path,
             )
         )
+    for name in node.apis:
+        if name in entries:
+            parts.append(
+                render_entry(
+                    entries[name],
+                    heading_level + 1,
+                    docs_dir,
+                    default_source_path=default_source_path,
+                )
+            )
     return "\n".join(parts).rstrip() + "\n"
 
 

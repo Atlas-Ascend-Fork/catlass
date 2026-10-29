@@ -541,33 +541,63 @@ class _Tensor(TensorABC):
             Load this UB tensor tile into vector or mask SSA (`tile.load`).
 
             Parameters:
-            - `params` (`LoadParams | None`): Load mode. `None` / `NormalLoadParams` /
-              `UnalignLoadParams` / `BlockLoadParams` → `VectorSSA` (or a pair for
-              `DIST_DINTLV_B32`); `MaskLoadParams` → `MaskSSA`.
-              `NormalLoadParams.load_dist` selects a distribution mode:
-              `norm` (default), `brc_b32` (broadcast one b32 element to all lanes),
-              `dintlv_b32` (f32 deinterleave, dual results), `us_b8` / `us_b16`
-              (2x up-sample), `brc_b16` (broadcast one b16 element),
-              `unpack_b16` (zero-extend b16 to double width),
-              `e2b_b16` / `e2b_b32` (element-to-DataBlock broadcast),
-              `blk` (one 32-byte DataBlock broadcast to all 8).
-              `BlockLoadParams` is a stride-based `DataBlock` gather: one load gathers
-              8 blocks whose heads are `block_stride` blocks (32B `DataBlock` units)
-              apart; `block_stride == 0` repeats the first block into all
-              8 slots; `repeat_stride` is the compile-time address
-              pre-offset in 32B blocks.
-              `MaskLoadParams.load_dist` may be `DIST_NORM` (default bit-packed
-              mask load), `DIST_US` (bit upsample), or `DIST_DS` (bit
-              downsample). Optional, default `None`.
+            - `params` (`LoadParams | None`): Load mode. Optional, default `None`.
+              - `None` / `NormalLoadParams` / `UnalignLoadParams` /
+                `BlockLoadParams` → `VectorSSA` (or a pair for
+                `DIST_DINTLV_B32`).
+              - `MaskLoadParams` → `MaskSSA`.
+              - `NormalLoadParams`:
+                - `load_dist` (`str`): `tla.params.LoadDist` token. Default
+                  `DIST_NORM`.
+
+                  | Value | Meaning |
+                  |---|---|
+                  | `DIST_NORM` | Default contiguous load |
+                  | `DIST_BRC_B32` | Broadcast one b32 element to all lanes |
+                  | `DIST_DINTLV_B32` | f32 deinterleave; dual results |
+                  | `DIST_US_B8` / `DIST_US_B16` | 2x up-sample |
+                  | `DIST_BRC_B16` | Broadcast one b16 element |
+                  | `DIST_UNPACK_B16` | Zero-extend b16 to double width |
+                  | `DIST_E2B_B16` / `DIST_E2B_B32` | Element-to-DataBlock broadcast |
+                  | `DIST_BLK` | One 32-byte DataBlock broadcast to all 8 |
+
+                - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+                  `POST_MODE_UPDATE`.
+                - `post_update_stride` (`Any`): Element stride when
+                  `post_mode=POST_MODE_UPDATE`; `0` advances by `tile_extent`
+                  (`origin_shape`). Default `0`.
+              - `UnalignLoadParams`:
+                - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+                  `POST_MODE_UPDATE`.
+                - `post_update_stride` (`Any`): Must stay `0` (window advances
+                  by `origin_shape` only). Default `0`.
+              - `BlockLoadParams`:
+                - `block_stride` (`int`): Heads apart in 32B DataBlocks; `0`
+                  repeats the first block into all 8 slots. Default `0`.
+                - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+                  `POST_MODE_UPDATE`.
+                - `repeat_stride` (`Any`): Compile-time pre-offset in 32B
+                  blocks; with `POST_MODE_UPDATE`, the post-update stride.
+                  Default `0`.
+              - `MaskLoadParams`:
+                - `load_dist` (`str`): `tla.params.MaskLoadDist` token.
+                  Default `DIST_NORM`.
+
+                  | Value | Meaning |
+                  |---|---|
+                  | `DIST_NORM` | Bit-packed mask load |
+                  | `DIST_US` | Bit upsample |
+                  | `DIST_DS` | Bit downsample |
 
             Constraints:
             - Must be called inside a `@tla.kernel`-decorated kernel function.
             - Must be called inside `tla.vec.func()`; source tile must be UB.
             - Mask load ``DIST_NORM`` requires a 1/2/4-byte scalar UB element type.
-            - Distribution modes fix the element width: `us_b8` needs i8/u8;
-              `brc_b16` / `us_b16` / `unpack_b16` / `e2b_b16` need 2-byte
-              (f16/bf16/i16/u16); `e2b_b32` needs 4-byte (f32/i32/u32);
-              `dintlv_b32` needs f32; `blk` works for any element size.
+            - Distribution modes fix the element width: `DIST_US_B8` needs
+              i8/u8; `DIST_BRC_B16` / `DIST_US_B16` / `DIST_UNPACK_B16` /
+              `DIST_E2B_B16` need 2-byte (f16/bf16/i16/u16); `DIST_E2B_B32`
+              needs 4-byte (f32/i32/u32); `DIST_DINTLV_B32` needs f32;
+              `DIST_BLK` works for any element size.
             - `BlockLoadParams` requires a 2/4-byte element type
               (f32/f16/bf16/i32/u32/i16/u16); `block_stride` and
               `repeat_stride` must fit in [0, 65535].
@@ -580,17 +610,17 @@ class _Tensor(TensorABC):
               base + offset×sizeof(T)): ``DIST_NORM`` → ``VL/8``;
               ``DIST_US`` → ``VL/16``; ``DIST_DS`` → ``min(32, VL/4)``.
               On VL=256 this is 32B / 16B / 32B.
-            - `post_mode=update` on `NormalLoadParams`: `post_update_stride=0`
-              (default) advances by `tile_extent` (`origin_shape`); an explicit
-              stride keeps fill / stride-advance decoupling.
-              `UnalignLoadParams` must leave `post_update_stride` at 0 (emit
-              always uses `origin_shape`; dense only). Rank-1 contiguous tile,
-              `DIST_NORM`, element type in `{f16, bf16, f32}`; returns
-              `(vector, next_tile)`. Inside `tla.vec.func`, assign `next_tile`
-              back with `tla.range` (`while` is not supported nested in
-              `vec.func`). The window must already be an origin tile
-              (`coord=0`); cut it with `tile_view` (or equivalent). UPDATE
-              never automatically folds non-zero coordinates.
+            - `POST_MODE_UPDATE` requires a rank-1 contiguous tile,
+              `DIST_NORM`, and element type in `{f16, bf16, f32}`. Returns
+              `(vector, next_tile)`. Inside `tla.vec.func`, assign
+              `next_tile` back with `tla.range` (`while` is not supported
+              nested in `vec.func`). The window must already be an origin
+              tile (`coord=0`); cut it with `tile_view` (or equivalent).
+              UPDATE never automatically folds non-zero coordinates.
+              `NormalLoadParams`: `post_update_stride=0` (default) advances
+              by `tile_extent` (`origin_shape`); an explicit stride keeps
+              fill / stride-advance decoupling. `UnalignLoadParams` must
+              leave `post_update_stride` at `0` (dense `origin_shape` only).
 
             Example:
             ```python
@@ -999,17 +1029,46 @@ class _Tensor(TensorABC):
             Store vector or mask SSA into this UB tensor tile (`tile.store`).
 
             Parameters:
-            - `value` (`VectorSSA | MaskSSA`): `VectorSSA` or `MaskSSA` to store. Required.
-            - `params` (`StoreParams | None`): Store mode. `None` / `NormalStoreParams` /
-              `UnalignStoreParams` / `BlockStoreParams` → vector store;
-              `MaskStoreParams` → mask store. `NormalStoreParams.store_dist`
-              additionally selects the first-element modes `first_element_b8` /
-              `first_element_b16` / `first_element_b32`: write only lane 0 of
-              the source register to the tile base, with the suffix fixing the
-              stored element width in bytes. With `post_mode=update`, returns
-              the next window. Optional, default `None`.
+            - `value` (`VectorSSA | MaskSSA`): `VectorSSA` or `MaskSSA` to store.
+              Required.
+            - `params` (`StoreParams | None`): Store mode. Optional, default
+              `None`.
+              - `None` / `NormalStoreParams` / `UnalignStoreParams` /
+                `BlockStoreParams` → vector store.
+              - `MaskStoreParams` → mask store.
+              - `NormalStoreParams`:
+                - `store_dist` (`str`): `tla.params.StoreDist` token. Default
+                  `DIST_NORM`.
+
+                  | Value | Meaning |
+                  |---|---|
+                  | `DIST_NORM` | Default contiguous store |
+                  | `DIST_FIRST_ELEMENT_B8` | Write only lane 0 (1-byte) |
+                  | `DIST_FIRST_ELEMENT_B16` | Write only lane 0 (2-byte) |
+                  | `DIST_FIRST_ELEMENT_B32` | Write only lane 0 (4-byte) |
+
+                - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+                  `POST_MODE_UPDATE`.
+                - `post_update_stride` (`Any`): Element stride when
+                  `post_mode=POST_MODE_UPDATE`; `0` advances by `tile_extent`
+                  (`origin_shape`). Default `0`.
+              - `UnalignStoreParams`:
+                - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+                  `POST_MODE_UPDATE`.
+                - `post_update_stride` (`Any`): Must stay `0`. Default `0`.
+              - `BlockStoreParams`:
+                - `block_stride` (`int`): Heads apart in 32B DataBlocks.
+                  Default `0`.
+                - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
+                  `POST_MODE_UPDATE`.
+                - `repeat_stride` (`Any`): Used with `POST_MODE_UPDATE` as the
+                  post-update stride in 32B blocks. Default `0`.
+              - `MaskStoreParams`:
+                - `store_dist` (`str`): `tla.params.MaskStoreDist` token.
+                  Default `DIST_NORM`.
             - `mask` (`MaskSSA | None`): Optional predicate for vector stores;
-              rejected by `MaskStoreParams` and first-element modes. Default `None`.
+              rejected by `MaskStoreParams` and first-element modes. Default
+              `None`.
 
             Constraints:
             - Must be called inside a `@tla.kernel`-decorated kernel function.
@@ -1017,13 +1076,14 @@ class _Tensor(TensorABC):
             - First-element modes require the stored value and the dest tile to
               use the suffix-matching element width (b8 → 1-byte, b16 → 2-byte,
               b32 → 4-byte); passing a predicate mask raises an error.
-            - `post_mode=update` on `NormalStoreParams`: default
-              `post_update_stride=0` advances by `tile_extent` (`origin_shape`);
-              explicit stride is decoupled. `UnalignStoreParams` must leave
-              stride at 0 (emit uses `origin_shape`). Rank-1 contiguous tile,
-              `DIST_NORM`, element type in `{f16, bf16, f32}`; returns the next
-              tile. Inside `tla.vec.func`, assign it back with `tla.range`.
-              Same origin window (`coord=0`) contract as UPDATE `load`.
+            - `POST_MODE_UPDATE` requires a rank-1 contiguous tile,
+              `DIST_NORM`, and element type in `{f16, bf16, f32}`; returns the
+              next tile. Inside `tla.vec.func`, assign it back with
+              `tla.range`. Same origin window (`coord=0`) contract as UPDATE
+              `load`. `NormalStoreParams`: default `post_update_stride=0`
+              advances by `tile_extent` (`origin_shape`); an explicit stride is
+              decoupled. `UnalignStoreParams` must leave stride at `0`
+              (dense `origin_shape` only).
 
             Example:
             ```python
@@ -1257,36 +1317,9 @@ class _Tensor(TensorABC):
         *,
         loc: mlir_ir.Location | None = None,
     ) -> None:
-        """Directory: Data fill
+        """Directory: Data Movement
         Description:
-            Fill this whole L1 zN/nZ tile with a value. The
-            fill region is the tile itself: ``[self.coord, self.coord +
-            self.origin_shape)`` over the tile's logical 2-D (M, N) axes.
-            Along the layout's C0 axis (32 bytes) the start coordinate is
-            aligned up to the C0 boundary before filling, so only whole
-            C0 units inside the tile are written and partial elements at
-            the start are left untouched (cover the residue another way
-            -- in the MX pad flow the GM->L1 copy brings it).
-
-            For a concrete fp8 (one C0 unit = 32 bytes) zN example, take
-            a tile (e.g. from `tla.get_tile`) at coord ``(0, 40)`` with
-            ``origin_shape = (16, 56)``:
-
-            ```text
-                N   0               32  40          64              96
-                                                    ^   C0 boundary: start 40 aligns up to 64
-                M
-                0   - - - - - - - - - - + + + + + + * * * * * * * *
-                1   - - - - - - - - - - + + + + + + * * * * * * * *
-                :   (rows 2 .. 14 identical)
-               15   - - - - - - - - - - + + + + + + * * * * * * * *
-            ```
-
-            Legend: `*` = written by the device: the whole C0 units
-            ``[64, 96)`` (the tile end 40 + 56 = 96 is already C0-aligned).
-            `+` = inside the tile but not written: cols 40..63 are a
-            partial C0 unit. `-` = outside the tile. The M axis has no
-            C0 alignment here: for zN the C0 axis is N.
+            Fill this L1 zN/nZ tile with a constant (currently only zero).
 
             Parameters:
             - `value` (`int | float`): Trace-time scalar; only ``0`` is
@@ -1296,6 +1329,9 @@ class _Tensor(TensorABC):
             - Must be called inside a `@tla.kernel`-decorated kernel function and
               nested inside `tla.cube()`.
             - Destination must be an L1 tensor tagged ``zN`` or ``nZ``.
+            - Fill covers ``[coord, coord + origin_shape)``; the C0 axis start
+              is aligned up to a 32-byte boundary, so a partial leading C0 unit
+              is left untouched.
             - Supported element types: the packed fp4/fp8 operand formats
               (``f4e2m1``/``f4e1m2``/``f8e4m3fn``/``f8e5m2``), zero only.
               Wider types, 8-bit integers and e8m0 scale tiles are not
@@ -1372,15 +1408,7 @@ class _Tensor(TensorABC):
     ) -> Any:
         """Directory: Data Movement
         Description:
-            Load one element of a tensor as a scalar (`tensor[i]` /
-            `tensor[i, j]`).
-
-            This is scalar, not vector, access: it reads a single element into a
-            `Numeric` rather than filling a register. Inside
-            `tla.vec.func(mode="simt")` it is the per-thread `tla.simt_load`,
-            lowered against the outlined vector function's buffer parameter;
-            everywhere else it is `tla.scalar_load`. That makes it the usual way
-            a SIMT thread reads its own data -- see **SIMT Vector Compute**.
+            Load one tensor element as a scalar (`tensor[i]` / `tensor[i, j]`).
 
             Parameters:
             - `crd` (`int | Int32 | tuple`): Element coordinate. One index per
@@ -1492,14 +1520,7 @@ class _Tensor(TensorABC):
     ) -> None:
         """Directory: Data Movement
         Description:
-            Store a scalar into one element of a tensor (`tensor[i] = value`).
-
-            The counterpart of `Tensor.__getitem__`. Inside
-            `tla.vec.func(mode="simt")` it is the per-thread `tla.simt_store`,
-            lowered against the outlined vector function's buffer parameter;
-            everywhere else it is `tla.scalar_store`. That makes it the usual way
-            a SIMT thread writes its own results -- see
-            **SIMT Vector Compute**.
+            Store a scalar into one tensor element (`tensor[i] = value`).
 
             Parameters:
             - `crd` (`int | Int32 | tuple`): Element coordinate. One index per

@@ -643,31 +643,6 @@ class VectorSSA(_RegisterSSA):
         Description:
             Convert a register-resident vector to another element type.
 
-            The lowering supports the signed integers `tla.Int8` .. `tla.Int64`,
-            the unsigned integers `tla.UInt8` .. `tla.UInt32` on the reachable
-            routes in `_CAST_UNSIGNED_ROUTES`, the floats `tla.Float16` /
-            `tla.BFloat16` / `tla.Float32`, and the two OCP fp8 formats
-            `tla.Float8E4M3FN` / `tla.Float8E5M2`. `tla.Bool` (i1),
-            `tla.Float64` and `tla.Float8E8M0` are rejected.
-
-            `tla.Float16` to `tla.BFloat16` uses one direct instruction and
-            preserves all lanes. All round modes are supported. `sat_mode`
-            must be `UNKNOWN`; `NOSAT` and `SAT` are rejected because the
-            instruction has no saturation operand. `reg_slot` `ZERO` and `ONE`
-            have the same effect for this equal-width conversion.
-
-            An fp8 operand converts to and from `tla.Float32`, `tla.Float16` and
-            `tla.BFloat16`. Only the f32 pair is a single instruction: the f16
-            and bf16 pairs are expanded by the lowering into two casts through
-            f32, exact on the widening leg and rounding once on the narrowing
-            one. `f8e5m2 -> f16` instead uses an exact integer widen and a
-            shift, because the two formats share a sign and exponent layout; it
-            selects the same elements as the composed path, in two instructions
-            rather than five. There is no
-            fp8-to-fp8 re-encode -- the exponent ranges differ, which
-            makes it a requantisation rather than a cast -- and no fp8-to-integer
-            path.
-
             Parameters:
             - `dst_type` (`type[Numeric]`): Element type to convert to. Required.
             - `params` (`CastParams`): Rounding, saturation and register slot. Required.
@@ -679,8 +654,11 @@ class VectorSSA(_RegisterSSA):
             Constraints:
             - Must be called inside a `@tla.kernel`-decorated kernel function.
             - Must be called inside `tla.vec.func()`.
+            - Supported targets: signed i8..i64, unsigned u8..u32 on reachable
+              routes, f16/bf16/f32, f8e4m3fn/f8e5m2. Not supported: bool, f64,
+              f8e8m0, fp8-to-fp8, fp8-to-integer.
             - `reg_slot` `TWO` and `THREE` name a pack quarter. They are valid
-              on a 4x integer cast and the direct fp8<->f32 instruction.
+              on a 4x integer cast and the direct fp8<->f32 path.
 
             Example:
             ```python
@@ -4209,8 +4187,9 @@ def make_layout(
         - `origin_shape` (`_Shape | None`): Logical working shape (true data size
           before alignment fill). Optional, default `None`. Copy / tiling use this
           logical size; physical packing lives in `shape` / `stride`.
-        - `layoutTag` (`_LayoutTag | None`): Layout tag (e.g. `tla.arch.RowMajor`,
-          `tla.arch.zN`). Optional, default `None` (RowMajor).
+        - `layoutTag` (`_LayoutTag | None`): Layout tag; see
+          **System Variable Access / Layout Tags**. Optional, default `None`
+          (`RowMajor`).
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
@@ -4331,21 +4310,16 @@ def make_layout_with_tag(
     """Directory: Basic Data Types and Operations
 
     Description:
-        Compose a `!tla.layout` directly from a flat 2D logical shape, an element
-        type and a layout tag (maps to
-        `tla.make_layout` after the front end remaps the physical trees).
-
-        `make_layout_with_tag` takes the extent straight from the
-        caller, so an on-chip tile can be larger than the GM tile it is fed from
-        (e.g. a K extent rounded up to 64 for MX mmad).
+        Build an on-chip `!tla.layout` from a flat 2-D shape, element type, and layout tag.
 
         Parameters:
         - `shape` (`tuple`): Flat 2D logical extent `(rows, cols)`. Each leaf is
           an `int` or a runtime `Numeric` (dynamic leaf). Required.
         - `dtype` (`Numeric` subclass): Element type; drives the C0/fractal
           geometry of the remapped physical trees. Required.
-        - `layoutTag` (`_LayoutTag | None`): Layout tag (e.g. `tla.arch.zN`).
-          Optional, default `None` (RowMajor).
+        - `layoutTag` (`_LayoutTag | None`): Layout tag; see
+          **System Variable Access / Layout Tags**. Optional, default `None`
+          (`RowMajor`).
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
@@ -4357,11 +4331,10 @@ def make_layout_with_tag(
         - The origin shape of the resulting layout equals `shape` (the aligned
           extent); pair with `tla.make_tensor(ptr, layout)` to land it on an
           on-chip pointer.
-        - On-chip tags only: `zZMxScale` / `nNMxScale` require element type
-          `tla.Float8E8M0` (their C0 is fixed at 2 elements / 32 bytes by the
-          e8m0 format). The GM-side MxScale tags (`RowMajorMxScaleA`,
-          `ColMajorMxScaleA`, `RowMajorMxScaleB`, `ColMajorMxScaleB`) are
-          rejected.
+        - This API accepts only: `RowMajor`, `ColumnMajor`, `zN`, `nZ`,
+          `zZMxScale`, `nNMxScale`, `L0Clayout`, `zNUnAlign`.
+        - `zZMxScale` / `nNMxScale` require element type `tla.Float8E8M0`.
+          GM-side MxScale tags are rejected.
 
         Example:
         ```python
@@ -4536,23 +4509,7 @@ def get_tile(
     """Directory: Basic Data Types and Operations
 
     Description:
-        Extract a sub-tile of a tensor as a new `!tla.tensor` built with
-        `tla.make_tensor` over the source's backing pointer.
-
-        The returned tensor shares the source's buffer geometry -- the
-        `stride` tree passes through unchanged -- and carries:
-
-        - `coord`: `coord + source.coord` (element offsets, per dim);
-        - `origin_shape`: `shape` cropped against the source's `origin_shape`
-          (per dim `min(shape[d], origin[d] - coord[d])`), so the tile never
-          runs past the source's logical extent;
-        - `shape`: the physical packing regenerated from the cropped extent
-          (for zN/nZ the same fractal decomposition `make_layout_with_tag`
-          would produce; for RowMajor/ColumnMajor the extent itself).
-
-        Downstream ops see the tile's absolute coord and its own logical
-        extent; for example `Tensor.fill` on the result covers exactly this
-        tile.
+        Extract a flat 2-D sub-tile of a tensor (shares the source buffer).
 
         Parameters:
         - `tensor` (`Tensor`): Source `!tla.tensor`. Required.
@@ -4563,6 +4520,9 @@ def get_tile(
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
+        - Result `coord` is `coord + source.coord`; `origin_shape` is `shape`
+          cropped to the source extent; physical `shape` is regenerated from
+          that crop; `stride` is unchanged.
         - `coord` offsets must stay within the source's `origin_shape` -- the
           crop only trims the extent, it does not clamp the offsets.
         - Supported layout tags follow `tla.make_tensor` (RowMajor, ColumnMajor,
@@ -5596,111 +5556,54 @@ def copy(
 ) -> None:
     """Directory: Data Movement
     Description:
-        Copy data between tiles. The hardware path follows `src`/`dst` address spaces
-        (vector: GM↔UB, UB→L1, UB→UB; cube: GM→L1, L1→L0A/L0B, L1→biasbuf, L0C→GM|UB|L1).
-        UB→UB always uses the dedicated `MOV.UB.TO.UB` block move, so any element
-        width (1-byte types included) and any row length are accepted. That move
-        counts in whole 32-byte blocks, so a row that is not a whole number of
-        blocks is rounded *up* and its alignment fill travels with it. Two
-        geometries are therefore rejected rather than copied: a tile whose origin
-        is not on a 32-byte boundary (which a sub-block view can produce), and a
-        multi-row tile whose row pitch does not leave a whole number of blocks of
-        slack for the rounded row, where the rounded row would run into the next
-        one. Layout tags on the tiles select format conversion (for example
-        ND→zN).
-        A UB→UB copy whose destination is tagged `ColumnMajor` is a **transpose**:
-        both tiles carry the same logical `(M, N)` shape and the bytes land as the
-        `(N, M)` transpose, the same way the L0C→GM and L0C→UB routes express one.
-        The engine is `VNCHWCONV`, the vector unit's native transpose, which moves
-        whole 16-row by C0-column blocks, C0 being the elements in a 32-byte
-        DataBlock (8 / 16 / 32 for 4 / 2 / 1-byte types). The tile must therefore
-        be a whole number of those blocks: 16 rows by C0 columns, or 32 rows by 32
-        columns for a 1-byte type, which needs four calls to cover its block.
-        On the cube side, the contiguous-run routes are `GM`→`L1` and
-        `L1`→`biasbuf`, and both spell a flat tile with `VectorLayout`.
-        `VectorLayout` is rank-1 by definition, so the tile is `(N):(1)` and only
-        its innermost extent is addressed. `RowMajor` does not spell either route
-        -- it stays a two-dimensional tag.
-
-        A tile that spans more than one row cannot use `VectorLayout`, and the
-        two routes differ in what is left. A multi-row `GM`→`L1` tile has the
-        `zN` / `nZ` routes, which keep both dimensions. `L1`→`biasbuf` has no
-        such alternative: the bias table is a flat `N`-element run, so a
-        multi-row bias tile is not representable at all -- slice the row you need
-        rather than loading a taller tile.
-        The per-channel fixpipe dequant scale is the `GM`→`L1` flat route too:
-        one `u64` word per output channel, built with `VectorLayout`.
-
-        Copy / tiling sizes follow each tile's logical `origin_shape`
-        (not the nested physical `shape`). Physical `shape` / `stride` describe
-        how those logical elements are stored (alignment fill, zN packing, …).
+        Copy a tile from `src` to `dst`. Supported routes and dtypes are listed
+        after Constraints.
 
         Parameters:
         - `dst` (`Tensor`): Destination tile. Required.
         - `src` (`Tensor`): Source tile. Required.
-        - `params` (`CopyParams | None`): Optional path-specific params
-          (`CopyL0C2DstParams`, `CopyUbToGmParams` / atomic, …). Default `None`.
-        - **MX scale tiles** (`zZMxScale` / `nNMxScale` destinations) reach L1 as a
-          flat run of bytes, so the source tile must span full rows of its buffer.
-          Stack per-chunk scale blocks along rows; do not slice a wide scale buffer
-          along columns. This is checked only when the row pitch is statically
-          known -- a layout-dynamic tensor cannot be checked at compile time.
-        - `scale` (`Tensor | None`): L1 tile of OCP `e8m0` shared exponents, one per
-          32 elements along K, which turns an L1→L0A/L0B load into a microscaling
-          (MX) load and lowers to `tla.copy_mx`. Carried as `i8`/`u8` storage because
-          MLIR has no e8m0 type, and tagged `tla.arch.zZMxScale` for an L0A
-          destination or `tla.arch.nNMxScale` for an L0B destination. Default `None`.
+        - `params` (`CopyParams | None`): Path-specific params:
+          `CopyL0C2DstParams`, `CopyUbToGmParams`. Default `None`.
+        - `scale` (`Tensor | None`): L1 OCP `e8m0` shared-exponent tile for
+          L1→L0A/L0B MX load. Stored as `i8`/`u8`; destination tag is
+          `tla.arch.zZMxScale` (L0A) or `tla.arch.nNMxScale` (L0B).
+          Default `None`.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
-        - `scale` is only valid on the L1→L0A/L0B route, and the tile it loads must
-          then be consumed by `tla.mmad`, which becomes a microscaling matmul
-          because of this load. The scale is consumed by the load, not by the matmul:
-          the hardware's `mad_mx` takes no scale operand, so the MX association is
-          established when the operand lands in L0. This mirrors AscendC, where the
-          MX load is the five-argument overload of `LoadData` rather than a separate
-          entry point.
-        - Must be called inside `tla.cube()` or `tla.vector()` (cube routes above
-          in `cube()`, vector routes in `vector()`).
-        - Whole-tile DMA uses `tla.copy`. Register-level UB unaligned access uses
-          `tensor.load` / `tensor.store` with `UnalignLoadParams` /
-          `UnalignStoreParams` instead.
-        - **Shapes not aligned to 32 bytes:** C0 is 32 bytes. For ND GM↔UB, prefer
-          a leading dimension whose byte size is a multiple of 32 (e.g. for
-          RowMajor f16, choose `N` so `N % 16 == 0`). If the true data size cannot
-          meet that for DMA, keep `origin_shape` as the real logical size and
-          either enlarge the physical layout to the aligned size, or use the
-          unaligned register load/store path above. For zN when `M` is not a
-          multiple of 16, use `tla.arch.zNUnAlign` instead of `zN`.
+        - Must be called inside `tla.cube()` or `tla.vector()`.
+        - Copy size follows each tile's `origin_shape`.
+        - `scale` is only valid on L1→L0A/L0B; the loaded tile must then be
+          consumed by `tla.mmad_mx`.
+        - For MX scale destinations (`zZMxScale` / `nNMxScale`), the source
+          tile must span full L1 rows; stack scale blocks along rows.
+          Checked only when row pitch is statically known.
+        - UB→UB counts in whole 32-byte blocks; rows round up. Rejected if the
+          origin is not 32B-aligned, or multi-row pitch cannot hold the rounded
+          row. Destination tagged `ColumnMajor` is a transpose: tile shape must
+          be whole 16×C0 blocks, or 32×32 for 1-byte types.
+        - `GM`→`L1` / `L1`→`biasbuf` contiguous runs use rank-1 `VectorLayout`;
+          multi-row bias tiles are not representable — slice one row.
+        - Whole-tile DMA uses `tla.copy`. For register-level UB unaligned
+          access, use `tensor.load` / `tensor.store` with `UnalignLoadParams` /
+          `UnalignStoreParams`.
+        - **Shapes not aligned to 32 bytes:** C0 is 32 bytes. For ND GM↔UB,
+          prefer a leading dimension whose byte size is a multiple of 32.
+          Otherwise keep `origin_shape` as the real size and enlarge the
+          physical layout, or use unaligned load/store. For zN when `M` is
+          not a multiple of 16, use `tla.arch.zNUnAlign`.
 
         Example:
         ```python
         # --- 1) Aligned GM ↔ UB (RowMajor, 32B-friendly) ---
-        # Before: x_gm[i, j] holds ND data; x_ub is empty. origin_shape==(M, N).
         with tla.vector():
             tla.copy(dst=x_ub, src=x_gm)
-            # After: x_ub[i, j] == x_gm[i, j] for all logical (i, j) in origin_shape.
             tla.copy(dst=y_gm, src=y_ub)
 
-        # --- 2) ND → zN: GM RowMajor → L1 zN (layout change) ---
-        # Before (logical): gm_a.origin_shape==(128, 64), RowMajor; element (r, c)
-        #   sits at ND offset r*64+c.
-        # After (physical on L1): l1_a uses nested zN shape/stride; the same
-        #   logical (r, c) is zN-packed. l1_a.origin_shape stays (128, 64).
+        # --- 2) ND → zN: GM RowMajor → L1 zN ---
         l1_a = tla.make_tensor_like(l1_ptr, gm_a, layoutTag=tla.arch.zN)
         with tla.cube():
             tla.copy(dst=l1_a, src=gm_a)
-
-        # Explicit zN (same logical 128x64 f16) if not using make_tensor_like:
-        l1_a = tla.make_tensor(
-            l1_ptr,
-            tla.make_layout(
-                tla.make_shape((16, 8), (16, 4)),
-                tla.make_stride((16, 256), (1, 2048)),
-                origin_shape=tla.make_shape(128, 64),
-                layoutTag=tla.arch.zN,
-            ),
-        )
 
         # --- 3) M not a multiple of 16: zNUnAlign ---
         # Before: rows may be runtime and not a multiple of 16.
@@ -5989,8 +5892,10 @@ def flag(
 
         Parameters:
         - `name` (`str`): In-pipe flag name. Required.
-        - `src_pipe` (`PipeLike`): Source pipe id (e.g. `tla.arch.MTE2`). Required.
-        - `dst_pipe` (`PipeLike`): Destination pipe id (e.g. `tla.arch.VECTOR`). Required.
+        - `src_pipe` (`PipeLike`): Source pipe id; see
+          **System Variable Access / Pipes**. Required.
+        - `dst_pipe` (`PipeLike`): Destination pipe id; see
+          **System Variable Access / Pipes**. Required.
         - `id` (`int`): Hardware event id. Optional, default `-1` for automatic allocation.
 
         Constraints:
@@ -6680,34 +6585,14 @@ def _vec_func(
 ) -> TlaRegion:
     """Directory: Scopes and Control Flow
     Description:
-        Enter a vector-function region (`tla.vec.func`), in one of two execution
-        modes.
-
-        With `mode="simd"` (the default) the body is register-vector / mask
-        compute: it operates on whole vector registers loaded from UB, and every
-        op covers a full register.
-
-        With `mode="simt"` the body is the program of a single thread. The
-        region declares how many threads the block runs with
-        `thread_block_dim`, the body is outlined into a per-thread function that
-        the enclosing core launches, and each thread addresses memory by index
-        through element access (`tensor[i]`) rather than through tiles and
-        vector registers. A thread identifies its own work with
-        `tla.arch.thread_idx()` and `tla.arch.thread_block_dim()`, and threads
-        of a block synchronize with `tla.arch.sync_threads()`. See
-        **SIMT Vector Compute** for the model.
-
-        A SIMT region establishes no UB base of its own, so on-chip scratch must
-        be allocated with `tla.allocate` outside the region and viewed with
-        `tla.make_tensor`; outlining passes the buffer to the per-thread
-        function. A SIMT region may coexist with `tla.cube()` regions in the
-        same kernel.
+        Enter a vector-function region (`tla.vec.func`) in `simd` or `simt` mode.
 
         Parameters:
-        - `mode` (`str`): Execution mode; `simd` (default) or `simt`. Optional,
-          default `"simd"`.
-        - `thread_block_dim` (`int | tuple[int, int, int] | list[int] | None`): SIMT thread-block shape; only valid with
-          `mode="simt"`. An `int n` means `(n, 1, 1)`. Optional, default `None`.
+        - `mode` (`str`): `simd` (default, register-vector / mask) or `simt`
+          (per-thread). Optional, default `"simd"`.
+        - `thread_block_dim` (`int | tuple[int, int, int] | list[int] | None`):
+          SIMT thread-block shape; only valid with `mode="simt"`. An `int n`
+          means `(n, 1, 1)`. Optional, default `None`.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
@@ -6720,6 +6605,9 @@ def _vec_func(
           not exceed 2048 threads per block.
         - A SIMT region may only capture scalar runtime values from the kernel
           body; captures of `index`-typed values are rejected.
+        - SIMT: allocate on-chip scratch with `tla.allocate` outside the region;
+          index work with `tla.arch.thread_idx` / `thread_block_dim`, sync with
+          `tla.arch.sync_threads`.
 
         Example:
         ```python
@@ -6969,9 +6857,9 @@ def mmad(
         Emit matrix-multiply-accumulate on TLA tiles.
 
         Parameters:
-        - `acc` (`Tensor`): Accumulator / output tile (usually on L0C). Required.
-        - `lhs` (`Tensor`): Left-hand matrix tile (usually on L0A). Required.
-        - `rhs` (`Tensor`): Right-hand matrix tile (usually on L0B). Required.
+        - `acc` (`Tensor`): Accumulator / output tile. Required.
+        - `lhs` (`Tensor`): Left-hand matrix tile. Required.
+        - `rhs` (`Tensor`): Right-hand matrix tile. Required.
         - `init_c` (`bool | Bool | None`): Whether to clear the accumulator first;
           defaults to `False` when omitted. Ignored when `bias` is provided, since
           the bias then decides what the accumulator starts from. Optional,
@@ -6996,6 +6884,9 @@ def mmad(
         - The `f8e4m3fn` and `f8e5m2` matmul both support non-MxScale matmul and MxScale matmul,
           in the tla.mmad op scale is unsupported.
         - `init_c` accepts only a Python `bool` or an `i1` SSA value.
+        - When `bias` is set: tile must live in `biasbuf` with rank-1 `VectorLayout`,
+          element type matching `acc`, and length `N` matching `acc`'s N; stage it
+          with `GM`→`L1`→`biasbuf` `tla.copy` (see `copy`). `init_c` is ignored.
         - Unknown keyword arguments are not accepted; passing any raises an error.
 
         Example:
@@ -7003,6 +6894,8 @@ def mmad(
         # Before: l0a / l0b hold the current K-slice; l0c is the accumulator on L0C.
         with tla.cube():
             tla.mmad(l0c, l0a, l0b, init_c=True, unit_flag=0b11)
+            # With bias (l0_bias already on biasbuf via copy):
+            # tla.mmad(l0c, l0a, l0b, bias=l0_bias)
             # After: l0c accumulates lhs@rhs (cleared first when init_c=True).
         ```
     """
@@ -7095,18 +6988,7 @@ def mmad_mx(
 ) -> None:
     """Directory: Matrix Compute
     Description:
-        Emit a microscaling (MX) matrix-multiply-accumulate on TLA tiles.
-
-        A separate op from `tla.mmad` because the cube has a dedicated `mad_mx`
-        instruction, which AscendC exposes as `asc_mmad_mx`.
-
-        Like that instruction, this takes **no scale argument**. `lhs`/`rhs` must
-        have been loaded by `tla.copy` with its `scale` operand, which attaches the
-        e8m0 block to the L0 tile; the hardware then reads the scale from a side
-        buffer addressed off the L0 tile. Passing operands that were *not* loaded
-        that way is an error, as is passing microscaling operands to `tla.mmad` --
-        the two ops are not interchangeable, and nothing about the operands
-        themselves reveals which is which.
+        Microscaling (MX) matrix-multiply-accumulate on L0 tiles.
 
         Parameters:
         - `acc` (`Tensor`): Accumulator / output tile on L0C, always fp32. Required.
@@ -7134,6 +7016,9 @@ def mmad_mx(
         - The `f8e4m3fn` and `f8e5m2` matmul both support non-MxScale matmul and MxScale matmul,
           in the tla.mmad_mx op scale is needed.
         - Both operands must have been loaded by `tla.copy(..., scale=...)`.
+        - When `bias` is set: tile must live in `biasbuf` with rank-1 `VectorLayout`,
+          element type f32 matching `acc`, and length `N` matching `acc`'s N; stage
+          it with `GM`→`L1`→`biasbuf` `tla.copy` (see `copy`). `init_c` is ignored.
 
         Example:
         ```python
@@ -7142,6 +7027,7 @@ def mmad_mx(
             tla.copy(l0a, l1a, scale=l1sa)   # scale rides the load, not the matmul
             tla.copy(l0b, l1b, scale=l1sb)
             tla.mmad_mx(l0c, l0a, l0b, init_c=True)
+            # With bias: tla.mmad_mx(l0c, l0a, l0b, bias=l0_bias)
             # After: l0c accumulates the microscaled lhs@rhs.
         ```
     """
@@ -7198,8 +7084,7 @@ def full(
 ) -> VectorSSA:
     """Directory: SIMD Vector Compute / Data Fill
     Description:
-        Fill a 1-D vector SSA with a Python scalar literal, or broadcast a
-        one-lane vector fragment (e.g. a `VectorSSA.reduce` result) across every lane.
+        Fill a vector SSA with a scalar, or broadcast a one-lane fragment.
 
         Parameters:
         - `value` (`bool | int | float | Numeric | VectorSSA`): Fill constant, or a
@@ -8125,7 +8010,7 @@ def pack(
     part: RegPart,
     loc: mlir_ir.Location | None = None,
 ) -> MaskSSA:
-    """Directory: Vector Compute / Data Rearrange
+    """Directory: SIMD Vector Compute / Data Rearrange
 
     Description:
         Pack a predicate value into the low or high half of its destination
@@ -8994,43 +8879,24 @@ def histograms(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
-    """Directory: SIMD Vector Compute / Histogram
+    """Directory: SIMD Vector Compute / Histogram Compute
 
     Description:
-        Reg-resident FREQUENCY / ACCUMULATE histogram.
-
-        Lowers via AIV bc to ``dhistv2`` (FREQUENCY) or ``chistv2`` (ACCUMULATE).
-        Does **not** use HIVMAVE / AscendNPU-IR hist ops.
-
-        ``params.mode`` selects the 128-lane half (``HistogramsBinType``);
-        ``params.type`` selects FREQUENCY / ACCUMULATE (``HistogramsType``).
-        Their math differs — do **not** read ``BIN1`` as “[128, 255] only” under
-        ACCUMULATE (see :class:`~catlass.params.HistogramsParams`).
-
-        FREQUENCY (``dhistv2``): per-value counts in a half-range —
-        ``BIN0`` ``dst[v] += #{src == v}`` for ``v ∈ [0,127]``;
-        ``BIN1`` ``dst[v-128] += #{src == v}`` for ``v ∈ [128,255]``.
-
-        ACCUMULATE (``chistv2``): CDF over the full u8 domain, then split —
-        ``BIN0`` ``dst[n] += #{src <= n}`` for ``n ∈ [0,127]``;
-        ``BIN1`` ``dst[n] += #{src <= 128+n}`` for ``n ∈ [0,127]``
-        (low-half inputs contribute to ``BIN1``).
+        Register-resident FREQUENCY or ACCUMULATE histogram.
 
         Parameters:
         - `src` (`VectorSSA`): ``i8``/``ui8`` source register (256 lanes). Required.
         - `dst` (`VectorSSA`): ``i16``/``ui16`` accumulator (128 lanes). Required.
           Accumulates onto the prior ``dst`` value. For a fresh histogram, pass
-          ``tla.full(0, dtype=...)`` first. Cross-call accumulate: pass the
-          previous result again.
+          ``tla.full(0, dtype=...)`` first.
         - `params` (`HistogramsParams`): ``mode`` (BIN0/BIN1) and ``type``
           (FREQUENCY/ACCUMULATE). Required.
         - `mask` (`MaskSSA`): Optional lane mask; default all-true.
 
-        Returns:
-        - `VectorSSA` updated histogram half (same type as ``dst``).
-
         Constraints:
         - Must be called inside `@tla.kernel` and `tla.vec.func()`.
+        - FREQUENCY: half-range per-value counts. ACCUMULATE: CDF over u8 then
+          split; under ACCUMULATE, ``BIN1`` is not ``[128,255]``-only.
 
         Example:
         ```python
@@ -9239,7 +9105,16 @@ def cmp(
         Parameters:
         - `lhs` (`VectorSSA`): Left-hand compare operand. Required.
         - `rhs` (`VectorSSA | Numeric | bool | int | float`): Right-hand compare operand (scalar or vector). Required.
-        - `mode` (`str`): Compare mode, e.g. `'eq'` / `'lt'` / `'gt'`. Required.
+        - `mode` (`str`): Compare mode. Required.
+
+          | Value | Meaning |
+          |---|---|
+          | `lt` | Less than |
+          | `le` | Less than or equal |
+          | `gt` | Greater than |
+          | `ge` | Greater than or equal |
+          | `eq` | Equal |
+          | `ne` | Not equal |
         - `mask` (`MaskSSA | None`): Optional execution mask; `None` means all lanes enabled. Optional, default `None`.
 
         Constraints:
@@ -9670,7 +9545,21 @@ def gather(
 
 @dsl_user_op
 def arch_block_idx(*, loc: mlir_ir.Location | None = None) -> Int32:
-    """Return block index in Tla execution model (``Int32``)."""
+    """Directory: System Variable Access / Architecture Helpers
+    Description:
+        Return the block index of the current AI core in the launch (`Int32`).
+
+        Parameters:
+        - None.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+
+        Example:
+        ```python
+        bid = tla.arch.block_idx()
+        ```
+    """
     _require_frontend_state("arch.block_idx")
     i32 = mlir_ir.IntegerType.get_signless(32)
     value = _tla_ops_gen.arch_block_idx(i32, loc=loc)
@@ -9679,7 +9568,21 @@ def arch_block_idx(*, loc: mlir_ir.Location | None = None) -> Int32:
 
 @dsl_user_op
 def arch_sub_block_idx(*, loc: mlir_ir.Location | None = None) -> Int32:
-    """Return sub-block index in Tla execution model (``Int32``)."""
+    """Directory: System Variable Access / Architecture Helpers
+    Description:
+        Return the sub-block index within the current block (`Int32`).
+
+        Parameters:
+        - None.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+
+        Example:
+        ```python
+        sid = tla.arch.sub_block_idx()
+        ```
+    """
     _require_frontend_state("arch.sub_block_idx")
     i32 = mlir_ir.IntegerType.get_signless(32)
     value = _tla_ops_gen.arch_sub_block_idx(i32, loc=loc)
@@ -9690,7 +9593,7 @@ def arch_sub_block_idx(*, loc: mlir_ir.Location | None = None) -> Int32:
 def arch_thread_idx(
     *, loc: mlir_ir.Location | None = None
 ) -> tuple[Int32, Int32, Int32]:
-    """Directory: SIMT Vector Compute / Thread Indexing
+    """Directory: System Variable Access / Architecture Helpers
     Description:
         Return the calling thread's index `(x, y, z)` inside its thread block.
 
@@ -9732,7 +9635,7 @@ def arch_thread_idx(
 
 @dsl_user_op
 def arch_sync_threads(*, loc: mlir_ir.Location | None = None) -> None:
-    """Directory: SIMT Vector Compute / Thread Synchronization
+    """Directory: System Variable Access / Architecture Helpers
     Description:
         Barrier across the threads of the enclosing SIMT `tla.vec.func`.
 
@@ -9776,10 +9679,23 @@ def arch_sync_threads(*, loc: mlir_ir.Location | None = None) -> None:
 
 @dsl_user_op
 def arch_block_num(*, loc: mlir_ir.Location | None = None) -> Int32:
-    """Return the number of blocks (AI cores) in the launch (``Int32``).
+    """Directory: System Variable Access / Architecture Helpers
+    Description:
+        Return the number of blocks (AI cores) in the launch (`Int32`).
 
-    The grid extent for the current kernel launch. For the per-block thread
-    extents inside a SIMT region see :func:`arch_thread_block_dim`.
+        For the per-block thread extents inside a SIMT region, see
+        `tla.arch.thread_block_dim`.
+
+        Parameters:
+        - None.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+
+        Example:
+        ```python
+        nblocks = tla.arch.block_num()
+        ```
     """
     _require_frontend_state("arch.block_num")
     i32 = mlir_ir.IntegerType.get_signless(32)
@@ -9791,7 +9707,7 @@ def arch_block_num(*, loc: mlir_ir.Location | None = None) -> Int32:
 def arch_thread_block_dim(
     *, loc: mlir_ir.Location | None = None
 ) -> tuple[Int32, Int32, Int32]:
-    """Directory: SIMT Vector Compute / Thread Indexing
+    """Directory: System Variable Access / Architecture Helpers
     Description:
         Return the enclosing thread block's `(x, y, z)` extents.
 
@@ -9836,37 +9752,25 @@ def arch_thread_block_dim(
 
 
 def arch_get_capacity_in_bytes(mem_scope: AddressSpace) -> int:
-    """Directory: System Variable Access
+    """Directory: System Variable Access / Architecture Helpers
     Description:
-        Return the byte size of an on-chip memory space (l1 / l0a / l0b / l0c / ub )
-        for the compile target architecture.
+        Return the byte capacity of an on-chip memory space for the compile
+        target.
 
-    Parameters:
-    - `mem_scope`: the memory-scope token to query. Only ``tla.AddressSpace`` tokens are
-      accepted: `tla.AddressSpace.l1`, `tla.AddressSpace.l0a`, `tla.AddressSpace.l0b`, `tla.AddressSpace.l0c`,
-      `tla.AddressSpace.ub`.
+        Parameters:
+        - `mem_scope` (`AddressSpace`): On-chip space to query; see
+          **System Variable Access / On-chip Address Spaces**. Required.
 
-    Returns:
-    - `int`: capacity in bytes (e.g. `512 * 1024` for `tla.AddressSpace.l1` on
-      3510/Ascend950).
+        Constraints:
+        - Only on-chip `AddressSpace` members; `gm` / `generic` are rejected.
+        - Host-time constant: legal on host and inside a `@tla.kernel`. Inside a
+          kernel it folds at trace time (no runtime op).
 
-    Constraints:
-    - Only on-chip `AddressSpace` members are accepted; `AddressSpace.generic` /
-      `AddressSpace.gm` (global memory has no fixed on-chip capacity).
-    - This is a host-time constant query: it is legal both outside and inside a
-      `@tla.kernel`-decorated kernel function. Inside a kernel it is evaluated at
-      trace time and folds into a compile-time constant (no runtime op is emitted).
-
-    Example:
-    ```python
-    l1_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.l1)    # 512 * 1024 (host side)
-    ub_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.ub)    # 256 * 1024
-
-    @tla.kernel
-    def k(...):
-        # kernel side: folds to the same constant
-        tiles = tla.arch.get_capacity_in_bytes(tla.AddressSpace.l1) // block_bytes
-    ```
+        Example:
+        ```python
+        l1_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.l1)
+        ub_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.ub)
+        ```
     """
     from .base_dsl.arch import get_localmem_capacity_bytes
 
@@ -9906,12 +9810,14 @@ def allocate(
         Parameters:
         - `shape` (`ShapeLike`): Shape of the allocation. Required.
         - `dtype` (`type[Numeric]`): Element numeric type. Required.
-        - `mem_scope` (`AddressSpace`): Address space (e.g. L1 / UB). Required.
+        - `mem_scope` (`AddressSpace`): On-chip address space; see
+          **System Variable Access / On-chip Address Spaces**. Required.
         - `byte_alignment` (`int`): Byte alignment requirement. Required.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
-        - `mem_scope` must be an on-chip address space (l1/l0a/l0b/l0c/ub), not gm/generic; `shape` must be fully static.
+        - `mem_scope` must be on-chip (`l1` / `l0a` / `l0b` / `l0c` / `ub`),
+          not `gm` / `generic`; `shape` must be fully static.
         - Scratch for a `tla.vec.func(mode="simt")` region must be allocated
           *outside* that region and viewed with `tla.make_tensor`: a SIMT region
           establishes no UB base of its own, and outlining passes the buffer to
@@ -9961,21 +9867,9 @@ def arch_get_dyn_ub(
     *,
     loc: mlir_ir.Location | None = None,
 ) -> Pointer:
-    """Directory: System Variable Access
+    """Directory: System Variable Access / Architecture Helpers
     Description:
-        Retrieve a pointer to the dynamic UB allocation — UB whose size is set
-        at launch instead of compiled in.
-
-        Static `tla.allocate` buffers sit at the bottom of UB; this region
-        begins just above them and the result pointer is offset appropriately.
-        How much of it is backed is set per launch with `ub=`.
-        The base is a compile-time constant, so only the extent is dynamic.
-
-        Ask for what the kernel uses, not for everything available. The launch
-        hands over exactly the requested extent, and on a SIMT kernel the UB
-        left unclaimed becomes Data Cache: measured on Ascend950PR, a
-        global-memory-bound SIMT kernel that claims the whole buffer runs 1.62x
-        slower than the same kernel claiming only the 2 KB it uses.
+        Return a pointer to the dynamic UB region (size set at launch via `ub=`).
 
         Parameters:
         - `dtype` (`type[Numeric]`): Pointee element type. Required.
@@ -9985,11 +9879,10 @@ def arch_get_dyn_ub(
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
-        - UB only; no other memory has a launch-time size.
-        - At most one region per kernel: it has one base, so a second call would
-          alias the first. Carve it up with pointer arithmetic instead.
-        - The extent is not bounds-checked in the kernel. Going past what the
-          launch declared corrupts UB rather than reliably faulting.
+        - UB only; region sits above static `tla.allocate` buffers.
+        - At most one region per kernel; carve sub-buffers with pointer arithmetic.
+        - Request only what the kernel uses (unused UB can become Data Cache).
+        - The extent is not bounds-checked in the kernel.
 
         Example:
         ```python
@@ -10037,7 +9930,7 @@ def make_ptr(
         Parameters:
         - `dtype` (`type[Numeric] | None`): Pointee element type; `None` means
           `Int8`. Optional, default `None`.
-        - `value` (`int | mlir_ir.Value | Numeric`): Address value (int, MLIR Value, or Numeric). Required.
+        - `value` (`int | Numeric | address SSA`): Address value. Required.
         - `mem_space` (`AddressSpace`): Address space of the pointer. Optional, default `AddressSpace.gm`.
         - `assumed_align` (`int | None`): Assumed alignment in bytes. Optional, default `None`.
 
@@ -10205,67 +10098,6 @@ _require_generated("inttoptr")
 _require_generated("recast_ptr")
 
 arch = _Namespace()
-arch.__doc__ = """Directory: System Variable Access
-Description:
-Architecture attribute group under `tla.arch`: layout tags, pipe identifiers,
-on-chip memory-scope tokens, and block / SIMT helpers.
-
-Parameters:
-- Layout tags (`_LayoutTag`, used by `make_layout` / `make_tensor` /
-  `make_tensor_like`): `RowMajor`, `ColumnMajor`, `VectorLayout`, `zN`, `nZ`,
-  `L0Clayout`, `zNUnAlign`.
-- Pipe identifiers (used by `flag` / `pipe_barrier` / `mutex_*` /
-  cross-core sync): `SCALAR`, `VECTOR`, `CUBE`, `MTE1`, `MTE2`, `MTE3`, `FIX`.
-- Memory-scope tokens (used by `local_mem_bar` and related APIs): `L1`,
-  `L0A`, `L0B`, `L0C`, `UB`.
-- Callables (return `Int32` or `tuple[Int32, Int32, Int32]` as noted):
-  - `block_idx()`: Block index for the current AI core in the launch.
-  - `block_num()`: Number of blocks (AI cores) in the launch.
-  - `sub_block_idx()`: Sub-block index within the current block.
-  - `thread_idx()`: SIMT thread index `(x, y, z)` inside the thread block
-    (only inside `tla.vec.func(mode="simt")`; documented under
-    **SIMT Vector Compute / Thread Indexing**).
-  - `thread_block_dim()`: SIMT thread-block extents `(x, y, z)`
-    (only inside `tla.vec.func(mode="simt")`; documented under
-    **SIMT Vector Compute / Thread Indexing**).
-  - `sync_threads()`: Barrier across threads of the enclosing SIMT
-    `tla.vec.func` (only inside `mode="simt"`; documented under
-    **SIMT Vector Compute / Thread Synchronization**).
-  - `get_capacity_in_bytes(mem_scope)`: Byte capacity of an on-chip memory
-    space for the compile target. Takes a `tla.AddressSpace` token
-    (`tla.AddressSpace.l1` / `l0a` / `l0b` / `l0c` / `ub`). Returns a plain
-    `int`; valid on host and inside a kernel (folds to a constant).
-  - `get_dyn_ub(dtype, byte_alignment=None)`: Pointer to the dynamic UB
-    allocation -- UB whose size the launch chooses, rather than the compiler.
-    The region starts above every `tla.allocate`, and `ub=` at launch says
-    how much of it is backed. At most one per kernel: carve it up
-    with pointer arithmetic. Ask for what the kernel uses -- on SIMT the UB
-    left unclaimed becomes Data Cache.
-
-Constraints:
-- Layout tags / pipe identifiers / memory-scope tokens are ordinary attributes
-  on the `tla.arch` object (Python has no C++-style namespace); they do not
-  emit compute ops by themselves.
-- `block_idx` / `block_num` / `sub_block_idx` / `thread_idx` /
-  `thread_block_dim` / `sync_threads` are callables and must be used inside a
-  `@tla.kernel`-decorated kernel function.
-- `thread_idx` / `thread_block_dim` / `sync_threads` additionally require
-  nesting inside `tla.vec.func(mode="simt")`.
-
-Example:
-```python
-# Layout tag for make_layout / make_tensor:
-tag = tla.arch.RowMajor
-# Pipe id for flag / barrier / mutex:
-pipe = tla.arch.MTE2
-# Runtime block helpers:
-bid = tla.arch.block_idx()
-nblocks = tla.arch.block_num()
-# On-chip memory capacity (host or kernel side):
-l1_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.l1)
-ub_bytes = tla.arch.get_capacity_in_bytes(tla.AddressSpace.ub)
-```
-"""
 arch._set("block_idx", arch_block_idx)
 arch._set("sub_block_idx", arch_sub_block_idx)
 arch._set("block_num", arch_block_num)
@@ -10367,8 +10199,8 @@ def create_mask(
 
         Parameters:
         - `pattern` (`_MaskPattern | str | None`): Mask pattern token or its name
-          string. Required at runtime (`None` raises). Tokens live under `tla.mask`
-          (for example `tla.mask.ALL`, `tla.mask.VL8`):
+          string. Required at runtime (`None` raises). Tokens live under
+          `tla.mask`:
 
           | Pattern | Meaning |
           |---|---|

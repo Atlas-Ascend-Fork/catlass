@@ -42,18 +42,12 @@ GENERATED_BY = "python/tla_dsl/tools/generate_kernel_api_reference.py"
 
 DIRECTORY_SECTIONS: list[tuple[str, str]] = [
     (
-        "Experimental APIs",
-        "APIs under `tla.experimental` may change or be removed without "
-        "backward-compatibility guarantees. Use the ordinary `tla.kernel` and "
-        "`tla.jit` decorators; this namespace does not select another compiler.",
-    ),
-    (
         "Basic Data Types and Operations",
         "Construction and views for front-end structured values such as "
         "Shape / Coord / Stride / Layout / Tensor, plus pointer helpers.",
     ),
     (
-        "Numeric Scalars",
+        "Scalar Compute",
         "`Numeric` is the base of TLA DSL **scalar** types and values used "
         "inside `@tla.kernel`. Concrete types include integers "
         "(`tla.Int8` / `Int16` / `Int32` / `Int64` and unsigned variants), "
@@ -64,7 +58,8 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "Use `Numeric` values for loop indices, coordinates, and other "
         "single-element state updated under runtime `if` / `tla.range` / "
         "`while`. Promote Python literals with `as_numeric`; change type "
-        "with `Numeric.to`; reinterpret bits with `Numeric.bitcast`.\n"
+        "with `Numeric.to`; reinterpret bits with `Numeric.bitcast`; "
+        "bitwise / math ops such as `~Integer` and `Float.sqrt`.\n"
         "\n"
         "The operators `+` `-` `*` `/` `//` `**` and the comparisons are\n"
         "evaluated on the core's own scalar unit, except inside a\n"
@@ -138,7 +133,7 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "Element-type conversion on the register-vector path.",
     ),
     (
-        "SIMD Vector Compute / Histogram",
+        "SIMD Vector Compute / Histogram Compute",
         "Histogram accumulation on register-vector data.",
     ),
     (
@@ -161,7 +156,8 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "\n"
         "The subsections below follow the same order as **SIMD Vector "
         "Compute**: what the region is and what may appear in it, then how a "
-        "thread identifies itself, moves data, and computes.",
+        "thread moves data and computes. Thread index / block geometry / "
+        "`sync_threads` live under **System Variable Access**.",
     ),
     (
         "SIMT Vector Compute / Region Scope",
@@ -183,8 +179,8 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "Arithmetic**, **Compare and Select** and **Type Conversion** below.\n"
         "- `tla.range` loops and runtime `if`.\n"
         "- `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`, and "
-        "the launch-level `tla.arch.block_idx` / `block_num` -- see **Thread "
-        "Indexing** and **Thread Synchronization** below.\n"
+        "the launch-level `tla.arch.block_idx` / `block_num` -- see "
+        "**System Variable Access**.\n"
         "\n"
         "These are not, and are rejected when the kernel is compiled:\n"
         "\n"
@@ -201,29 +197,14 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "- A nested `tla.vec.func`.",
     ),
     (
-        "SIMT Vector Compute / Thread Indexing",
-        "A thread learns which elements are its own from its index within the "
-        "block and the block's extents, and typically walks a strided slice "
-        "of the data with `tla.range`, as the chapter example shows. "
-        "`thread_block_dim` is the number of threads in this block; the number "
-        "of blocks in the launch is `tla.arch.block_num` (see **System "
-        "Variable Access**).",
-    ),
-    (
-        "SIMT Vector Compute / Thread Synchronization",
-        "Barrier across the threads of one block. Cross-core and pipe "
-        "synchronization stay outside the region -- see **Sync Control**.",
-    ),
-    (
         "SIMT Vector Compute / Element Access",
         "A thread moves data by element access on a `gm` or `ub` tensor: "
         "`value = tensor[i]` and `tensor[i] = value`, which emit the "
         "per-thread `tla.simt_load` / `tla.simt_store`. The layout must be "
         "`RowMajor` or `ColumnMajor`, the logical rank 1 or 2, and sub-byte "
         "element types other than `Bool` are not supported. Both are "
-        "documented as `Tensor.__getitem__` / `Tensor.__setitem__` under "
-        "**Data Movement**, which is also where the SIMD staging copies "
-        "live.\n"
+        "documented as `tensor[i]` / `tensor[i] = value` under "
+        "**Data Movement**.\n"
         "\n"
         "```python\n"
         'with tla.vec.func(mode="simt", thread_block_dim=256):\n'
@@ -270,7 +251,7 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "SIMT Vector Compute / Type Conversion",
         "`Numeric.to` emits the per-thread `tla.simt_cast` inside a SIMT "
         "region and the core's own scalar conversion outside one; the entry "
-        "is under **Numeric Scalars**. There is no per-thread equivalent of "
+        "is under **Scalar Compute**. There is no per-thread equivalent of "
         "the register-vector `tla.cast`.\n"
         "\n"
         "```python\n"
@@ -286,8 +267,109 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
     ),
     (
         "System Variable Access",
-        "Architecture attributes on `tla.arch` (layout tags, pipe identifiers, "
-        "block helpers, etc.).",
+        "Architecture attributes on `tla.arch` / `tla.AddressSpace` "
+        "(layout tags, pipes, on-chip address spaces, block helpers).",
+    ),
+    (
+        "System Variable Access / Layout Tags",
+        "Layout tags under `tla.arch` (`_LayoutTag`), used by `make_layout` / "
+        "`make_tensor` / `make_tensor_like` / `copy`. Pass as `layoutTag=` / "
+        "`layout_tag=`.\n"
+        "\n"
+        "**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10107)\n"
+        "\n"
+        "| Tag | Role |\n"
+        "|---|---|\n"
+        "| `tla.arch.RowMajor` | ND row-major |\n"
+        "| `tla.arch.ColumnMajor` | ND column-major |\n"
+        "| `tla.arch.VectorLayout` | Rank-1 contiguous run |\n"
+        "| `tla.arch.zN` | Fractal zN (Cube A/B staging) |\n"
+        "| `tla.arch.nZ` | Fractal nZ |\n"
+        "| `tla.arch.L0Clayout` | L0C accumulator layout |\n"
+        "| `tla.arch.zNUnAlign` | zN without M-axis fractal blocking |\n"
+        "| `tla.arch.zZMxScale` | On-chip MX scale for L0A |\n"
+        "| `tla.arch.nNMxScale` | On-chip MX scale for L0B |\n"
+        "| `tla.arch.RowMajorMxScaleA` | GM MX scale A, row-major |\n"
+        "| `tla.arch.ColMajorMxScaleA` | GM MX scale A, column-major |\n"
+        "| `tla.arch.RowMajorMxScaleB` | GM MX scale B, row-major |\n"
+        "| `tla.arch.ColMajorMxScaleB` | GM MX scale B, column-major |\n"
+        "\n"
+        "Constraints:\n"
+        "\n"
+        "- Tokens are ordinary attributes on `tla.arch`; they do not emit ops.\n"
+        "- Individual APIs may accept only a subset; see each entry's Constraints.\n"
+        "\n"
+        "Example:\n"
+        "\n"
+        "```python\n"
+        "tag = tla.arch.RowMajor\n"
+        "```",
+    ),
+    (
+        "System Variable Access / Pipes",
+        "Pipe identifiers under `tla.arch`, used by `flag` / `pipe_barrier` / "
+        "`mutex_*` / cross-core sync.\n"
+        "\n"
+        "**Source:** [`catlass.core_api.arch`](../../../catlass/core_api.py#L10100)\n"
+        "\n"
+        "| Pipe | Role |\n"
+        "|---|---|\n"
+        "| `tla.arch.SCALAR` | Scalar pipe |\n"
+        "| `tla.arch.VECTOR` | Vector pipe |\n"
+        "| `tla.arch.CUBE` | Cube pipe |\n"
+        "| `tla.arch.MTE1` | MTE1 |\n"
+        "| `tla.arch.MTE2` | MTE2 |\n"
+        "| `tla.arch.MTE3` | MTE3 |\n"
+        "| `tla.arch.FIX` | Fixpipe |\n"
+        "\n"
+        "Constraints:\n"
+        "\n"
+        "- Available pipes depend on the enclosing `tla.cube()` / `tla.vector()` "
+        "region; see each sync API's Constraints.\n"
+        "- `ALL` is not exposed on `tla.arch` for these APIs.\n"
+        "\n"
+        "Example:\n"
+        "\n"
+        "```python\n"
+        "pipe = tla.arch.MTE2\n"
+        "```",
+    ),
+    (
+        "System Variable Access / On-chip Address Spaces",
+        "On-chip members of `tla.AddressSpace`, used by `allocate` / "
+        "`get_capacity_in_bytes`.\n"
+        "\n"
+        "**Source:** [`catlass.address_space.AddressSpace`]"
+        "(../../../catlass/address_space.py#L16)\n"
+        "\n"
+        "| Address space | Role |\n"
+        "|---|---|\n"
+        "| `tla.AddressSpace.l1` | L1 |\n"
+        "| `tla.AddressSpace.l0a` | L0A |\n"
+        "| `tla.AddressSpace.l0b` | L0B |\n"
+        "| `tla.AddressSpace.l0c` | L0C |\n"
+        "| `tla.AddressSpace.ub` | UB |\n"
+        "| `tla.AddressSpace.biasbuf` | Bias table (C2) for `mmad` / `mmad_mx` "
+        "`bias` |\n"
+        "\n"
+        "Constraints:\n"
+        "\n"
+        "- `allocate` / `get_capacity_in_bytes` reject `gm` and `generic`.\n"
+        "- Stage bias with `GM`→`L1`→`biasbuf` `tla.copy`, then pass the "
+        "`biasbuf` tile to `mmad` / `mmad_mx` as `bias=`.\n"
+        "- `make_ptr` may also use `tla.AddressSpace.gm` / `generic`; see that "
+        "entry.\n"
+        "\n"
+        "Example:\n"
+        "\n"
+        "```python\n"
+        "scope = tla.AddressSpace.ub\n"
+        "```",
+    ),
+    (
+        "System Variable Access / Architecture Helpers",
+        "Callable helpers on `tla.arch`: block / thread indexing, SIMT "
+        "`sync_threads`, on-chip capacity, and dynamic UB.",
     ),
     ("Resource Management", "On-chip scratch allocation via `allocate`."),
     (
@@ -298,9 +380,24 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "Scopes and Control Flow",
         "Cube / Vector / `vec.func` regions and kernel-side loop ranges.",
     ),
+    (
+        "Experimental APIs",
+        "APIs under `tla.experimental` may change or be removed without "
+        "backward-compatibility guarantees. Use the ordinary `tla.kernel` and "
+        "`tla.jit` decorators; this namespace does not select another compiler.",
+    ),
 ]
 DIRECTORY_ORDER = [path for path, _ in DIRECTORY_SECTIONS]
 DIRECTORY_INTROS = dict(DIRECTORY_SECTIONS)
+
+# Display name for the reference heading / prototype (source link keeps
+# ``qualified_name``). Prefer frontend spelling over dunder method names.
+KERNEL_DISPLAY_NAMES: dict[str, str] = {
+    "Integer.__invert__": "~Integer",
+    # Frontend indexing spellings; source links keep Tensor.__getitem__/__setitem__.
+    "Tensor.__getitem__": "tensor[i]",
+    "Tensor.__setitem__": "tensor[i] = value",
+}
 
 
 _MAKE_UNARY_HELPERS = frozenset({"_make_unary_op", "_make_scalar_aware_unary_op"})
@@ -460,47 +557,11 @@ def _collect_scalar_aware_binary_aliases(
     return entries
 
 
-def _collect_arch_namespace(
-    tree: ast.Module, exported: set[str]
-) -> dict[str, APIEntry]:
-    if "arch" not in exported:
-        return {}
-    for node in tree.body:
-        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
-            continue
-        target, value = node.targets[0], node.value
-        if (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "arch"
-            and target.attr == "__doc__"
-        ):
-            return {
-                "arch": APIEntry(
-                    name="arch",
-                    qualified_name="catlass.core_api.arch",
-                    source_line=node.lineno,
-                    docstring=const_str(value) or "",
-                    is_namespace=True,
-                )
-            }
-    return {
-        "arch": APIEntry(
-            name="arch",
-            qualified_name="catlass.core_api.arch",
-            source_line=None,
-            docstring="",
-            is_namespace=True,
-        )
-    }
-
-
 # The ``arch`` helpers hang off the ``arch`` namespace object rather than being
 # exported names of their own, so ``_collect_core_functions`` skips them. Their
 # public spelling is not hand-listed here: it is read from the
 # ``arch._set("<public>", <function>)`` calls at the end of ``core_api.py``, the
 # same source of truth the runtime uses.
-_ARCH_SIMT_DIRECTORY_ROOT = "SIMT Vector Compute"
 
 
 def _arch_set_bindings(tree: ast.Module) -> dict[str, str]:
@@ -527,12 +588,10 @@ def _arch_set_bindings(tree: ast.Module) -> dict[str, str]:
     return bindings
 
 
-def _collect_arch_simt_functions(tree: ast.Module) -> dict[str, APIEntry]:
-    """Document the ``arch`` helpers whose ``Directory:`` is a SIMT chapter.
+def _collect_arch_documented_functions(tree: ast.Module) -> dict[str, APIEntry]:
+    """Document ``arch._set`` helpers that carry a full ``Directory:`` docstring.
 
-    The other ``arch`` callables are described as bullets in the namespace's own
-    docstring rather than as entries; restricting the collector to the SIMT
-    chapters keeps that as it is.
+    Includes host-only helpers (no ``@dsl_user_op``), e.g. ``get_capacity_in_bytes``.
     """
     bindings = _arch_set_bindings(tree)
     entries: dict[str, APIEntry] = {}
@@ -540,10 +599,9 @@ def _collect_arch_simt_functions(tree: ast.Module) -> dict[str, APIEntry]:
         if not isinstance(node, ast.FunctionDef):
             continue
         public = bindings.get(node.name)
-        if public is None or not has_dsl_user_op(node.decorator_list):
+        if public is None:
             continue
-        directory = directory_path(ast.get_docstring(node) or "") or ""
-        if not directory.startswith(_ARCH_SIMT_DIRECTORY_ROOT):
+        if directory_path(ast.get_docstring(node) or "") is None:
             continue
         entries[public] = function_entry(
             public,
@@ -644,7 +702,6 @@ def parse_core_api(path: Path) -> dict[str, APIEntry]:
     entries.update(_collect_core_functions(tree, exported))
     entries.update(_collect_unary_aliases(tree, exported, _unary_op_template(tree)))
     entries.update(_collect_scalar_aware_binary_aliases(tree, exported))
-    entries.update(_collect_arch_namespace(tree, exported))
     entries.update(_collect_typing_helpers())
     # Per-class labels (Numeric.to / Float.sqrt / ...); no shared alias.
     entries.update(
@@ -654,7 +711,7 @@ def parse_core_api(path: Path) -> dict[str, APIEntry]:
             module="catlass.base_dsl.typing",
         )
     )
-    entries.update(_collect_arch_simt_functions(tree))
+    entries.update(_collect_arch_documented_functions(tree))
     entries.update(
         _collect_class_methods(
             TENSOR_API_PATH,
@@ -679,7 +736,12 @@ def parse_core_api(path: Path) -> dict[str, APIEntry]:
                 source_path=EXPERIMENTAL_API_PATH,
             )
     _apply_doc_hooks(entries)
-    return entries
+    remapped: dict[str, APIEntry] = {}
+    for name, entry in entries.items():
+        display = KERNEL_DISPLAY_NAMES.get(name, name)
+        entry.name = display
+        remapped[display] = entry
+    return remapped
 
 
 def generate(*, docs_dir: Path | None = None) -> str:

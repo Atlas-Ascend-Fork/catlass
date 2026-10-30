@@ -53,6 +53,11 @@ from vector_op_harness import (
 #               through f32. The composed routes that describe the same value as
 #               their f32 round trip are subtracted, so they contribute zero
 #               unless a composition is wrong.
+#   same-type : st  = trunc(a) + trunc(c) via f32->f32, with zero-difference
+#               legs through f16->f16 and bf16->bf16. A same-type float cast
+#               keeps the element type and only the round mode lands, so the
+#               rounding is directly observable (1.5 -> 1.0): CAST_TRUNC on
+#               f32/bf16, CAST_FLOOR on f16.
 #
 # The integer chain exercises: i32<->i16 and i16<->i8 (2x, even/odd part),
 # i32<->i8 (4x, pack pattern), and i16->f16 (int->float). int<->int casts do not
@@ -191,6 +196,28 @@ _TRAIT_I8_PP3 = _i8_pp_trait(tla.params.RegSlot.THREE)
 # Unsigned twin of the i8 chain: f16→u8→u32/f32 with values a+200 (>=128).
 _TRAIT_U = tla.params.CastParams(
     reg_slot=tla.params.RegSlot.ZERO,
+    sat_mode=tla.params.SatMode.NOSAT,
+    round_mode=tla.params.RoundMode.CAST_TRUNC,
+)
+
+# --- same-type float traits ---------------------------------------------------
+# f16->f16 / bf16->bf16 / f32->f32 keep the element type and re-round every
+# lane, so a round mode is directly observable (1.5 -> 1.0): CAST_TRUNC on
+# f32/bf16 and CAST_FLOOR on f16. reg_slot stays on
+# ZERO/ONE: an equal-width conversion reads the whole register, and SAT is
+# refused because a same-type cast never saturates.
+_TRAIT_SAME_F32 = tla.params.CastParams(
+    reg_slot=tla.params.RegSlot.ZERO,
+    sat_mode=tla.params.SatMode.UNKNOWN,
+    round_mode=tla.params.RoundMode.CAST_TRUNC,
+)
+_TRAIT_SAME_F16 = tla.params.CastParams(
+    reg_slot=tla.params.RegSlot.ZERO,
+    sat_mode=tla.params.SatMode.NOSAT,
+    round_mode=tla.params.RoundMode.CAST_FLOOR,
+)
+_TRAIT_SAME_BF16 = tla.params.CastParams(
+    reg_slot=tla.params.RegSlot.ONE,
     sat_mode=tla.params.SatMode.NOSAT,
     round_mode=tla.params.RoundMode.CAST_TRUNC,
 )
@@ -426,6 +453,26 @@ def cast_multi(
                     .to(tla.Float32, _TRAIT_TO_F32_EVEN)
                 )
 
+                # Same-type float casts: the element type survives and only the
+                # rounding lands, so the rounding is directly observable
+                # (1.5 -> 1.0): CAST_TRUNC on f32/bf16, CAST_FLOOR on f16.
+                # a and c are exact in f16/bf16 too, so the
+                # f16->f16 and bf16->bf16 legs describe the same trunc() values
+                # as their f32 routes and enter as zero-differences that become
+                # nonzero if the same-type cast is dropped, widened, or
+                # mislaned.
+                st_a_f32 = a_v.to(tla.Float32, _TRAIT_SAME_F32)
+                st_c_f32 = c_v.to(tla.Float32, _TRAIT_SAME_F32)
+                f16_leg = a_h.to(tla.Float16, _TRAIT_SAME_F16).to(
+                    tla.Float32, _TRAIT_TO_F32_EVEN
+                )
+                bf16_leg = c_bf_e.to(tla.BFloat16, _TRAIT_SAME_BF16).to(
+                    tla.Float32, _TRAIT_TO_F32_EVEN2
+                )
+                same_type_contrib = (
+                    st_a_f32 + st_c_f32 + (f16_leg - st_a_f32) + (bf16_leg - st_c_f32)
+                )
+
                 out_chunk.store(
                     sum_f32
                     + (max_f32 - min_f32)
@@ -435,6 +482,7 @@ def cast_multi(
                     + sum8_f32
                     + fp8_contrib
                     + u_contrib
+                    + same_type_contrib
                 )
 
         tla.set_flag(vec_done)
@@ -547,6 +595,12 @@ def _expected(op_name: str, inputs: tuple[Any, ...]) -> Any:
     prod16_f32 = (a.to(torch.int32) * c.to(torch.int32)).to(f32)
     sum8_f32 = (a.to(torch.int32) + b.to(torch.int32)).to(f32)
     u_contrib = (a + 200.0).to(torch.float16).to(torch.uint8).to(torch.float16).to(f32)
+    # same-type floats: f32->f32 trunc on a and c. The f16->f16 and bf16->bf16
+    # legs re-round values that are already exact in their dtype, so each lands
+    # on the same trunc() value as its f32 route -- zero-differences in the
+    # kernel, nothing to add here. If a leg is dropped or mislaned the kernel
+    # sum moves while this reference does not.
+    same_type_contrib = torch.trunc(a) + torch.trunc(c)
     return (
         sum_f32
         + (max_f32 - min_f32)
@@ -555,7 +609,8 @@ def _expected(op_name: str, inputs: tuple[Any, ...]) -> Any:
         + prod16_f32
         + sum8_f32
         + fp8_contrib
-        + u_contrib,
+        + u_contrib
+        + same_type_contrib,
     )
 
 

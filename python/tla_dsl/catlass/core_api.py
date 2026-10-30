@@ -69,6 +69,12 @@ _CAST_UNSIGNED_ROUTES = frozenset(
     }
 )
 
+# Same-type float casts lower to the AVE vtrc op ("just rounding"): the value
+# keeps its element type and only the round mode reaches the instruction. No
+# other same-type cast exists -- integers and fp8 formats have no such
+# instruction, so the frontend refuses them rather than let the lowering crash.
+_CAST_SAME_TYPE_FLOAT_DTYPES = frozenset({"f16", "bf16", "f32"})
+
 # Element types tla.bitcast may reinterpret. Membership is not the whole rule:
 # the source and destination must also have the *same* width, which is checked
 # against dtype_size_bytes rather than enumerated as pairs.
@@ -657,6 +663,11 @@ class VectorSSA(_RegisterSSA):
             - Supported targets: signed i8..i64, unsigned u8..u32 on reachable
               routes, f16/bf16/f32, f8e4m3fn/f8e5m2. Not supported: bool, f64,
               f8e8m0, fp8-to-fp8, fp8-to-integer.
+            - A same-type cast (`f16`->`f16`, `bf16`->`bf16`, `f32`->`f32`)
+              keeps the element type and re-rounds every lane: only `round_mode`
+              takes effect. Other same-type casts (integers, fp8) are not
+              supported. `sat_mode` `SAT` is refused (a same-type cast never
+              saturates), and `reg_slot` must be `ZERO` or `ONE`.
             - `reg_slot` `TWO` and `THREE` name a pack quarter. They are valid
               on a 4x integer cast and the direct fp8<->f32 path.
 
@@ -669,6 +680,12 @@ class VectorSSA(_RegisterSSA):
             )
             with tla.vec.func(mode="simd"):
                 wide = narrow.to(tla.Float32, trait)
+                # f32 -> f32 with CAST_TRUNC: fractional bits round toward zero.
+                rounded = as_f32.to(tla.Float32, tla.params.CastParams(
+                    reg_slot=tla.params.RegSlot.ZERO,
+                    sat_mode=tla.params.SatMode.UNKNOWN,
+                    round_mode=tla.params.RoundMode.CAST_TRUNC,
+                ))
             ```
         """
         _require_category("cast", "operand", self, "vector_ssa", 0)
@@ -713,6 +730,21 @@ class VectorSSA(_RegisterSSA):
         ):
             _op_error("cast", "f16->bf16 cast only supports UNKNOWN sat_mode")
         _require_unsigned_cast_route(src_token, dst_token)
+        if src_token == dst_token and src_token not in _CAST_SAME_TYPE_FLOAT_DTYPES:
+            _op_error(
+                "cast",
+                f"unsupported cast '{src_token}'->'{dst_token}': a same-type "
+                f"cast is only supported for floats (f16/bf16/f32), where it "
+                f"lowers to the AVE vtrc rounding op; integers and fp8 formats "
+                f"have no same-type cast",
+            )
+        if src_token == dst_token and params.sat_mode is SatMode.SAT:
+            _op_error(
+                "cast",
+                f"invalid params for cast '{src_token}'->'{dst_token}': a "
+                f"same-type cast lowers to the AVE vtrc op, which never "
+                f"saturates; use UNKNOWN or NOSAT sat_mode",
+            )
         _require_reg_slot_reachable(src_token, dst_token, params.reg_slot)
         result_desc = _cast_result_descriptor(src_desc, dst_token, params)
         with context:
@@ -9330,12 +9362,14 @@ def _require_reg_slot_reachable(src_token: str, dst_token: str, slot: RegSlot) -
     """
     if slot not in (RegSlot.TWO, RegSlot.THREE):
         return
-    if src_token == "f16" and dst_token == "bf16":
+    if (src_token == "f16" and dst_token == "bf16") or (
+        src_token == dst_token and src_token in _CAST_SAME_TYPE_FLOAT_DTYPES
+    ):
         _op_error(
             "cast",
-            f"invalid reg_slot {slot} for cast 'f16'->'bf16': this equal-width "
-            f"conversion preserves all lanes and does not select a pack quarter; "
-            f"use ZERO or ONE",
+            f"invalid reg_slot {slot} for cast '{src_token}'->'{dst_token}': "
+            f"this equal-width conversion preserves all lanes and does not "
+            f"select a pack quarter; use ZERO or ONE",
         )
     src_bits = _CAST_TOKEN_BITS.get(src_token, 0)
     dst_bits = _CAST_TOKEN_BITS.get(dst_token, 0)

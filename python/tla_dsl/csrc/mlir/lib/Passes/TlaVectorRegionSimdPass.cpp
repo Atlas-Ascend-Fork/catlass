@@ -1551,6 +1551,13 @@ static FailureOr<Value> createVectorCastResult(
         return createFp8ToF32Result(b, loc, dstVecType, src, mask, pp);
     if (s.isF32() && isAveFloat8Type(d))
         return createF32ToFp8Result(b, loc, dstVecType, src, mask, rnd, sat, pp);
+    // A same-type float cast has no width to convert, so it is a pure re-round:
+    // vtrc applies the round mode to every lane and nothing else. It has no
+    // saturation operand and no even/odd part selector, so the trait's sat_mode
+    // and reg_slot are simply ignored here (the frontend rejects the values
+    // that would silently mean nothing).
+    if (sFloat && dFloat && s == d)
+        return b.create<hivmave::VFVtrcOp>(loc, dstVecType, src, rnd, mask).getResult();
     // For same-width float<->int conversions the packed even/odd part does not
     // apply (src and dst occupy the full register); pass a null part attribute,
     // matching the arith->AVE lowering.

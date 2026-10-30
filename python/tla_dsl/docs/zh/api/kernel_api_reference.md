@@ -2428,7 +2428,7 @@ with tla.vec.func(mode="simd"):
 
 #### `VectorSSA.to`
 
-**源码：** [`catlass.core_api.VectorSSA.to`](../../../catlass/core_api.py#L622)
+**源码：** [`catlass.core_api.VectorSSA.to`](../../../catlass/core_api.py#L639)
 
 功能说明：
 
@@ -2450,6 +2450,11 @@ f32 这一对是单条指令：f16 与 bf16 两对由 lowering 展开为经过 f
 两条指令而非五条。fp8 之间没有重编码路径——两者指数范围不同，属于重量化而非
 cast——也没有 fp8 与整数之间的路径。
 
+同类型浮点 cast（`tla.Float16` -> `tla.Float16`、`tla.BFloat16` -> `tla.BFloat16`、
+`tla.Float32` -> `tla.Float32`）保留元素类型，逐 lane 重新舍入，降级为 AVE `vtrc`
+指令：只有 `round_mode` 到达指令，`sat_mode` 与 `reg_slot` 不产生任何效果。整数与
+fp8 格式没有同类型 cast。
+
 函数原型：
 
 ```python
@@ -2468,6 +2473,9 @@ VectorSSA.to(dst_type: Any, params: CastParams, mask: Any | None = None) -> Any
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.vec.func()` 内调用。
+- 同类型浮点 cast 的 `sat_mode` 不允许 `SAT`（同类型 cast 从不饱和，
+  `UNKNOWN` 与 `NOSAT` 均可），`reg_slot` 必须为 `ZERO` 或 `ONE`：该转换没有
+  饱和参数，也没有 pack-quarter 选择子。
 - `reg_slot` 的 `TWO` 与 `THREE` 指向 pack 的四分之一，仅在位宽变化为 4 倍的整数
   cast 以及直接的 fp8<->f32 指令上合法。
 - 线程级标量 cast 在 `mode="simt"` 下使用 `Numeric.to`；本方法是 vector（AVE）
@@ -2483,11 +2491,17 @@ trait = tla.params.CastParams(
 )
 with tla.vec.func(mode="simd"):
     wide = narrow.to(tla.Float32, trait)
+    # f32 -> f32 配合 CAST_TRUNC：小数位向零舍入。
+    rounded = as_f32.to(tla.Float32, tla.params.CastParams(
+        reg_slot=tla.params.RegSlot.ZERO,
+        sat_mode=tla.params.SatMode.UNKNOWN,
+        round_mode=tla.params.RoundMode.CAST_TRUNC,
+    ))
 ```
 
 #### `VectorSSA.bitcast`
 
-**源码：** [`catlass.core_api.VectorSSA.bitcast`](../../../catlass/core_api.py#L744)
+**源码：** [`catlass.core_api.VectorSSA.bitcast`](../../../catlass/core_api.py#L767)
 
 功能说明：
 

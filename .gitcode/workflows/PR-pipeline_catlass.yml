@@ -1,4 +1,4 @@
-name: catlass_action
+name: PR-pipeline_catlass
 
 concurrency:
   max: 15

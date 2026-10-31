@@ -35,6 +35,12 @@
 
 产品与项目名保持原样，API、路径、命令、标识符不翻译改写，英文沿用同一篇及相邻文档的既有表达并保留原有结构；完整规则与易错项清单见 [`catlass-docs-review`](.agents/skills/catlass-docs-review/SKILL.md) 的审查清单。改动文档时按该清单逐项检查。
 
+## 贡献须知
+
+为CATLASS进行贡献时，必须阅读[贡献指南](CONTRIBUTING.md)中的指导说明，如Issue规范及欢迎贡献的代码范围。禁止进行违反贡献指南的操作，如不按照模板提出Issue，或对当前不接受贡献的代码段进行修改。
+
+提交 Issue 与 PR 前，须先读取 `.gitcode/ISSUE_TEMPLATE/` 下对应模板与 `.gitcode/PULL_REQUEST_TEMPLATE.zh-CN.md`，按模板逐字段填写并核对；自查标准是“是否符合模板”，而不是“内容是否与草稿一致”。通过 API 直接提交的同样适用。
+
 ## 目录快速导航
 
 | Path               | Description                            |

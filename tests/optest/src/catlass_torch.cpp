@@ -353,6 +353,10 @@ using Ascend950Fp8MxBatchMatmulOp = MxBatchedMatmulLike<CatlassKernel::Ascend950
 static auto& ascend950_fp8_mx_batch_matmul = Ascend950Fp8MxBatchMatmulOp::Run;
 REGISTER_TORCH_FUNC(ascend950_fp8_mx_batch_matmul);
 
+using Ascend950Fp4MxBatchMatmulOp = MxFp4BatchedMatmulLike<CatlassKernel::Ascend950Fp4MxBatchMatmul>;
+static auto& ascend950_fp4_mx_batch_matmul = Ascend950Fp4MxBatchMatmulOp::Run;
+REGISTER_TORCH_FUNC(ascend950_fp4_mx_batch_matmul);
+
 using BroadcastMatmulPerblockQuantOp = BroadcastMatmulPerblockQuantLike<CatlassKernel::BroadcastMatmulPerblockQuant>;
 static auto& broadcast_matmul_perblock_quant = BroadcastMatmulPerblockQuantOp::Run;
 REGISTER_TORCH_FUNC(broadcast_matmul_perblock_quant);

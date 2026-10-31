@@ -86,6 +86,7 @@ __all__ = [
     "w4a4_matmul_per_token_per_channel_dequant",
     "broadcast_matmul_perblock_quant",
     "ascend950_fp8_mx_batch_matmul",
+    "ascend950_fp4_mx_batch_matmul",
     "ascend950_dual_level_quant_mx_batch_matmul",
     "ascend950_multi_core_splitk_matmul",
     "ascend950_tail_multi_core_splitk_matmul",

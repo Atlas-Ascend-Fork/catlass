@@ -322,6 +322,58 @@ def prepare_fp8_mx_batch_inputs(
     return a, b, a_scale, b_scale, expected
 
 
+def _packed_uint8_batch_to_fp4(packed_batch: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
+    """Materialize a batch of packed uint8 nibbles as float4_e2m1fn_x2 with logical shape (batch, rows, cols).
+ 
+    ``torch.stack`` is unavailable for float4_e2m1fn_x2 (no copy_kernel), so the
+    batch is assembled in uint8 and copied into the byte view once.
+    """
+    flat = packed_batch.contiguous().flatten()
+    out = torch.empty((packed_batch.shape[0], rows, cols), dtype=torch.float4_e2m1fn_x2)
+    out.view(torch.uint8).flatten()[: flat.numel()].copy_(flat)
+    return out
+ 
+ 
+def prepare_fp4_mx_batch_inputs(
+    batch: int, m: int, n: int, k: int, device: str = "npu"
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build batched MX-FP4 inputs for example 58 FP4 variant (trans_a=0, trans_b=1)."""
+    a_packed_list = []
+    b_packed_list = []
+    a_scale_list = []
+    b_scale_list = []
+    expected_list = []
+ 
+    for _ in range(batch):
+        a_packed, a_scale, a_deq = _gen_fp4_e2m1(m, k, axis=1, trans=False)
+        b_packed, b_scale, b_deq = _gen_fp4_e2m1(k, n, axis=0, trans=True)
+ 
+        # A: scale shape (m, scaleK) -> (m, scaleK//2, 2) contiguous
+        a_scale = a_scale.reshape(a_scale.shape[0], a_scale.shape[1] // 2, 2).contiguous()
+        # B: quantized with axis=0 + trans=True, scale shape (scaleK, n)
+        # -> reshape (scaleK//2, 2, n) -> permute (n, scaleK//2, 2) to match isMxScaleB=true layout
+        b_scale = b_scale.reshape(b_scale.shape[0] // 2, 2, b_scale.shape[1]).permute(2, 0, 1).contiguous()
+ 
+        a_packed_list.append(a_packed)
+        b_packed_list.append(b_packed)
+        a_scale_list.append(a_scale)
+        b_scale_list.append(b_scale)
+        expected_list.append(a_deq @ b_deq)
+ 
+    # A stored as (B, M, K) packed float4_e2m1fn_x2; B stored as (B, N, K)
+    a = _packed_uint8_batch_to_fp4(torch.stack(a_packed_list, dim=0), m, k)
+    b = _packed_uint8_batch_to_fp4(torch.stack(b_packed_list, dim=0), n, k)
+    a_scale = torch.stack(a_scale_list, dim=0)
+    b_scale = torch.stack(b_scale_list, dim=0)
+    expected = torch.stack(expected_list, dim=0)
+ 
+    if device == "npu":
+        a = a.contiguous().npu()
+        b = b.contiguous().npu()
+        a_scale = a_scale.contiguous().npu()
+        b_scale = b_scale.contiguous().npu()
+    return a, b, a_scale, b_scale, expected
+
 def prepare_fp8_mx_grouped_slice_m_inputs(
     group_sizes: Sequence[int],
     n: int,

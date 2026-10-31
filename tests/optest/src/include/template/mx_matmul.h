@@ -290,6 +290,119 @@ struct MxBatchedMatmulLike {
 };
 
 template <KernelFn KernelFunc>
+struct MxFp4BatchedMatmulLike {
+    using OutputType = at::Tensor;
+ 
+    static void GetKernelInfo(
+        const at::Tensor& mat1, const at::Tensor& mat2, const at::Tensor& mx_scale_a,
+        const at::Tensor& mx_scale_b, bool transA, bool transB, CatlassKernel::TParams& tParams,
+        CatlassKernel::MatmulParams& params)
+    {
+        TORCH_CHECK(mat1.dim() == 3, "mat1 must be a 3-D tensor with shape (batch, M, K)");
+        TORCH_CHECK(mat2.dim() == 3, "mat2 must be a 3-D tensor with shape (batch, N, K) when transB=True");
+        TORCH_CHECK(
+            !transA && transB,
+            "ascend950_fp4_mx_batch_matmul currently supports only transA=false and transB=true");
+        CheckNpuTensor(mat1, "mat1");
+        CheckNpuTensor(mat2, "mat2");
+        CheckNpuTensor(mx_scale_a, "mx_scale_a");
+        CheckNpuTensor(mx_scale_b, "mx_scale_b");
+        CheckSameDevice(mat1, "mat1", mat2, "mat2");
+        CheckSameDevice(mat1, "mat1", mx_scale_a, "mx_scale_a");
+        CheckSameDevice(mat1, "mat1", mx_scale_b, "mx_scale_b");
+        TORCH_CHECK(
+            mat1.scalar_type() == torch::kFloat4_e2m1fn_x2,
+            "mat1 must have dtype torch.float4_e2m1fn_x2, got ", mat1.scalar_type());
+        TORCH_CHECK(
+            mat2.scalar_type() == torch::kFloat4_e2m1fn_x2,
+            "mat2 must have dtype torch.float4_e2m1fn_x2, got ", mat2.scalar_type());
+        CheckMxScaleDType(mx_scale_a, "mx_scale_a");
+        CheckMxScaleDType(mx_scale_b, "mx_scale_b");
+        TORCH_CHECK(mat1.size(0) == mat2.size(0), "mat1 and mat2 batch dimensions must match");
+        TORCH_CHECK(mat1.is_contiguous(), "mat1 must be contiguous");
+        TORCH_CHECK(mat2.is_contiguous(), "mat2 must be contiguous");
+        TORCH_CHECK(mx_scale_a.is_contiguous(), "mx_scale_a must be contiguous");
+        TORCH_CHECK(mx_scale_b.is_contiguous(), "mx_scale_b must be contiguous");
+ 
+        tParams.element["A"] = TorchDtypeToAclDtype(mat1.scalar_type());
+        tParams.element["B"] = TorchDtypeToAclDtype(mat2.scalar_type());
+        tParams.element["C"] = ACL_FLOAT;
+        tParams.element["MX_SCALE"] = test_utils::TypeCast<std::string, aclDataType>("float8_e8m0fnu");
+        tParams.transpose["A"] = transA;
+        tParams.transpose["B"] = transB;
+        tParams.transpose["C"] = false;
+        tParams.useNz["A"] = false;
+        tParams.useNz["B"] = false;
+        tParams.useNz["C"] = false;
+ 
+        int64_t m, k1, k2, n;
+        if (transA) {
+            m = mat1.size(2);
+            k1 = mat1.size(1);
+        } else {
+            m = mat1.size(1);
+            k1 = mat1.size(2);
+        }
+        if (transB) {
+            k2 = mat2.size(2);
+            n = mat2.size(1);
+        } else {
+            k2 = mat2.size(1);
+            n = mat2.size(2);
+        }
+        TORCH_CHECK(k1 == k2, "mat1 and mat2 shapes cannot be multiplied (", m, "x", k1, " and ", k2, "x", n, ")");
+ 
+        params.batch = static_cast<uint32_t>(mat1.size(0));
+        params.m = static_cast<uint32_t>(m);
+        params.k = static_cast<uint32_t>(k1);
+        params.n = static_cast<uint32_t>(n);
+ 
+        uint32_t mxScaleAlignedK = 0;
+        int64_t scaleAPerBatch = 0;
+        int64_t scaleBPerBatch = 0;
+        ComputeMxScaleShapes(params.m, params.n, params.k, mxScaleAlignedK, scaleAPerBatch, scaleBPerBatch);
+        TORCH_CHECK(
+            mx_scale_a.numel() == static_cast<int64_t>(params.batch) * scaleAPerBatch,
+            "mx_scale_a must have ", static_cast<int64_t>(params.batch) * scaleAPerBatch,
+            " elements (batch=", params.batch, ", m=", m, ", mxScaleAlignedK=", mxScaleAlignedK,
+            "), got ", mx_scale_a.numel());
+        TORCH_CHECK(
+            mx_scale_b.numel() == static_cast<int64_t>(params.batch) * scaleBPerBatch,
+            "mx_scale_b must have ", static_cast<int64_t>(params.batch) * scaleBPerBatch,
+            " elements (batch=", params.batch, ", n=", n, ", mxScaleAlignedK=", mxScaleAlignedK,
+            "), got ", mx_scale_b.numel());
+ 
+        params.inputAddr.resize(4);
+        params.inputAddr[0] = static_cast<uint8_t*>(const_cast<void*>(mat1.storage().data()));
+        params.inputAddr[1] = static_cast<uint8_t*>(const_cast<void*>(mat2.storage().data()));
+        params.inputAddr[2] = static_cast<uint8_t*>(const_cast<void*>(mx_scale_a.storage().data()));
+        params.inputAddr[3] = static_cast<uint8_t*>(const_cast<void*>(mx_scale_b.storage().data()));
+    }
+ 
+    static OutputType AllocOutput(CatlassKernel::MatmulParams& params)
+    {
+        OutputType output = GetOutputTensor({params.batch, params.m, params.n}, torch::kFloat32);
+        params.outputAddr.resize(1);
+        params.outputAddr[0] = static_cast<uint8_t*>(const_cast<void*>(output.storage().data()));
+        return output;
+    }
+ 
+    static OutputType Run(
+        const at::Tensor& mat1, const at::Tensor& mat2, const at::Tensor& mx_scale_a,
+        const at::Tensor& mx_scale_b, bool transA, bool transB)
+    {
+        CatlassKernel::TParams tParams;
+        CatlassKernel::MatmulParams params;
+        GetKernelInfo(mat1, mat2, mx_scale_a, mx_scale_b, transA, transB, tParams, params);
+        OutputType output = AllocOutput(params);
+        aclrtStream stream = c10_npu::getCurrentNPUStream().stream(false);
+        uint32_t aicCoreNum = platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreNumAic();
+        RUN_NPU_FUNC(KernelFunc, aicCoreNum, stream, tParams, params);
+        return output;
+    }
+};
+
+template <KernelFn KernelFunc>
 struct DualLevelQuantMxBatchedMatmulLike {
     using OutputType =
         std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>;

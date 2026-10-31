@@ -455,6 +455,12 @@ __attribute__((weak)) void Ascend950Fp8MxBatchMatmul(
     const uint32_t blockNum, aclrtStream stream, const TParams& tParams, const MatmulParams& params);
 
 /**
+ * @brief JIT interface for example 58_ascend950_fp4_mx_batch_matmul.
+ */
+void Ascend950Fp4MxBatchMatmul(
+    const uint32_t blockNum, aclrtStream stream, const TParams& tParams, const MatmulParams& params);
+
+/**
  * @brief JIT interface for example 63_ascend950_dual_level_quant_mx_batch_matmul.
  */
 __attribute__((weak)) void Ascend950DualLevelQuantMxBatchMatmul(

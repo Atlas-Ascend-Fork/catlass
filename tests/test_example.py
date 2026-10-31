@@ -476,6 +476,74 @@ def test_54_ascend950_fp4_mx_matmul_aswt_shape_512_1024_256(build_env):
 
 
 @only_on_3510
+def test_58_ascend950_fp8_mx_batch_matmul(build_env):
+    # gen_data args: batch, m, n, k, trans_a, trans_b (trans_b=1 -> ColumnMajor B)
+    # k <= 512: bfloat16 output stays within the 1/256 compare tolerance
+    case_py = [str(i) for i in [2, 512, 1024, 512, 0, 1]]
+    subprocess.run(
+        [
+            "python",
+            os.path.join(CMAKE_EXAMPLES_PATH, "58_ascend950_mx_batch_matmul", "gen_data.py"),
+        ]
+        + case_py,
+        check=False,
+    )
+    # example args: batch, m, n, k, device_id
+    case_cpp = [str(i) for i in [2, 512, 1024, 512]] + [DEVICE_ID]
+    run_case(build_env, "58_ascend950_fp8_mx_batch_matmul", case_cpp)
+
+
+@only_on_3510
+def test_58_ascend950_fp8_mx_batch_matmul_small_shape(build_env):
+    case_py = [str(i) for i in [1, 256, 256, 512, 0, 1]]
+    subprocess.run(
+        [
+            "python",
+            os.path.join(CMAKE_EXAMPLES_PATH, "58_ascend950_mx_batch_matmul", "gen_data.py"),
+        ]
+        + case_py,
+        check=False,
+    )
+    # example args: batch, m, n, k, device_id
+    case_cpp = [str(i) for i in [1, 256, 256, 512]] + [DEVICE_ID]
+    run_case(build_env, "58_ascend950_fp8_mx_batch_matmul", case_cpp)
+
+
+@only_on_3510
+def test_58_ascend950_fp4_mx_batch_matmul(build_env):
+    # gen_data_fp4 writes to data_fp4/ so it never clashes with the fp8 data dir
+    case_py = [str(i) for i in [5, 256, 512, 1024, 0, 1]]
+    subprocess.run(
+        [
+            "python",
+            os.path.join(CMAKE_EXAMPLES_PATH, "58_ascend950_mx_batch_matmul", "gen_data_fp4.py"),
+        ]
+        + case_py,
+        check=False,
+    )
+    # example args: batch, m, n, k, device_id
+    case_cpp = [str(i) for i in [5, 256, 512, 1024]] + [DEVICE_ID]
+    run_case(build_env, "58_ascend950_fp4_mx_batch_matmul", case_cpp)
+
+
+@only_on_3510
+def test_58_ascend950_fp4_mx_batch_matmul_large_k(build_env):
+    # fp4 outputs float, so a large-k shape (2048) stays accurate
+    case_py = [str(i) for i in [4, 128, 256, 2048, 0, 1]]
+    subprocess.run(
+        [
+            "python",
+            os.path.join(CMAKE_EXAMPLES_PATH, "58_ascend950_mx_batch_matmul", "gen_data_fp4.py"),
+        ]
+        + case_py,
+        check=False,
+    )
+    # example args: batch, m, n, k, device_id
+    case_cpp = [str(i) for i in [4, 128, 256, 2048]] + [DEVICE_ID]
+    run_case(build_env, "58_ascend950_fp4_mx_batch_matmul", case_cpp)
+
+
+@only_on_3510
 def test_55_ascend950_mx_grouped_matmul_slice_m(build_env):
     build_case(build_env, "55_ascend950_mx_grouped_matmul_slice_m")
     # gen_data_compare args: G, M, N, K, trans_b, quant_type, device_id
@@ -709,6 +777,7 @@ def test_71_ascend950_fp8_mx_grouped_matmul_finalize_routing(build_env):
     )
     ret_check(ret)
 
+
 @only_on_3510
 def test_74_ascend950_weight_quant_a8w4_grouped_mx_matmul(build_env):
     # gen_data args:
@@ -720,18 +789,18 @@ def test_74_ascend950_weight_quant_a8w4_grouped_mx_matmul(build_env):
     )
     for case_py, case_cpp in case_groups:
         ret = subprocess.run(
-                [
-                    "python3",
-                    os.path.join(
-                        CMAKE_EXAMPLES_PATH,
-                        "74_ascend950_weight_quant_a8w4_grouped_mx_matmul",
-                        "gen_data.py",
-                    ),
-                ]
-                + case_py,
-                capture_output=True,
-                check=False,
-            )
+            [
+                "python3",
+                os.path.join(
+                    CMAKE_EXAMPLES_PATH,
+                    "74_ascend950_weight_quant_a8w4_grouped_mx_matmul",
+                    "gen_data.py",
+                ),
+            ]
+            + case_py,
+            capture_output=True,
+            check=False,
+        )
 
         ret_check(ret)
 

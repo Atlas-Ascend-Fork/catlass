@@ -107,6 +107,35 @@ def ascend950_fp8_mx_batch_matmul(
     )
 
 
+def ascend950_fp4_mx_batch_matmul(
+    mat1: Tensor,
+    mat2: Tensor,
+    mx_scale_a: Tensor,
+    mx_scale_b: Tensor,
+    transA: bool = False,
+    transB: bool = True,
+) -> Tensor:
+    """Run CATLASS Ascend950 MX FP4 batch matmul on NPU tensors.
+ 
+    Source: example 58_ascend950_fp4_mx_batch_matmul.
+    This wrapper follows the example path and currently supports only
+    ``transA=False`` and ``transB=True``.
+ 
+    Args:
+        mat1: Left input (float4_e2m1fn_x2), shape ``(B, M, K)`` unless ``transA``.
+        mat2: Right input (float4_e2m1fn_x2), shape ``(B, N, K)`` when ``transB=True``.
+        mx_scale_a: Batched MX scale for A (float8_e8m0fnu).
+        mx_scale_b: Batched MX scale for B (float8_e8m0fnu).
+        transA: Must be ``False``.
+        transB: Must be ``True``.
+ 
+    Returns:
+        FP32 output tensor with shape ``(B, M, N)``.
+    """
+    return torch.ops.catlass.ascend950_fp4_mx_batch_matmul(
+        mat1, mat2, mx_scale_a, mx_scale_b, transA, transB
+    )
+
 def ascend950_a8w4_mx_matmul(
     mat1: Tensor,
     mat2: Tensor,

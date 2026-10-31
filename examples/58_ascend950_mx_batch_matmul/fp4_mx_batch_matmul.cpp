@@ -9,15 +9,18 @@
  * the software repository for the full text of the License.
  */
 
+// FP4 MX Batch Matmul: A/B 为 float4_e2m1x2_t，缩放因子为 float8_e8m0_t，输出 float。
+// 与 fp8_mx_batch_matmul.cpp 共享同一 MxBatchedMatmulTla kernel，仅数据类型不同。
+
 #ifndef K_MAX_SHAPE_DIM
 #define K_MAX_SHAPE_DIM 0
 #endif
 
+#include <algorithm>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <cstring>
-#include "securec.h"
 
 #include "catlass/gemm/kernel/mx_batched_matmul_tla.hpp"
 
@@ -40,7 +43,8 @@ using namespace tla;
 
 using Options = GroupedGemmOptions;
 
-static const std::string kDataRoot = "./examples/58_ascend950_fp8_mx_batch_matmul/data";
+// FP4 数据使用独立目录，避免与 FP8 的 data/ 相互覆盖
+static const std::string kDataRoot = "./examples/58_ascend950_mx_batch_matmul/data_fp4";
 
 template <typename T>
 bool SaveResult(const std::string& filename, const std::vector<T>& data)
@@ -50,22 +54,11 @@ bool SaveResult(const std::string& filename, const std::vector<T>& data)
         return false;
     }
     const size_t dataSize = data.size() * sizeof(T);
-    if (dataSize <= 0) {
-        file.close();
+    if (dataSize == 0) {
         return true;
     }
-
-    std::vector<char> buffer(dataSize);
-    memcpy(buffer.data(), data.data(), dataSize);
-
-    file.write(buffer.data(), dataSize);
-    if (!file) {
-        file.close();
-        return false;
-    }
-
-    file.close();
-    return true;
+    file.write(reinterpret_cast<const char*>(data.data()), dataSize);
+    return static_cast<bool>(file);
 }
 
 static void Run(const Options& options)
@@ -82,10 +75,11 @@ static void Run(const Options& options)
     uint32_t k = options.problemShape.k();
     uint32_t mxScaleK = CeilDiv<MX_SCALE_GROUP_NUM>(k);
 
-    using ElementA = float8_e4m3_t;
-    using ElementB = float8_e4m3_t;
+    // FP4 数据类型：float4_e2m1x2_t（两个 4-bit 值打包在 1 字节）
+    using ElementA = float4_e2m1x2_t;
+    using ElementB = float4_e2m1x2_t;
     using ElementMxScale = float8_e8m0_t;
-    using ElementC = bfloat16_t;
+    using ElementC = float;
 
     using LayoutTagA = layout::RowMajor;
     using LayoutTagB = layout::ColumnMajor;
@@ -101,15 +95,16 @@ static void Run(const Options& options)
     size_t lenMxScaleB = mxScaleAlignedK * n * batchCount;
     size_t lenC = tagC.Capacity() * batchCount;
 
-    size_t sizeA = lenA * sizeof(ElementA);
-    size_t sizeB = lenB * sizeof(ElementB);
+    // FP4 每元素 4 bit，两个元素打包成 1 字节，故字节数 = 元素数 / 2
+    size_t sizeA = lenA / 2;
+    size_t sizeB = lenB / 2;
     size_t sizeMxScaleA = lenMxScaleA * sizeof(ElementMxScale);
     size_t sizeMxScaleB = lenMxScaleB * sizeof(ElementMxScale);
     size_t sizeC = lenC * sizeof(ElementC);
     size_t sizeWorkspace{0};
 
-    std::vector<int8_t> hostA(lenA);
-    std::vector<int8_t> hostB(lenB);
+    std::vector<int8_t> hostA(sizeA);
+    std::vector<int8_t> hostB(sizeB);
     std::vector<int8_t> hostMxScaleA(lenMxScaleA);
     std::vector<int8_t> hostMxScaleB(lenMxScaleB);
 
@@ -138,11 +133,11 @@ static void Run(const Options& options)
         ACL_CHECK(aclrtResetDevice(options.deviceId));
         ACL_CHECK(aclFinalize());
     };
-    if (!ReadFile(kDataRoot + "/input/a_8.bin", hostA.data(), sizeA)) {
+    if (!ReadFile(kDataRoot + "/input/a_4.bin", hostA.data(), sizeA)) {
         cleanupAndFinalize();
         return;
     }
-    if (!ReadFile(kDataRoot + "/input/b_8.bin", hostB.data(), sizeB)) {
+    if (!ReadFile(kDataRoot + "/input/b_4.bin", hostB.data(), sizeB)) {
         cleanupAndFinalize();
         return;
     }
@@ -174,8 +169,9 @@ static void Run(const Options& options)
     using ArchTag = Arch::Ascend950;
     constexpr bool enableUnitFlag = true;
     using DispatchPolicy = Gemm::MmadMx<ArchTag, enableUnitFlag, 16>;
-    using L1TileShape = Shape<Int<256>, Int<256>, Int<256>>;
-    using L0TileShape = Shape<Int<256>, Int<256>, Int<128>>;
+    // FP4 L1 tile K=512 (FP8 是 256)，因 4-bit 数据单位带宽小，单块元素数翻倍以充分利用 L1
+    using L1TileShape = Shape<Int<256>, Int<256>, Int<512>>;
+    using L0TileShape = Shape<Int<256>, Int<256>, Int<256>>;
 
     auto layoutA = tla::MakeLayout<ElementA, LayoutTagA>(m, k);
     auto layoutB = tla::MakeLayout<ElementB, LayoutTagB>(k, n);
@@ -264,7 +260,7 @@ static void Run(const Options& options)
         return true;
     };
 
-    if constexpr (!std::is_same_v<ElementC, bfloat16_t>) {
+    if constexpr (!std::is_same_v<ElementC, float>) {
         std::vector<ElementC> hostC(lenC);
         ACL_CHECK(aclrtMemcpy(hostC.data(), sizeC, deviceC, sizeC, ACL_MEMCPY_DEVICE_TO_HOST));
         SaveResult<ElementC>(resultFileName, hostC);
@@ -274,9 +270,10 @@ static void Run(const Options& options)
             return;
         }
     } else {
-        std::vector<bfloat16> hostC(lenC);
+        // ElementC = float，直接用 float 拷回并比对
+        std::vector<float> hostC(lenC);
         ACL_CHECK(aclrtMemcpy(hostC.data(), sizeC, deviceC, sizeC, ACL_MEMCPY_DEVICE_TO_HOST));
-        SaveResult<bfloat16>(resultFileName, hostC);
+        SaveResult<float>(resultFileName, hostC);
         std::cout << "Result saved to: " << resultFileName << std::endl;
         if (!compareAndReport(hostC)) {
             cleanupAndFinalize();

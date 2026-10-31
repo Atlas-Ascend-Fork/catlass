@@ -53,6 +53,7 @@ from .ascend950_mx_matmul import (  # example 53, 54, 58, 59, 63
     ascend950_a8w4_mx_matmul,
     ascend950_dual_level_quant_mx_batch_matmul,
     ascend950_fp4_mx_matmul_aswt,
+    ascend950_fp4_mx_batch_matmul,
     ascend950_fp8_mx_batch_matmul,
     ascend950_fp8_mx_matmul_aswt,
 )
@@ -192,6 +193,7 @@ __all__ = [
     "ascend950_fp4_mx_matmul_aswt",  # example 54
     "ascend950_mx_grouped_matmul_slice_m",  # example 55
     "ascend950_fp8_mx_batch_matmul",      # example 58
+    "ascend950_fp4_mx_batch_matmul",      # example 58 (FP4 variant)
     "ascend950_a8w4_mx_matmul",           # example 59
     "ascend950_a8w4_grouped_mx_matmul",   # example 74
     "ascend950_grouped_matmul_slice_m",   # example 60

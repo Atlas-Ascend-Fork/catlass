@@ -123,9 +123,10 @@ _HIVM_TEMPLATE_BITCODE_ATTRS = {
 }
 _MAX_KERNEL_ABI_PAYLOAD_SIZE = 1 << 20
 # Bumped when HIVMC append-bisheng defaults change (e.g. cce-vf-auto-sync=fused,
-# cce-enable-dynamic-misched=true), so pre-existing disk caches cannot silently
-# reuse binaries built under the old HIVMC-injected ``global`` autosync policy.
-_ONLINE_CACHE_ABI_VERSION = 10
+# cce-enable-dynamic-misched=true, cce-vf-aa-between-iters=false), so
+# pre-existing disk caches cannot silently reuse binaries built under the old
+# HIVMC-injected ``global`` autosync policy.
+_ONLINE_CACHE_ABI_VERSION = 11
 
 
 class TlaExecutionError(RuntimeError):
@@ -1948,6 +1949,7 @@ def _cache_key(
         # Fixed HIVMC override; bump with ``_ONLINE_CACHE_ABI_VERSION`` if changed.
         "cce_vf_auto_sync": "fused",
         "cce_enable_dynamic_misched": True,
+        "cce_vf_aa_between_iters": False,
         "extern_compile_specs": extern_compile_identities,
         "extern_compile_environment": extern_compile_environment,
     }
@@ -2548,6 +2550,10 @@ def _build_hivmc_a5_command(
     # Dynamic scheduling (whole-kernel). Kept in the same
     # ``--append-bisheng-options`` so a single occurrence reaches bisheng.
     reserve_flags.extend(["-mllvm", "-cce-enable-dynamic-misched=true"])
+    # Work around the `ccec` cross-iteration alias analysis crash, which is
+    # set to `true` by default in hivmc-a5, will cause the ccec compilation to
+    # fail in some cases. So we force it to `false` here.
+    reserve_flags.extend(["-mllvm", "-cce-vf-aa-between-iters=false"])
     if reserve_flags:
         # hivmc has no option of its own for these; it forwards whatever this
         # carries on to bisheng, which is where they are understood.

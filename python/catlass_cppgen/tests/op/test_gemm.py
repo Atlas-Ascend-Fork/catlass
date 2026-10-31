@@ -11,7 +11,7 @@ import unittest
 from catlass_cppgen.op.gemm import Gemm
 from catlass_cppgen.common.op_tensor import OpTensor
 from catlass_cppgen.common.data_type import DataType
-from catlass_cppgen.catlass.layout.layout import ColumnMajor, RowMajor
+from catlass_cppgen.catlass.layout.layout import RowMajor
 from catlass_cppgen.catlass.gemm_coord import GemmShape
 from catlass_cppgen.catlass.arch.arch import Arch
 from catlass_cppgen.catlass.gemm.dispatch_policy import (
@@ -207,13 +207,13 @@ class TestGemm(unittest.TestCase):
             A=a,
             B=b,
             strided_batched=True,
-            transA=True,        
+            transA=True,
             transB=False,
-            # Note; transA and transB means whether it 
-            # is transposed with the batch axis. 
-            # If you want to set the Row/ColumnMajor, 
-            # you need to construct correct op tensor or 
-            # directly set `layout_A` and `layout_B` 
+            # Note; transA and transB means whether it
+            # is transposed with the batch axis.
+            # If you want to set the Row/ColumnMajor,
+            # you need to construct correct op tensor or
+            # directly set `layout_A` and `layout_B`
             # with messy `strides` that cannot be auto derived
         )
         kernel = find_kernel_by_type(

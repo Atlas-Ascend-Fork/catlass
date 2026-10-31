@@ -9,7 +9,6 @@ import re
 import pytest
 
 import catlass.tla as tla
-import catlass.runtime as runtime_mod
 from catlass.base_dsl import BaseDSL
 from dsl_tutorials.debug_print import debug_print as debug_print_example
 from dsl_tutorials.debug_print import debug_print_format
@@ -152,13 +151,13 @@ def _formatted_vector_value_kernel(value: tla.Tensor) -> None:
 
 def _host_vector_tensor() -> tla.Tensor:
     return make_fake_tensor(
-               tla.Float32,
-               (64,),
-               (1,),
-               addrspace=tla.AddressSpace.ub,
-               origin_shape=(64,),
-               layout_tag=tla.arch.RowMajor,
-           )
+        tla.Float32,
+        (64,),
+        (1,),
+        addrspace=tla.AddressSpace.ub,
+        origin_shape=(64,),
+        layout_tag=tla.arch.RowMajor,
+    )
 
 
 def test_print_signature_is_variadic() -> None:
@@ -184,25 +183,25 @@ def test_debug_print_emits_formatted_string_and_variadic_scalars() -> None:
     )
 
     assert mlir.count("tla.debug_print") == 7
-    assert "tla.debug_print format \"\"" in mlir
-    assert "tla.debug_print format \"hello\"" in mlir
-    assert "tla.debug_print format \"x={}\"" in mlir
-    assert "tla.debug_print format \"v={}\"" in mlir
-    assert "tla.debug_print format \"x={} y={}\"" in mlir
-    assert "tla.debug_print format \"{} {}\"" in mlir
-    assert "tla.debug_print format \"{{}} % {}\"" in mlir
+    assert 'tla.debug_print format ""' in mlir
+    assert 'tla.debug_print format "hello"' in mlir
+    assert 'tla.debug_print format "x={}"' in mlir
+    assert 'tla.debug_print format "v={}"' in mlir
+    assert 'tla.debug_print format "x={} y={}"' in mlir
+    assert 'tla.debug_print format "{} {}"' in mlir
+    assert 'tla.debug_print format "{{}} % {}"' in mlir
     assert "debug_printf" not in mlir
 
 
-def test_debug_print_materializes_unsigned_literals_through_signless_constants() -> None:
+def test_debug_print_materializes_unsigned_literals_through_signless_constants() -> (
+    None
+):
     mlir = _formatted_unsigned_literals_kernel.dump_mlir()
 
     assert mlir.count("builtin.unrealized_conversion_cast") == 3
     for width in (8, 16, 32):
         assert re.search(rf"arith\.constant.*(?:->|:) i{width}", mlir)
-        assert re.search(
-            rf"(?:\(i{width}\) -> ui{width}|i{width} to ui{width})", mlir
-        )
+        assert re.search(rf"(?:\(i{width}\) -> ui{width}|i{width} to ui{width})", mlir)
 
 
 @pytest.mark.parametrize(
@@ -225,22 +224,20 @@ def test_debug_print_emits_formatted_typed_scalar(
 
     debug_line = next(line for line in mlir.splitlines() if "tla.debug_print" in line)
     assert 'format "x={}"' in debug_line or 'format = "x={}"' in debug_line
-    assert re.search(
-        rf"(?:\({expected_type}\)|: {expected_type}(?:\s|$))", debug_line
-    )
+    assert re.search(rf"(?:\({expected_type}\)|: {expected_type}(?:\s|$))", debug_line)
 
 
 def test_debug_print_emits_formatted_cube_region() -> None:
     mlir = _formatted_cube_kernel.dump_mlir(type_args=(tla.Int32(0),))
 
     assert "tla.cube" in mlir
-    assert "tla.debug_print format \"cube {}\"" in mlir
+    assert 'tla.debug_print format "cube {}"' in mlir
 
 
 def test_debug_print_materializes_formatted_python_literals() -> None:
     mlir = _formatted_python_literals_kernel.dump_mlir()
 
-    assert "tla.debug_print format \"x={} v={}\"" in mlir
+    assert 'tla.debug_print format "x={} v={}"' in mlir
     assert "7 : i32" in mlir
     assert "1.250000e+00 : f32" in mlir or "1.25" in mlir
 
@@ -295,9 +292,7 @@ def test_debug_print_format_output_accepts_cross_core_reordering() -> None:
 )
 def test_debug_print_format_output_rejects_invalid_records(output: str) -> None:
     with pytest.raises(RuntimeError):
-        debug_print_format._verify_case_output(
-            output, payloads=("value",), block=1
-        )
+        debug_print_format._verify_case_output(output, payloads=("value",), block=1)
 
 
 def test_debug_print_emits_direct_scalars_in_both_regions() -> None:
@@ -507,9 +502,7 @@ def test_debug_print_rejects_invalid_public_calls(
 
 
 _SCALAR_ERROR = "expected one of f16, f32, i8, i16, i32, u8, u16, u32 scalar"
-_FORMATTED_SCALAR_ERROR = (
-    "expected one of f16, f32, i8, i16, i32, u8, u16, u32 scalar"
-)
+_FORMATTED_SCALAR_ERROR = "expected one of f16, f32, i8, i16, i32, u8, u16, u32 scalar"
 
 
 @pytest.mark.parametrize(

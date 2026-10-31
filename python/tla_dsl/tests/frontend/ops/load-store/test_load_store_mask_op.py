@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 
 import catlass.tla as tla
-import catlass.runtime as runtime_mod
 from catlass.core_api import MaskSSA, TlaCoreAPIError
 from catlass.params import MaskLoadParams, MaskStoreParams
+import catlass.runtime as runtime_mod  # noqa: F401
 
 
 def _ub_tensor(
@@ -130,9 +130,7 @@ def load_store_mask_fa_like_oversized_tile(
     mask_ub: tla.Tensor, data: tla.Tensor, dst: tla.Tensor
 ) -> None:
     """fa_mask-style: oversized view is only an address; N from UB dtype."""
-    mask_tile = tla.tile_view(
-        mask_ub, tla.make_shape(1, 64), tla.make_coord(0, 0)
-    )
+    mask_tile = tla.tile_view(mask_ub, tla.make_shape(1, 64), tla.make_coord(0, 0))
     data_tile = tla.tile_view(data, tla.make_shape(64), tla.make_coord(0))
     dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
     with tla.vector():

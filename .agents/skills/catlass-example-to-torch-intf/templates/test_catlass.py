@@ -8,7 +8,6 @@
 # the License.
 
 import torch
-import torch_npu
 import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))

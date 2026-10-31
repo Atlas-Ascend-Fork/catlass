@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 import catlass.tla as tla
-import catlass.runtime as runtime_mod
 from catlass.params import NormalStoreParams, UnalignStoreParams
+import catlass.runtime as runtime_mod  # noqa: F401
 
 
 def _ub_tensor(

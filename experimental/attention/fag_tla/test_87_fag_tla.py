@@ -11,7 +11,9 @@
 import os
 import sys
 
-_CATLASS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_CATLASS_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..")
+)
 _OPTEST_ROOT = os.path.join(_CATLASS_ROOT, "tests", "optest")
 for _p in (os.path.join(_OPTEST_ROOT, "tests"), _OPTEST_ROOT):
     if _p not in sys.path:
@@ -19,7 +21,7 @@ for _p in (os.path.join(_OPTEST_ROOT, "tests"), _OPTEST_ROOT):
 
 import pytest
 import torch
-import torch_npu
+import torch_npu  # noqa: F401
 
 from common import only_on_2201
 
@@ -83,7 +85,9 @@ def _check_close(res, ref, name, rtol=5e-2, atol=5e-2):
 
     c1 = mere < 1e-3 and mare < 1e-2
     c2 = err_ratio <= 0.15
-    print(f"[{name}] mere={mere:.6f} mare={mare:.6f} err_ratio={err_ratio:.4f} c1={c1} c2={c2}")
+    print(
+        f"[{name}] mere={mere:.6f} mare={mare:.6f} err_ratio={err_ratio:.4f} c1={c1} c2={c2}"
+    )
     return c1 or c2
 
 

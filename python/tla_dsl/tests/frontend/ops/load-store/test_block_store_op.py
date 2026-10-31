@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 
 import catlass.tla as tla
-import catlass.runtime as runtime_mod
 from catlass.params import BlockLoadParams, BlockStoreParams, PostMode
+import catlass.runtime as runtime_mod  # noqa: F401
 
 
 def _ub_tensor(
@@ -215,7 +215,9 @@ def test_block_store_kernel_parameter_stride(compiler_tlair: Any) -> None:
     """BlockStoreParams with stride from a kernel scalar argument."""
 
     @tla.kernel
-    def block_store_param_kernel(src: tla.Tensor, dst: tla.Tensor, stride_val: tla.Int32) -> None:
+    def block_store_param_kernel(
+        src: tla.Tensor, dst: tla.Tensor, stride_val: tla.Int32
+    ) -> None:
         src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
         dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
         with tla.vector():

@@ -8,7 +8,7 @@
 # the License.
 
 import torch
-import torch_npu
+import torch_npu  # noqa: F401
 import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))

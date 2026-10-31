@@ -8,8 +8,8 @@ import re
 import pytest
 
 import catlass.tla as tla
-import catlass.runtime as runtime_mod
 from catlass.execution_lowering import TlaLoweringError, UnsupportedExecutionLowering
+import catlass.runtime as runtime_mod  # noqa: F401
 
 
 def _tensor(
@@ -30,14 +30,14 @@ def _tensor(
         coord = tuple(0 for _ in shape)
         stride = tuple(reversed(contiguous_strides))
     return make_fake_tensor(
-               dtype,
-               shape,
-               stride,
-               addrspace=addrspace,
-               origin_shape=shape,
-               coord=coord,
-               layout_tag=tla.arch.RowMajor,
-           )
+        dtype,
+        shape,
+        stride,
+        addrspace=addrspace,
+        origin_shape=shape,
+        coord=coord,
+        layout_tag=tla.arch.RowMajor,
+    )
 
 
 def _assert_dynamic_index_from_arg(mlir: str, op_line: str) -> None:
@@ -206,9 +206,7 @@ def test_scalar_subscript_accepts_nonzero_offset_in_longer_tensor() -> None:
 
 
 def test_scalar_subscript_accepts_dynamic_index_ssa() -> None:
-    mlir = scalar_load_dynamic_offset_kernel.dump_mlir(
-        type_args=(_tensor(64), 7)
-    )
+    mlir = scalar_load_dynamic_offset_kernel.dump_mlir(type_args=(_tensor(64), 7))
 
     load_line = next(line for line in mlir.splitlines() if "tla.scalar_load" in line)
     assert "tla.scalar_load" in load_line
@@ -253,30 +251,22 @@ def test_scalar_subscript_assignment_emits_tla_scalar_store() -> None:
 def test_scalar_store_accepts_nonzero_offset_in_longer_tensor() -> None:
     mlir = scalar_store_offset_kernel.dump_mlir(type_args=(_tensor(64),))
 
-    store_line = next(
-        line for line in mlir.splitlines() if "tla.scalar_store" in line
-    )
+    store_line = next(line for line in mlir.splitlines() if "tla.scalar_store" in line)
     assert "arith.constant 7 : index" in mlir
     assert "[%c7]" in store_line
 
 
 def test_scalar_store_accepts_dynamic_index_ssa() -> None:
-    mlir = scalar_store_dynamic_offset_kernel.dump_mlir(
-        type_args=(_tensor(64), 7)
-    )
+    mlir = scalar_store_dynamic_offset_kernel.dump_mlir(type_args=(_tensor(64), 7))
 
-    store_line = next(
-        line for line in mlir.splitlines() if "tla.scalar_store" in line
-    )
+    store_line = next(line for line in mlir.splitlines() if "tla.scalar_store" in line)
     _assert_dynamic_index_from_arg(mlir, store_line)
 
 
 def test_scalar_store_accepts_rank2_ub_tensor() -> None:
     mlir = scalar_store_rank2_kernel.dump_mlir(type_args=(_tensor(2, 4),))
 
-    store_line = next(
-        line for line in mlir.splitlines() if "tla.scalar_store" in line
-    )
+    store_line = next(line for line in mlir.splitlines() if "tla.scalar_store" in line)
     assert "arith.constant 1 : index" in mlir
     assert "arith.constant 2 : index" in mlir
     assert "[%c1, %c2]" in store_line
@@ -285,9 +275,7 @@ def test_scalar_store_accepts_rank2_ub_tensor() -> None:
 def test_scalar_store_accepts_ub_tensor_inside_vec_func() -> None:
     mlir = scalar_store_inside_vec_func_kernel.dump_mlir(type_args=(_tensor(),))
 
-    store_line = next(
-        line for line in mlir.splitlines() if "tla.scalar_store" in line
-    )
+    store_line = next(line for line in mlir.splitlines() if "tla.scalar_store" in line)
     assert "tla.vec.func" in mlir
     assert "[%c0]" in store_line
 

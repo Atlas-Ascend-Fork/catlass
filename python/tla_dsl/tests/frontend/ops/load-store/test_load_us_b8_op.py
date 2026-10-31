@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 
 import catlass.tla as tla
-import catlass.runtime as runtime_mod
 from catlass.execution_lowering import TlaLoweringError
 from catlass.params import LoadDist, NormalLoadParams
+import catlass.runtime as runtime_mod  # noqa: F401
 
 
 def _ub_tensor(
@@ -33,7 +33,9 @@ def load_us_b8_kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
     dst_tile = tla.tile_view(dst, tla.make_shape(256), tla.make_coord(0))
     with tla.vector():
         with tla.vec.func(mode="simd"):
-            dst_tile.store(src_tile.load(NormalLoadParams(load_dist=LoadDist.DIST_US_B8)))
+            dst_tile.store(
+                src_tile.load(NormalLoadParams(load_dist=LoadDist.DIST_US_B8))
+            )
 
 
 def test_load_us_b8_emits_tlair(compiler_tlair: Any) -> None:
@@ -58,7 +60,9 @@ def load_us_b8_wrong_dtype_kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
     dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
     with tla.vector():
         with tla.vec.func(mode="simd"):
-            dst_tile.store(src_tile.load(NormalLoadParams(load_dist=LoadDist.DIST_US_B8)))
+            dst_tile.store(
+                src_tile.load(NormalLoadParams(load_dist=LoadDist.DIST_US_B8))
+            )
 
 
 @pytest.mark.parametrize("dtype", [tla.Float32, tla.Float16, tla.Int32])

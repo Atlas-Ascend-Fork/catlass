@@ -8,7 +8,7 @@
 # the License.
 
 import torch
-import torch_npu
+import torch_npu  # noqa: F401
 import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -72,7 +72,7 @@ for i, tc in enumerate(test_cases):
         f"Case {i}: groups=[{group_desc}], K={K}, N={N}: "
         f"max_diff={max_diff:.4f}, mean_diff={mean_diff:.4f}, "
         f"{'PASS' if passed else 'FAIL'}"
-        )
+    )
     if not passed:
         all_passed = False
 

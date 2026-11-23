@@ -1210,6 +1210,45 @@ mlir::LogicalResult UpdateMaskOp::verify()
     return verifyMaskProducerType(getOperation(), getMask().getType(), getDtype());
 }
 
+mlir::LogicalResult MaskGenOp::verify()
+{
+    if (!hasEnclosingRegion<VecFuncOp>(getOperation()))
+        return emitOpError("must be nested inside a tla.vec.func region");
+    if (auto region = getOperation()->getParentOfType<VecFuncOp>())
+        if (auto mode = region->getAttrOfType<mlir::StringAttr>("mode"))
+            if (!mode.getValue().equals_insensitive("simd"))
+                return emitOpError("is only supported in tla.vec.func(mode='simd')");
+
+    auto srcType = mlir::dyn_cast<VectorSSAType>(getSrc().getType());
+    if (!srcType)
+        return emitOpError("src must be !tla.vector");
+    // MaskGenWithRegTensor (movvp) only covers b16/b32 source elements: the
+    // register is a bit array, offset selects a slice of 256/sizeof(T) bits,
+    // and each slice bit becomes one predicate lane.
+    mlir::Type elementType = srcType.getElementType();
+    auto intType = mlir::dyn_cast<mlir::IntegerType>(elementType);
+    int64_t elementBits = 0;
+    if (intType)
+        elementBits = intType.getWidth();
+    else if (elementType.isF16() || elementType.isBF16())
+        elementBits = 16;
+    else if (elementType.isF32())
+        elementBits = 32;
+    if (elementBits != 16 && elementBits != 32)
+        return emitOpError() << "unsupported source element type " << elementType
+                             << "; MaskGenWithRegTensor only supports b16/b32";
+
+    if (failed(verifyMaskProducerType(getOperation(), getResult().getType(), elementType)))
+        return mlir::failure();
+
+    int64_t maxOffset = elementBits == 16 ? 15 : 31;
+    int64_t offset = getOffset();
+    if (offset < 0 || offset > maxOffset)
+        return emitOpError() << "offset must be in 0.." << maxOffset << " for a b" << elementBits
+                             << " source, got " << offset;
+    return mlir::success();
+}
+
 static mlir::LogicalResult verifyMaskSelectTypes(
     mlir::Operation* op, mlir::Type mask, mlir::Type x, mlir::Type y, mlir::Type result)
 {
@@ -1415,7 +1454,7 @@ mlir::LogicalResult CastOp::verify()
     if (trait.size() == 3 && trait[2] == static_cast<int32_t>(::RoundMode::cast_hybrid) &&
         !(source.isF32() && mlir::isa<HiFloat8Type>(dest)))
         return emitOpError("CAST_HYBRID only supports Float32->HiFloat8");
-    if (isa<::tla::HiFloat8Type>(source) || isa<::tla::HiFloat8Type>(dest)) {
+    if (mlir::isa<::tla::HiFloat8Type>(source) || mlir::isa<::tla::HiFloat8Type>(dest)) {
         if (trait.size() != 3 || trait[0] < 0 || trait[0] > 3 || trait[1] < 0 || trait[1] > 2 || trait[2] < 0 ||
             !::symbolizeRoundMode(trait[2]))
             return emitOpError("trait must contain valid register-slot, saturation and rounding codes");

@@ -728,7 +728,8 @@ static bool isVectorComputeOp(Operation* op)
            isa_and_nonnull<::tla::GatherOp>(op) || isa_and_nonnull<::tla::CastOp>(op) ||
            isa_and_nonnull<::tla::BitCastOp>(op) || isa_and_nonnull<::tla::ExpSubOp>(op) ||
            isa_and_nonnull<::tla::PackOp>(op) || isa_and_nonnull<::tla::UnpackOp>(op) ||
-           isa_and_nonnull<::tla::InterleaveOp>(op) || isa_and_nonnull<::tla::DeInterleaveOp>(op);
+           isa_and_nonnull<::tla::InterleaveOp>(op) || isa_and_nonnull<::tla::DeInterleaveOp>(op) ||
+           isa_and_nonnull<::tla::MaskGenOp>(op);
 }
 
 static void annotateAivLibraryCall(func::FuncOp callee)
@@ -3728,6 +3729,55 @@ static LogicalResult lowerUpdateMask(
     return success();
 }
 
+/// tla.mask_gen: expand a bit slice of a register into a predicate register
+/// (AscendC MaskGenWithRegTensor, movvp). The source element width selects the
+/// lane count (b16 → mask<128>, b32 → mask<64>) and the slice range; lane L of
+/// the result is register bit (256/sizeof(T)) * offset + L.
+///
+/// movvp is emitted directly as hivm_regbaseintrins.movvp. The intrinsic is
+/// polymorphic, but the backend only selects the integer overloads (the CCE
+/// front end likewise defines movvp only for vector_u16 / vector_u32, and
+/// MaskGenWithRegTensor casts its operand to RegTensor<uint16_t/uint32_t>), so
+/// a float or signed source is first bitcast to the same-width unsigned-width
+/// integer vector: b32 → vector<Nxi32>, b16 → vector<Nxi16>. The bit pattern is
+/// unchanged, which is exactly what movvp consumes.
+static LogicalResult lowerMaskGen(
+    ::tla::MaskGenOp maskGenOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
+    AutoFullPredicateCache& fullMasks)
+{
+    Location loc = maskGenOp.getLoc();
+    Value src = valueMap.lookup(maskGenOp.getSrc());
+    if (!src)
+        return failure();
+    auto srcType = dyn_cast<VectorType>(src.getType());
+    if (!srcType)
+        return maskGenOp.emitError("expected a lowered vector source"), failure();
+    // The TLA element type survives the unsigned→signless AVE mapping, so take
+    // the width from it rather than the lowered carrier.
+    Type tlaElem = tlaElementOr(maskGenOp.getSrc().getType(), srcType.getElementType());
+    int64_t elementBits = 0;
+    if (auto intType = dyn_cast<IntegerType>(tlaElem))
+        elementBits = intType.getWidth();
+    else if (tlaElem.isF16() || tlaElem.isBF16())
+        elementBits = 16;
+    else if (tlaElem.isF32())
+        elementBits = 32;
+    if (elementBits != 16 && elementBits != 32)
+        return maskGenOp.emitError("unsupported element type for tla.mask_gen: ") << tlaElem, failure();
+
+    // movvp only selects the integer overloads; reinterpret the register bits.
+    auto intSrcType = VectorType::get(srcType.getShape(), b.getIntegerType(elementBits));
+    Value intSrc = src;
+    if (srcType != intSrcType)
+        intSrc = b.create<mlir::vector::BitCastOp>(loc, intSrcType, src).getResult();
+
+    Value part = b.create<arith::ConstantIntOp>(loc, maskGenOp.getOffset(), /*width=*/32);
+    VectorType pregType = fullPregVecType(b.getContext());
+    valueMap[maskGenOp.getResult()] =
+        b.create<hivm_regbaseintrins::MovvpInstrOp>(loc, pregType, intSrc, part).getResult();
+    return success();
+}
+
 static LogicalResult lowerCmp(
     ::tla::CmpOp cmpOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
     AutoFullPredicateCache& fullMasks)
@@ -4763,6 +4813,9 @@ static LogicalResult lowerNestedVectorOp(
     if (auto updateMaskOp = dyn_cast<::tla::UpdateMaskOp>(op))
         return lowerUpdateMask(updateMaskOp, b, module, valueMap, fullMasks);
 
+    if (auto maskGenOp = dyn_cast<::tla::MaskGenOp>(op))
+        return lowerMaskGen(maskGenOp, b, module, valueMap, fullMasks);
+
     if (auto cmpOp = dyn_cast<::tla::CmpOp>(op))
         return lowerCmp(cmpOp, b, module, valueMap, fullMasks);
 
@@ -5663,6 +5716,10 @@ public:
                     !producedValues.contains(deInterleaveOp.getSrc1()))
                     return rewriter.notifyMatchFailure(
                         vecFuncOp, "expected tla.deinterleave operands from tla.load or prior compute op");
+            } else if (auto maskGenOp = dyn_cast<::tla::MaskGenOp>(computeOp)) {
+                if (!producedValues.contains(maskGenOp.getSrc()))
+                    return rewriter.notifyMatchFailure(
+                        vecFuncOp, "expected tla.mask_gen src from tla.load or prior compute op");
             } else if (auto gatherOp = dyn_cast<::tla::GatherOp>(computeOp)) {
                 if (isa<::tla::VectorSSAType>(gatherOp.getX().getType())) {
                     if (!producedValues.contains(gatherOp.getX()))

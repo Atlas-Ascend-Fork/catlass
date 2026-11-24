@@ -3739,8 +3739,7 @@ static LogicalResult lowerUpdateMask(
 /// vector<Nxi32>, b16 → vector<Nxi16>. The bit pattern is unchanged, which is
 /// exactly what the instruction consumes.
 static LogicalResult lowerGenerateMask(
-    ::tla::GenerateMaskOp generateMaskOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
-    AutoFullPredicateCache& fullMasks)
+    ::tla::GenerateMaskOp generateMaskOp, OpBuilder& b, DenseMap<Value, Value>& valueMap)
 {
     Location loc = generateMaskOp.getLoc();
     Value src = valueMap.lookup(generateMaskOp.getSrc());
@@ -4808,7 +4807,7 @@ static LogicalResult lowerNestedVectorOp(
         return lowerUpdateMask(updateMaskOp, b, module, valueMap, fullMasks);
 
     if (auto generateMaskOp = dyn_cast<::tla::GenerateMaskOp>(op))
-        return lowerGenerateMask(generateMaskOp, b, module, valueMap, fullMasks);
+        return lowerGenerateMask(generateMaskOp, b, valueMap);
 
     if (auto cmpOp = dyn_cast<::tla::CmpOp>(op))
         return lowerCmp(cmpOp, b, module, valueMap, fullMasks);

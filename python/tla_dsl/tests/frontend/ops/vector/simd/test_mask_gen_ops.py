@@ -22,7 +22,7 @@ def _vector_tensor(
 
 
 @tla.kernel
-def mask_gen_function_kernel(
+def generate_mask_kernel(
     src: tla.Tensor,
     dst: tla.Tensor,
     lanes: tla.Constexpr[int],
@@ -33,24 +33,7 @@ def mask_gen_function_kernel(
     with tla.vector():
         with tla.vec.func(mode="simd"):
             value = src_tile.load()
-            mask = tla.mask_gen(value, offset=offset)
-            assert isinstance(mask, MaskSSA)
-            dst_tile.store(tla.where(mask, value, value))
-
-
-@tla.kernel
-def mask_gen_method_kernel(
-    src: tla.Tensor,
-    dst: tla.Tensor,
-    lanes: tla.Constexpr[int],
-    offset: tla.Constexpr[int],
-) -> None:
-    src_tile = tla.tile_view(src, tla.make_shape(lanes), tla.make_coord(0))
-    dst_tile = tla.tile_view(dst, tla.make_shape(lanes), tla.make_coord(0))
-    with tla.vector():
-        with tla.vec.func(mode="simd"):
-            value = src_tile.load()
-            mask = value.gen_mask(offset)
+            mask = value.generate_mask(offset)
             assert isinstance(mask, MaskSSA)
             dst_tile.store(tla.where(mask, value, value))
 
@@ -61,38 +44,19 @@ def mask_gen_method_kernel(
      (tla.UInt32, 64, 7), (tla.Int16, 128, 0)],
     ids=["f32-low", "f32-high", "f16-high", "u32", "i16"],
 )
-def test_mask_gen_emits_tla_op(dtype, lanes, offset) -> None:
+def test_generate_mask_emits_tla_op(dtype, lanes, offset) -> None:
     tensor = _vector_tensor(dtype, lanes)
-    mlir = mask_gen_function_kernel.dump_mlir(
+    mlir = generate_mask_kernel.dump_mlir(
         type_args=(tensor, tensor, lanes, offset)
     )
-    assert f"tla.mask_gen" in mlir
+    assert "tla.mask_gen" in mlir
     assert f"offset {offset} :" in mlir
     assert f"-> !tla.mask<{lanes}>" in mlir
     assert mlir.index("tla.vec.func") < mlir.index("tla.mask_gen")
 
 
-@pytest.mark.parametrize(
-    ("dtype", "lanes", "offset"),
-    [(tla.Float32, 64, 5), (tla.BFloat16, 128, 3)],
-    ids=["f32", "bf16"],
-)
-def test_mask_gen_method_matches_function(dtype, lanes, offset) -> None:
-    tensor = _vector_tensor(dtype, lanes)
-    function_mlir = mask_gen_function_kernel.dump_mlir(
-        type_args=(tensor, tensor, lanes, offset)
-    )
-    method_mlir = mask_gen_method_kernel.dump_mlir(
-        type_args=(tensor, tensor, lanes, offset)
-    )
-    assert "tla.mask_gen" in method_mlir
-    # Same op and same offset attr; only the kernel symbol name differs.
-    assert f"offset {offset} :" in function_mlir
-    assert f"offset {offset} :" in method_mlir
-
-
 @tla.kernel
-def mask_gen_bad_offset_kernel(
+def generate_mask_bad_offset_kernel(
     src: tla.Tensor, dst: tla.Tensor, lanes: tla.Constexpr[int], offset: tla.Constexpr[int]
 ) -> None:
     src_tile = tla.tile_view(src, tla.make_shape(lanes), tla.make_coord(0))
@@ -100,7 +64,7 @@ def mask_gen_bad_offset_kernel(
     with tla.vector():
         with tla.vec.func(mode="simd"):
             value = src_tile.load()
-            mask = tla.mask_gen(value, offset=offset)
+            mask = value.generate_mask(offset)
             dst_tile.store(tla.where(mask, value, value))
 
 
@@ -113,14 +77,14 @@ def mask_gen_bad_offset_kernel(
     ],
     ids=["f32-over", "f32-negative", "f16-over"],
 )
-def test_mask_gen_rejects_out_of_range_offset(dtype, lanes, offset, message) -> None:
+def test_generate_mask_rejects_out_of_range_offset(dtype, lanes, offset, message) -> None:
     tensor = _vector_tensor(dtype, lanes)
     with pytest.raises(tla.TlaCoreAPIError, match=message):
-        mask_gen_bad_offset_kernel.dump_mlir(type_args=(tensor, tensor, lanes, offset))
+        generate_mask_bad_offset_kernel.dump_mlir(type_args=(tensor, tensor, lanes, offset))
 
 
 @tla.kernel
-def mask_gen_b8_kernel(
+def generate_mask_b8_kernel(
     src: tla.Tensor, dst: tla.Tensor, lanes: tla.Constexpr[int]
 ) -> None:
     src_tile = tla.tile_view(src, tla.make_shape(lanes), tla.make_coord(0))
@@ -128,18 +92,18 @@ def mask_gen_b8_kernel(
     with tla.vector():
         with tla.vec.func(mode="simd"):
             value = src_tile.load()
-            mask = tla.mask_gen(value, offset=0)
+            mask = value.generate_mask(0)
             dst_tile.store(tla.where(mask, value, value))
 
 
-def test_mask_gen_rejects_b8_source() -> None:
+def test_generate_mask_rejects_b8_source() -> None:
     tensor = _vector_tensor(tla.Int8, 256)
     with pytest.raises(tla.TlaCoreAPIError, match="only supports b16/b32"):
-        mask_gen_b8_kernel.dump_mlir(type_args=(tensor, tensor, 256))
+        generate_mask_b8_kernel.dump_mlir(type_args=(tensor, tensor, 256))
 
 
 @tla.kernel
-def mask_gen_non_int_offset_kernel(
+def generate_mask_non_int_offset_kernel(
     src: tla.Tensor, dst: tla.Tensor, lanes: tla.Constexpr[int], offset: tla.Constexpr[float]
 ) -> None:
     src_tile = tla.tile_view(src, tla.make_shape(lanes), tla.make_coord(0))
@@ -147,24 +111,24 @@ def mask_gen_non_int_offset_kernel(
     with tla.vector():
         with tla.vec.func(mode="simd"):
             value = src_tile.load()
-            mask = tla.mask_gen(value, offset=offset)
+            mask = value.generate_mask(offset)
             dst_tile.store(tla.where(mask, value, value))
 
 
-def test_mask_gen_rejects_non_int_offset() -> None:
+def test_generate_mask_rejects_non_int_offset() -> None:
     tensor = _vector_tensor(tla.Float32, 64)
     with pytest.raises(tla.TlaCoreAPIError, match="offset must be a compile-time Python int"):
-        mask_gen_non_int_offset_kernel.dump_mlir(type_args=(tensor, tensor, 64, 1.0))
+        generate_mask_non_int_offset_kernel.dump_mlir(type_args=(tensor, tensor, 64, 1.0))
 
 
-def test_mask_gen_requires_vec_func() -> None:
+def test_generate_mask_requires_vec_func() -> None:
     @tla.kernel
     def kernel(src: tla.Tensor, dst: tla.Tensor) -> None:
         src_tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
         dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
         with tla.vector():
             value = src_tile.load()
-            mask = tla.mask_gen(value, offset=0)
+            mask = value.generate_mask(0)
             dst_tile.store(tla.where(mask, value, value))
 
     tensor = _vector_tensor()
@@ -172,5 +136,5 @@ def test_mask_gen_requires_vec_func() -> None:
         kernel.dump_mlir(type_args=(tensor, tensor))
 
 
-def test_mask_gen_public_export_exists() -> None:
-    assert callable(tla.mask_gen)
+def test_mask_gen_public_function_is_removed() -> None:
+    assert not hasattr(tla, "mask_gen")

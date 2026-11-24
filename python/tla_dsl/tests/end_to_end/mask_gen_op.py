@@ -8,13 +8,13 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
 
-"""End-to-end check for mask_gen (movvp): register bit slice -> predicate lanes.
+"""End-to-end check for generate_mask (MOVVP): register data block -> predicate lanes.
 
-The kernel loads one full register, turns a bit slice of it into a mask with
-``tla.mask_gen``, and selects between two inputs under that mask. The register
-is a bit array ordered by element then by in-element bit, so ``offset`` picks a
-``count``-bit slice (64 bits for b32, 128 for b16) and lane ``L`` of the mask is
-that slice's bit ``L``. The CPU reference slices the same way.
+The kernel loads one full register, turns one data block of it into a mask with
+``VectorSSA.generate_mask``, and selects between two inputs under that mask. The
+register is a bit array ordered by element then by in-element bit, so ``offset``
+picks a ``count``-bit block (64 bits for b32, 128 for b16) and lane ``L`` of the
+mask is that block's bit ``L``. The CPU reference slices the same way.
 
 ``offset`` is a compile-time constant (movvp encodes it as an immediate), so the
 driver compiles one kernel per offset rather than dispatching on a runtime id.
@@ -69,7 +69,7 @@ def mask_gen_op(mem_a: tla.Tensor, mem_b: tla.Tensor, mem_y: tla.Tensor) -> None
             y_tile = tla.tile_view(y_ub, tla.make_shape(_VECTOR_ELE), tla.make_coord(0))
             a = a_tile.load()
             b = b_tile.load()
-            mask = tla.mask_gen(a, offset=_OFFSET)
+            mask = a.generate_mask(_OFFSET)
             y_tile.store(tla.where(mask, a, b))
         tla.set_flag(done)
         tla.wait_flag(done)
@@ -124,12 +124,12 @@ def _bit_patterns(dtype: str) -> Any:
 
 
 def _expected(a: Any, b: Any, dtype: str, offset: int) -> Any:
-    """CPU reference: movvp takes a bit slice of the register.
+    """CPU reference: MOVVP takes one data block of the register.
 
     The register is a bit array ordered by element then by in-element bit (LSB
     first). With ``count`` elements of ``width`` bits, ``offset`` selects the
-    ``count``-bit slice starting at register bit ``count * offset``; output lane
-    ``L`` is that slice's bit ``L``. The comparison runs on integer bit patterns
+    ``count``-bit block starting at register bit ``count * offset``; output lane
+    ``L`` is that block's bit ``L``. The comparison runs on integer bit patterns
     so the float value never round-trips.
     """
     import torch
@@ -145,7 +145,7 @@ def _expected(a: Any, b: Any, dtype: str, offset: int) -> Any:
 def _run_case(dtype: str, case: str) -> bool:
     """Compile one kernel for one dtype/offset pair and check its output.
 
-    Each offset is a separate specialization: ``mask_gen``'s offset is a
+    Each offset is a separate specialization: ``generate_mask``'s offset is a
     compile-time constant that must reach movvp as an immediate, so the driver
     cannot pick the offset from a runtime block id.
     """

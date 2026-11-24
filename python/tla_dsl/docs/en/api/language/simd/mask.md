@@ -14,38 +14,59 @@ Do not edit manually. Update docstrings/Examples in catlass/core_api.py
 
 Mask creation and tail-mask updates.
 
-## `tla.VectorSSA.gen_mask`
+## `tla.VectorSSA.generate_mask`
 
-**Source:** [`catlass.core_api.VectorSSA.gen_mask`](../../../../../catlass/core_api.py)
+**Source:** [`catlass.core_api.VectorSSA.generate_mask`](../../../../../catlass/core_api.py)
 
 Description:
 
-Build a mask from a contiguous bit slice of this register. Method form
-of `tla.mask_gen`; see that entry for the lane layout and limits.
+Build a mask from a data block of this register, wrapping Ascend C
+`MaskGenWithRegTensor` (hardware instruction `MOVVP`).
+
+`MaskGenWithRegTensor` is a Reg data-load interface: it reads a
+`RegTensor` and produces a `MaskReg`. The register is treated as a
+sequence of data blocks ordered by element and then by in-element
+bit (LSB first). `offset` selects one block, and each bit of that
+block becomes one predicate lane. The element width fixes both the
+block width and the block count:
+
+- b32 source: the 2048-bit register splits into 32 blocks of
+  8Byte (64 bits), so `offset` is `0..31`. The result is a
+  `mask<64>` whose lane `L` is register bit `64 * offset + L`.
+- b16 source: the register splits into 16 blocks of 16Byte
+  (128 bits), so `offset` is `0..15`. The result is a `mask<128>`
+  whose lane `L` is register bit `128 * offset + L`.
+
+Physically the 32Byte `MaskReg` gives each element 2 bits (b16) or
+4 bits (b32); the selected bit is broadcast to those bits, and only
+the lowest one is effective.
 
 Prototype:
 
 ```python
-tla.VectorSSA.gen_mask(offset: int) -> 'MaskSSA'
+tla.VectorSSA.generate_mask(offset: int) -> 'MaskSSA'
 ```
 
 Parameters:
 
-- `offset` (`int`): Compile-time slice index. Required. `0..15` for a
-  b16 register and `0..31` for a b32 register.
+- `offset` (`int`): Compile-time block index. Required. `0..15` for
+  a b16 register and `0..31` for a b32 register.
 
 Constraints:
 
+- Supports Ascend 950 (`--npu-arch 3510`) only.
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func(mode="simd")`.
-- Element type must be 16-bit or 32-bit; b8 and b64 are unsupported.
+- Element type must be 16-bit or 32-bit (i16/u16/f16/bf16,
+  i32/u32/f32); b8 and b64 are unsupported.
+- `offset` must be a compile-time Python int within the block range.
 
 Example:
 
 ```python
 with tla.vec.func(mode="simd"):
-    bits = src_tile.load()
-    m = bits.gen_mask(0)
+    bits = src_tile.load()      # !tla.vector<64xf32>
+    m = bits.generate_mask(0)   # !tla.mask<64>
 ```
 
 ---
@@ -138,53 +159,4 @@ Example:
 ```python
 with tla.vec.func(mode="simd"):
     tail_mask, remain = tla.update_mask(true_shape, dtype=tla.Float32)
-```
-
----
-
-## `tla.mask_gen`
-
-**Source:** [`catlass.core_api.mask_gen`](../../../../../catlass/core_api.py)
-
-Description:
-
-Build a mask from a contiguous bit slice of a register (Ascend C
-`MaskGenWithRegTensor` / `movvp`).
-
-The source is viewed as a bit array ordered by element then by
-in-element bit. `offset` selects one slice of `256 / sizeof(T)`
-consecutive bits, and each selected bit becomes the predicate lane at
-the same position. A b32 source produces a `mask<64>` whose lane `L` is
-register bit `64 * offset + L`; a b16 source produces a `mask<128>`
-whose lane `L` is register bit `128 * offset + L`. Physically each
-selected bit broadcasts to 4 (b32) or 2 (b16) adjacent predicate bits of
-the 256-bit container.
-
-Prototype:
-
-```python
-tla.mask_gen(src: VectorSSA, *, offset: int) -> MaskSSA
-```
-
-Parameters:
-
-- `src` (`VectorSSA`): Source register. Required.
-- `offset` (`int`): Compile-time slice index. Required. Must be in
-  `0..15` for a b16 source and `0..31` for a b32 source, so every slice
-  spans the full 2048-bit register.
-
-Constraints:
-
-- Must be called inside a `@tla.kernel`-decorated kernel function.
-- Must be called inside `tla.vec.func(mode="simd")`.
-- Source element type must be 16-bit or 32-bit (i16/u16/f16/bf16,
-  i32/u32/f32); b8 and b64 are unsupported.
-- `offset` must be a compile-time Python int within the slice range.
-
-Example:
-
-```python
-with tla.vec.func(mode="simd"):
-    bits = src_tile.load()          # !tla.vector<64xf32>
-    m = tla.mask_gen(bits, offset=0)  # !tla.mask<64>
 ```

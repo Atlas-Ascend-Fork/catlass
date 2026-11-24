@@ -16,37 +16,52 @@ Do not regenerate this file from a glossary.
 
 Mask 创建与尾块更新。
 
-## `tla.VectorSSA.gen_mask`
+## `tla.VectorSSA.generate_mask`
 
-**源码：** [`catlass.core_api.VectorSSA.gen_mask`](../../../../../catlass/core_api.py)
+**源码：** [`catlass.core_api.VectorSSA.generate_mask`](../../../../../catlass/core_api.py)
 
 功能说明：
 
-从本寄存器的一段连续 bit 生成掩码。是 `tla.mask_gen` 的方法形式，lane 布局与取值限制见该条目。
+从本寄存器的一个 DataBlock 生成掩码，封装 Ascend C 的 `MaskGenWithRegTensor`（硬件指令 `MOVVP`）。
+
+`MaskGenWithRegTensor` 属于 Reg 数据搬入接口：读取 `RegTensor`，生成 `MaskReg`。寄存器按
+「元素优先、元素内 bit 从低到高」的顺序划分为若干 DataBlock，`offset` 选中其中一个 DataBlock，
+块内每个 bit 成为同一位置的一个 predicate lane。元素位宽同时决定块宽与块数：
+
+- b32 源：2048 位寄存器划分为 32 个 8Byte（64 位）DataBlock，`offset` 取 `0..31`。
+  结果 `mask<64>`，lane `L` 对应寄存器第 `64 * offset + L` 位。
+- b16 源：寄存器划分为 16 个 16Byte（128 位）DataBlock，`offset` 取 `0..15`。
+  结果 `mask<128>`，lane `L` 对应寄存器第 `128 * offset + L` 位。
+
+物理上 32Byte 的 `MaskReg` 为每个元素分配 2 位（b16）或 4 位（b32），被选中的 bit 广播到这些
+位上，仅最低位有效。
 
 函数原型：
 
 ```python
-tla.VectorSSA.gen_mask(offset: int) -> 'MaskSSA'
+tla.VectorSSA.generate_mask(offset: int) -> 'MaskSSA'
 ```
 
 参数说明：
 
-- `offset`（`int`）：编译期切片序号。必填。b16 寄存器取 `0..15`，
+- `offset`（`int`）：编译期 DataBlock 序号。必填。b16 寄存器取 `0..15`，
   b32 寄存器取 `0..31`。
 
 约束说明：
 
+- 仅支持 Ascend 950（`--npu-arch 3510`）。
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.vec.func(mode="simd")` 内调用。
-- 元素类型须为 16 位或 32 位；不支持 b8 与 b64。
+- 元素类型须为 16 位或 32 位（i16/u16/f16/bf16、i32/u32/f32）；
+  不支持 b8 与 b64。
+- `offset` 须为 DataBlock 范围内的编译期 Python int。
 
 调用示例：
 
 ```python
 with tla.vec.func(mode="simd"):
-    bits = src_tile.load()
-    m = bits.gen_mask(0)
+    bits = src_tile.load()      # !tla.vector<64xf32>
+    m = bits.generate_mask(0)   # !tla.mask<64>
 ```
 
 ---
@@ -137,49 +152,4 @@ tla.update_mask(true_shape: IndexLike, dtype: DTypeLike = Float32) -> tuple[Mask
 ```python
 with tla.vec.func(mode="simd"):
     tail_mask, remain = tla.update_mask(true_shape, dtype=tla.Float32)
-```
-
----
-
-## `tla.mask_gen`
-
-**源码：** [`catlass.core_api.mask_gen`](../../../../../catlass/core_api.py)
-
-功能说明：
-
-从寄存器的一段连续 bit 生成掩码（Ascend C `MaskGenWithRegTensor` / `movvp`）。
-
-源按“元素→元素内 bit”的顺序视为一个 bit 数组。`offset` 选择其中一段
-`256 / sizeof(T)` 位的连续切片，切片中的每个 bit 成为同一位置的 predicate lane。
-b32 源生成 `mask<64>`，lane `L` 对应寄存器第 `64 * offset + L` 位；
-b16 源生成 `mask<128>`，lane `L` 对应寄存器第 `128 * offset + L` 位。
-物理上每个被选中的 bit 会广播到 256 位容器中相邻的 4 个（b32）或 2 个（b16）
-predicate 位。
-
-函数原型：
-
-```python
-tla.mask_gen(src: VectorSSA, *, offset: int) -> MaskSSA
-```
-
-参数说明：
-
-- `src`（`VectorSSA`）：源寄存器。必填。
-- `offset`（`int`）：编译期切片序号。必填。b16 源取 `0..15`，
-  b32 源取 `0..31`，使每段切片覆盖完整的 2048 位寄存器。
-
-约束说明：
-
-- 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
-- 须在 `tla.vec.func(mode="simd")` 内调用。
-- 源元素类型须为 16 位或 32 位（i16/u16/f16/bf16、i32/u32/f32）；
-  不支持 b8 与 b64。
-- `offset` 须为切片范围内的编译期 Python int。
-
-调用示例：
-
-```python
-with tla.vec.func(mode="simd"):
-    bits = src_tile.load()          # !tla.vector<64xf32>
-    m = tla.mask_gen(bits, offset=0)  # !tla.mask<64>
 ```

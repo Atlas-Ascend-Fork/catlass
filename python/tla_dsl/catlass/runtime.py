@@ -417,7 +417,6 @@ _CORE_API_EXPORTS = (
     "mask",
     "create_mask",
     "update_mask",
-    "mask_gen",
     "tile_view",
     "get_tile",
     "make_tensor",

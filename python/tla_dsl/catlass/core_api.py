@@ -1404,35 +1404,82 @@ class VectorSSA(_RegisterSSA):
         return VectorSSA(result)
 
     @dsl_user_op
-    def gen_mask(
+    def generate_mask(
         self,
         offset: int,
         *,
         loc: mlir_ir.Location | None = None,
     ) -> "MaskSSA":
         """Directory: SIMD Vector Compute / Mask Compute
+
         Description:
-            Build a mask from one element of this register. Method form of
-            `tla.mask_gen`; see that entry for the lane layout and limits.
+            Build a mask from a data block of this register, wrapping Ascend C
+            `MaskGenWithRegTensor` (hardware instruction `MOVVP`).
+
+            `MaskGenWithRegTensor` is a Reg data-load interface: it reads a
+            `RegTensor` and produces a `MaskReg`. The register is treated as a
+            sequence of data blocks ordered by element and then by in-element
+            bit (LSB first). `offset` selects one block, and each bit of that
+            block becomes one predicate lane. The element width fixes both the
+            block width and the block count:
+
+            - b32 source: the 2048-bit register splits into 32 blocks of
+              8Byte (64 bits), so `offset` is `0..31`. The result is a
+              `mask<64>` whose lane `L` is register bit `64 * offset + L`.
+            - b16 source: the register splits into 16 blocks of 16Byte
+              (128 bits), so `offset` is `0..15`. The result is a `mask<128>`
+              whose lane `L` is register bit `128 * offset + L`.
+
+            Physically the 32Byte `MaskReg` gives each element 2 bits (b16) or
+            4 bits (b32); the selected bit is broadcast to those bits, and only
+            the lowest one is effective.
 
             Parameters:
-            - `offset` (`int`): Compile-time bit offset inside the selected
-              element. Required. `0..15` for a b16 register and `0..31` for a
-              b32 register.
+            - `offset` (`int`): Compile-time block index. Required. `0..15` for
+              a b16 register and `0..31` for a b32 register.
 
             Constraints:
+            - Supports Ascend 950 (`--npu-arch 3510`) only.
             - Must be called inside a `@tla.kernel`-decorated kernel function.
             - Must be called inside `tla.vec.func(mode="simd")`.
-            - Element type must be 16-bit or 32-bit; b8 and b64 are unsupported.
+            - Element type must be 16-bit or 32-bit (i16/u16/f16/bf16,
+              i32/u32/f32); b8 and b64 are unsupported.
+            - `offset` must be a compile-time Python int within the block range.
 
             Example:
             ```python
             with tla.vec.func(mode="simd"):
-                bits = src_tile.load()
-                m = bits.gen_mask(0)
+                bits = src_tile.load()      # !tla.vector<64xf32>
+                m = bits.generate_mask(0)   # !tla.mask<64>
             ```
         """
-        return mask_gen(self, offset=offset, loc=loc)
+        _require_category("generate_mask", "operand", self, "vector_ssa", 0)
+        _require_frontend_state("generate_mask")
+        _runtime._require_enclosing_region("generate_mask", "vec.func")
+        if _runtime._in_simt_vec_func():
+            _op_error("generate_mask", "is only supported in tla.vec.func(mode='simd')")
+
+        src_value = _as_value(self)
+        src_desc = _vector_ssa_type_for_mlir_value(src_value)
+        limit = _mask_gen_offset_limit("generate_mask", src_desc.element_type)
+        bit_offset = _require_constexpr_range_bound("generate_mask", "offset", offset)
+        if bit_offset < 0 or bit_offset > limit:
+            _op_error(
+                "generate_mask",
+                f"offset must be in 0..{limit} for a {src_desc.element_type} source, "
+                f"got {bit_offset}",
+            )
+
+        mask_ty = _mask_ssa_type_for_element_type(src_desc.element_type).to_mlir_type(
+            src_value.type.context
+        )
+        result = _tla_ops_gen.mask_gen(
+            mask_ty,
+            src_value,
+            mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), bit_offset),
+            loc=loc,
+        )
+        return MaskSSA(result)
 
 
 class MaskSSA(_RegisterSSA):
@@ -12881,76 +12928,6 @@ def _mask_gen_offset_limit(op_name: str, element_type: str) -> int:
     return _MASK_GEN_OFFSET_LIMITS[element_bytes * 8]
 
 
-@dsl_user_op
-def mask_gen(
-    src: VectorSSA,
-    *,
-    offset: int,
-    loc: mlir_ir.Location | None = None,
-) -> MaskSSA:
-    """Directory: SIMD Vector Compute / Mask Compute
-    Description:
-        Build a mask from a bit slice of a register (Ascend C
-        `MaskGenWithRegTensor` / `movvp`).
-
-        The source is viewed as a bit array ordered by element then by
-        in-element bit. `offset` selects one slice of `256 / sizeof(T)`
-        consecutive bits, and each selected bit becomes the predicate lane at
-        the same position. A b32 source produces a `mask<64>` whose lane `L` is
-        register bit `64 * offset + L`; a b16 source produces a `mask<128>`
-        whose lane `L` is register bit `128 * offset + L`. Physically each
-        selected bit broadcasts to 4 (b32) or 2 (b16) adjacent predicate bits of
-        the 256-bit container.
-
-        Parameters:
-        - `src` (`VectorSSA`): Source register. Required.
-        - `offset` (`int`): Compile-time slice index. Required. Must be in
-          `0..15` for a b16 source and `0..31` for a b32 source, so every slice
-          spans the full 2048-bit register.
-
-        Constraints:
-        - Must be called inside a `@tla.kernel`-decorated kernel function.
-        - Must be called inside `tla.vec.func(mode="simd")`.
-        - Source element type must be 16-bit or 32-bit (i16/u16/f16/bf16,
-          i32/u32/f32); b8 and b64 are unsupported.
-        - `offset` must be a compile-time Python int within the slice range.
-
-        Example:
-        ```python
-        with tla.vec.func(mode="simd"):
-            bits = src_tile.load()            # !tla.vector<64xf32>
-            m = tla.mask_gen(bits, offset=0)  # !tla.mask<64>
-        ```
-    """
-    _require_category("mask_gen", "src", src, "vector_ssa", 0)
-    _require_frontend_state("mask_gen")
-    _runtime._require_enclosing_region("mask_gen", "vec.func")
-    if _runtime._in_simt_vec_func():
-        _op_error("mask_gen", "is only supported in tla.vec.func(mode='simd')")
-
-    src_value = _as_value(src)
-    src_desc = _vector_ssa_type_for_mlir_value(src_value)
-    limit = _mask_gen_offset_limit("mask_gen", src_desc.element_type)
-    bit_offset = _require_constexpr_range_bound("mask_gen", "offset", offset)
-    if bit_offset < 0 or bit_offset > limit:
-        _op_error(
-            "mask_gen",
-            f"offset must be in 0..{limit} for a {src_desc.element_type} source, "
-            f"got {bit_offset}",
-        )
-
-    mask_ty = _mask_ssa_type_for_element_type(src_desc.element_type).to_mlir_type(
-        src_value.type.context
-    )
-    result = _tla_ops_gen.mask_gen(
-        mask_ty,
-        src_value,
-        mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), bit_offset),
-        loc=loc,
-    )
-    return MaskSSA(result)
-
-
 # Keep this type-only: tla.ffi lazily calls back into core_api, so a
 # runtime import here would add an unnecessary reverse dependency.
 if TYPE_CHECKING:
@@ -13237,7 +13214,6 @@ __all__ = [
     "mask",
     "create_mask",
     "update_mask",
-    "mask_gen",
     "tile_view",
     "get_tile",
     "make_tensor",

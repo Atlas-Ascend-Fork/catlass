@@ -1417,16 +1417,16 @@ class VectorSSA(_RegisterSSA):
 
             The register is treated as a sequence of data blocks ordered by
             element and then by in-element bit (LSB first). `offset` selects one
-            block, and each bit of that block becomes one predicate lane. Only
-            the element bit width matters, and it fixes both the block width and
-            the block count:
+            block, and each bit of that block becomes one predicate lane. The
+            source element width decides the block width and the block count,
+            and together all blocks cover one 2048-bit register:
 
-            - 32-bit elements: the 2048-bit register splits into 32 blocks of
-              8Byte (64 bits), so `offset` is `0..31`. The result is a
-              `mask<64>` whose lane `L` is register bit `64 * offset + L`.
-            - 16-bit elements: the register splits into 16 blocks of 16Byte
-              (128 bits), so `offset` is `0..15`. The result is a `mask<128>`
-              whose lane `L` is register bit `128 * offset + L`.
+            - 32-bit elements: 32 blocks of 8Byte (64 bits) each, so `offset`
+              is `0..31`. The result is a `mask<64>` whose lane `L` is register
+              bit `64 * offset + L`.
+            - 16-bit elements: 16 blocks of 16Byte (128 bits) each, so `offset`
+              is `0..15`. The result is a `mask<128>` whose lane `L` is register
+              bit `128 * offset + L`.
 
             Physically the 32Byte predicate register gives each element 2 bits
             (16-bit) or 4 bits (32-bit); the selected bit is broadcast to those
@@ -1434,7 +1434,7 @@ class VectorSSA(_RegisterSSA):
 
             Parameters:
             - `offset` (`int`): Compile-time block index. Required. `0..15` for
-              a 16-bit register and `0..31` for a 32-bit register.
+              16-bit elements and `0..31` for 32-bit elements.
 
             Constraints:
             - Supports Ascend 950 (`--npu-arch 3510`) only.
@@ -1459,12 +1459,12 @@ class VectorSSA(_RegisterSSA):
         src_value = _as_value(self)
         src_desc = _vector_ssa_type_for_mlir_value(src_value)
         limit = _generate_mask_offset_limit("generate_mask", src_desc.element_type)
-        bit_offset = _require_constexpr_range_bound("generate_mask", "offset", offset)
-        if bit_offset < 0 or bit_offset > limit:
+        block_index = _require_constexpr_range_bound("generate_mask", "offset", offset)
+        if block_index < 0 or block_index > limit:
             _op_error(
                 "generate_mask",
                 f"offset must be in 0..{limit} for a {src_desc.element_type} source, "
-                f"got {bit_offset}",
+                f"got {block_index}",
             )
 
         mask_ty = _mask_ssa_type_for_element_type(src_desc.element_type).to_mlir_type(
@@ -1473,7 +1473,7 @@ class VectorSSA(_RegisterSSA):
         result = _tla_ops_gen.generate_mask(
             mask_ty,
             src_value,
-            mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), bit_offset),
+            mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), block_index),
             loc=loc,
         )
         return MaskSSA(result)

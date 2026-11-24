@@ -24,16 +24,16 @@ Build a predicate mask from one data block of this register.
 
 The register is treated as a sequence of data blocks ordered by
 element and then by in-element bit (LSB first). `offset` selects one
-block, and each bit of that block becomes one predicate lane. Only
-the element bit width matters, and it fixes both the block width and
-the block count:
+block, and each bit of that block becomes one predicate lane. The
+source element width decides the block width and the block count,
+and together all blocks cover one 2048-bit register:
 
-- 32-bit elements: the 2048-bit register splits into 32 blocks of
-  8Byte (64 bits), so `offset` is `0..31`. The result is a
-  `mask<64>` whose lane `L` is register bit `64 * offset + L`.
-- 16-bit elements: the register splits into 16 blocks of 16Byte
-  (128 bits), so `offset` is `0..15`. The result is a `mask<128>`
-  whose lane `L` is register bit `128 * offset + L`.
+- 32-bit elements: 32 blocks of 8Byte (64 bits) each, so `offset`
+  is `0..31`. The result is a `mask<64>` whose lane `L` is register
+  bit `64 * offset + L`.
+- 16-bit elements: 16 blocks of 16Byte (128 bits) each, so `offset`
+  is `0..15`. The result is a `mask<128>` whose lane `L` is register
+  bit `128 * offset + L`.
 
 Physically the 32Byte predicate register gives each element 2 bits
 (16-bit) or 4 bits (32-bit); the selected bit is broadcast to those
@@ -48,7 +48,7 @@ tla.VectorSSA.generate_mask(offset: int) -> 'MaskSSA'
 Parameters:
 
 - `offset` (`int`): Compile-time block index. Required. `0..15` for
-  a 16-bit register and `0..31` for a 32-bit register.
+  16-bit elements and `0..31` for 32-bit elements.
 
 Constraints:
 

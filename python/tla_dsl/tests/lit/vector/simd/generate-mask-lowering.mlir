@@ -13,7 +13,8 @@
 module {
   // CHECK-LABEL: func.func @generate_mask_b32
   // CHECK: vector.bitcast %{{.*}} : vector<64xf32> to vector<64xi32>
-  // CHECK: "hivm_regbaseintrins.intr.hivm.movvp"({{.*}}) : (vector<64xi32>, i32) -> vector<256xi1>
+  // CHECK: %[[PART_B32:.*]] = arith.constant 7 : i32
+  // CHECK: "hivm_regbaseintrins.intr.hivm.movvp"({{.*}}, %[[PART_B32]]) : (vector<64xi32>, i32) -> vector<256xi1>
   func.func @generate_mask_b32(%src_memref: memref<64xf32, #hivm.address_space<ub>>, %dst_memref: memref<64xf32, #hivm.address_space<ub>>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -35,7 +36,8 @@ module {
 
   // CHECK-LABEL: func.func @generate_mask_b16
   // CHECK: vector.bitcast %{{.*}} : vector<128xf16> to vector<128xi16>
-  // CHECK: "hivm_regbaseintrins.intr.hivm.movvp"({{.*}}) : (vector<128xi16>, i32) -> vector<256xi1>
+  // CHECK: %[[PART_B16:.*]] = arith.constant 15 : i32
+  // CHECK: "hivm_regbaseintrins.intr.hivm.movvp"({{.*}}, %[[PART_B16]]) : (vector<128xi16>, i32) -> vector<256xi1>
   func.func @generate_mask_b16(%src_memref: memref<128xf16, #hivm.address_space<ub>>, %dst_memref: memref<128xf16, #hivm.address_space<ub>>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index

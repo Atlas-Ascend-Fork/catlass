@@ -25,12 +25,12 @@ Mask 创建与尾块更新。
 从本寄存器的一个 DataBlock 生成 predicate 掩码。
 
 寄存器按「元素优先、元素内 bit 从低到高」的顺序划分为若干 DataBlock，`offset` 选中其中一个
-DataBlock，块内每个 bit 成为同一位置的一个 predicate lane。只有元素位宽影响划分，它同时决定
-块宽与块数：
+DataBlock，块内每个 bit 成为同一位置的一个 predicate lane。源元素位宽决定块宽与块数，
+全部 DataBlock 合计覆盖一个 2048 位寄存器：
 
-- 32 位元素：2048 位寄存器划分为 32 个 8Byte（64 位）DataBlock，`offset` 取 `0..31`。
+- 32 位元素：32 个 8Byte（64 位）DataBlock，`offset` 取 `0..31`。
   结果 `mask<64>`，lane `L` 对应寄存器第 `64 * offset + L` 位。
-- 16 位元素：寄存器划分为 16 个 16Byte（128 位）DataBlock，`offset` 取 `0..15`。
+- 16 位元素：16 个 16Byte（128 位）DataBlock，`offset` 取 `0..15`。
   结果 `mask<128>`，lane `L` 对应寄存器第 `128 * offset + L` 位。
 
 物理上 32Byte 的 predicate 寄存器为每个元素分配 2 位（16 位元素）或 4 位（32 位元素），
@@ -44,8 +44,8 @@ tla.VectorSSA.generate_mask(offset: int) -> 'MaskSSA'
 
 参数说明：
 
-- `offset`（`int`）：编译期 DataBlock 序号。必填。16 位寄存器取 `0..15`，
-  32 位寄存器取 `0..31`。
+- `offset`（`int`）：编译期 DataBlock 序号。必填。16 位元素取 `0..15`，
+  32 位元素取 `0..31`。
 
 约束说明：
 

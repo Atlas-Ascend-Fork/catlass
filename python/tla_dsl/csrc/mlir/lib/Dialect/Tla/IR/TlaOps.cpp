@@ -1210,7 +1210,7 @@ mlir::LogicalResult UpdateMaskOp::verify()
     return verifyMaskProducerType(getOperation(), getMask().getType(), getDtype());
 }
 
-mlir::LogicalResult MaskGenOp::verify()
+mlir::LogicalResult GenerateMaskOp::verify()
 {
     if (!hasEnclosingRegion<VecFuncOp>(getOperation()))
         return emitOpError("must be nested inside a tla.vec.func region");
@@ -1222,21 +1222,17 @@ mlir::LogicalResult MaskGenOp::verify()
     auto srcType = mlir::dyn_cast<VectorSSAType>(getSrc().getType());
     if (!srcType)
         return emitOpError("src must be !tla.vector");
-    // MaskGenWithRegTensor (movvp) only covers b16/b32 source elements: the
-    // register is a bit array, offset selects a slice of 256/sizeof(T) bits,
-    // and each slice bit becomes one predicate lane.
+    // Only the element bit width matters: the register is a bit array, offset
+    // selects a block of 256/sizeof(T) bits, and each bit of that block becomes
+    // one predicate lane. Any 16- or 32-bit integer or float element qualifies.
     mlir::Type elementType = srcType.getElementType();
-    auto intType = mlir::dyn_cast<mlir::IntegerType>(elementType);
-    int64_t elementBits = 0;
-    if (intType)
-        elementBits = intType.getWidth();
-    else if (elementType.isF16() || elementType.isBF16())
-        elementBits = 16;
-    else if (elementType.isF32())
-        elementBits = 32;
+    if (!elementType.isIntOrFloat())
+        return emitOpError() << "unsupported source element type " << elementType
+                             << "; generate_mask only supports 16- and 32-bit elements";
+    int64_t elementBits = elementType.getIntOrFloatBitWidth();
     if (elementBits != 16 && elementBits != 32)
         return emitOpError() << "unsupported source element type " << elementType
-                             << "; MaskGenWithRegTensor only supports b16/b32";
+                             << "; generate_mask only supports 16- and 32-bit elements";
 
     if (failed(verifyMaskProducerType(getOperation(), getResult().getType(), elementType)))
         return mlir::failure();

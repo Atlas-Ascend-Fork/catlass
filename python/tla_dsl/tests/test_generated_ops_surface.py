@@ -115,7 +115,7 @@ def test_generated_binding_symbols_exist_for_wrapped_ops() -> None:
         "bitcast",
         "interleave",
         "deinterleave",
-        "mask_gen",
+        "generate_mask",
     )
     for symbol in required:
         assert hasattr(tla_ops_gen, symbol)

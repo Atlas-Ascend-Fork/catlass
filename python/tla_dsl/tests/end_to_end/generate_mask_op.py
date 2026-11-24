@@ -8,7 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
 
-"""End-to-end check for generate_mask (MOVVP): register data block -> predicate lanes.
+"""End-to-end check for generate_mask: register data block -> predicate lanes.
 
 The kernel loads one full register, turns one data block of it into a mask with
 ``VectorSSA.generate_mask``, and selects between two inputs under that mask. The
@@ -16,11 +16,11 @@ register is a bit array ordered by element then by in-element bit, so ``offset``
 picks a ``count``-bit block (64 bits for b32, 128 for b16) and lane ``L`` of the
 mask is that block's bit ``L``. The CPU reference slices the same way.
 
-``offset`` is a compile-time constant (movvp encodes it as an immediate), so the
+``offset`` is a compile-time constant (the instruction encodes it as an immediate), so the
 driver compiles one kernel per offset rather than dispatching on a runtime id.
 
-Example: python mask_gen_op.py --run --dtype f32 --case low --device 0
-Example: python mask_gen_op.py --batch-run --device 0
+Example: python generate_mask_op.py --run --dtype f32 --case low --device 0
+Example: python generate_mask_op.py --batch-run --device 0
 """
 
 from __future__ import annotations
@@ -39,10 +39,10 @@ _OFFSETS_F16 = {"low": 0, "middle": 4, "high": 15}
 
 
 @tla.kernel
-def mask_gen_op(mem_a: tla.Tensor, mem_b: tla.Tensor, mem_y: tla.Tensor) -> None:
+def generate_mask_op(mem_a: tla.Tensor, mem_b: tla.Tensor, mem_y: tla.Tensor) -> None:
     """Select ``a`` where the generated mask is active, else ``b``.
 
-    ``offset`` is a compile-time ``Constexpr`` (movvp's ``part`` is an immediate),
+    ``offset`` is a compile-time ``Constexpr`` (the instruction's ``part`` is an immediate),
     so each offset is its own kernel specialization; the driver compiles one
     kernel per case rather than dispatching on a runtime value.
     """
@@ -124,7 +124,7 @@ def _bit_patterns(dtype: str) -> Any:
 
 
 def _expected(a: Any, b: Any, dtype: str, offset: int) -> Any:
-    """CPU reference: MOVVP takes one data block of the register.
+    """CPU reference: one data block of the register drives the mask.
 
     The register is a bit array ordered by element then by in-element bit (LSB
     first). With ``count`` elements of ``width`` bits, ``offset`` selects the
@@ -146,7 +146,7 @@ def _run_case(dtype: str, case: str) -> bool:
     """Compile one kernel for one dtype/offset pair and check its output.
 
     Each offset is a separate specialization: ``generate_mask``'s offset is a
-    compile-time constant that must reach movvp as an immediate, so the driver
+    compile-time constant that must reach the instruction as an immediate, so the driver
     cannot pick the offset from a runtime block id.
     """
     import torch
@@ -162,13 +162,13 @@ def _run_case(dtype: str, case: str) -> bool:
     tla_a = tla.from_dlpack(x_a, layout_tag=tla.arch.RowMajor)
     tla_b = tla.from_dlpack(x_b, layout_tag=tla.arch.RowMajor)
     tla_y = tla.from_dlpack(y, layout_tag=tla.arch.RowMajor)
-    artifact = tla.compile(mask_gen_op, tla_a, tla_b, tla_y, options="--npu-arch 3510")
+    artifact = tla.compile(generate_mask_op, tla_a, tla_b, tla_y, options="--npu-arch 3510")
     artifact(tla_a, tla_b, tla_y, block_num=1)
     torch.npu.synchronize()
 
     actual = y.cpu()
     ok = torch.equal(actual, expected)
-    print(f"op=mask_gen dtype={dtype} case={case} offset={offset} passed={ok}")
+    print(f"op=generate_mask dtype={dtype} case={case} offset={offset} passed={ok}")
     if not ok:
         print(f"result   = {actual.tolist()}")
         print(f"expected = {expected.tolist()}")

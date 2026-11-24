@@ -49,10 +49,10 @@ def test_generate_mask_emits_tla_op(dtype, lanes, offset) -> None:
     mlir = generate_mask_kernel.dump_mlir(
         type_args=(tensor, tensor, lanes, offset)
     )
-    assert "tla.mask_gen" in mlir
+    assert "tla.generate_mask" in mlir
     assert f"offset {offset} :" in mlir
     assert f"-> !tla.mask<{lanes}>" in mlir
-    assert mlir.index("tla.vec.func") < mlir.index("tla.mask_gen")
+    assert mlir.index("tla.vec.func") < mlir.index("tla.generate_mask")
 
 
 @tla.kernel
@@ -98,7 +98,7 @@ def generate_mask_b8_kernel(
 
 def test_generate_mask_rejects_b8_source() -> None:
     tensor = _vector_tensor(tla.Int8, 256)
-    with pytest.raises(tla.TlaCoreAPIError, match="only supports b16/b32"):
+    with pytest.raises(tla.TlaCoreAPIError, match="only supports 16- and 32-bit elements"):
         generate_mask_b8_kernel.dump_mlir(type_args=(tensor, tensor, 256))
 
 
@@ -136,5 +136,6 @@ def test_generate_mask_requires_vec_func() -> None:
         kernel.dump_mlir(type_args=(tensor, tensor))
 
 
-def test_mask_gen_public_function_is_removed() -> None:
-    assert not hasattr(tla, "mask_gen")
+def test_generate_mask_is_method_only() -> None:
+    assert callable(tla.VectorSSA.generate_mask)
+    assert "generate_mask" not in tla.core.__all__

@@ -22,19 +22,19 @@ Mask 创建与尾块更新。
 
 功能说明：
 
-从本寄存器的一个 DataBlock 生成掩码，封装 Ascend C 的 `MaskGenWithRegTensor`（硬件指令 `MOVVP`）。
+从本寄存器的一个 DataBlock 生成 predicate 掩码。
 
-`MaskGenWithRegTensor` 属于 Reg 数据搬入接口：读取 `RegTensor`，生成 `MaskReg`。寄存器按
-「元素优先、元素内 bit 从低到高」的顺序划分为若干 DataBlock，`offset` 选中其中一个 DataBlock，
-块内每个 bit 成为同一位置的一个 predicate lane。元素位宽同时决定块宽与块数：
+寄存器按「元素优先、元素内 bit 从低到高」的顺序划分为若干 DataBlock，`offset` 选中其中一个
+DataBlock，块内每个 bit 成为同一位置的一个 predicate lane。只有元素位宽影响划分，它同时决定
+块宽与块数：
 
-- b32 源：2048 位寄存器划分为 32 个 8Byte（64 位）DataBlock，`offset` 取 `0..31`。
+- 32 位元素：2048 位寄存器划分为 32 个 8Byte（64 位）DataBlock，`offset` 取 `0..31`。
   结果 `mask<64>`，lane `L` 对应寄存器第 `64 * offset + L` 位。
-- b16 源：寄存器划分为 16 个 16Byte（128 位）DataBlock，`offset` 取 `0..15`。
+- 16 位元素：寄存器划分为 16 个 16Byte（128 位）DataBlock，`offset` 取 `0..15`。
   结果 `mask<128>`，lane `L` 对应寄存器第 `128 * offset + L` 位。
 
-物理上 32Byte 的 `MaskReg` 为每个元素分配 2 位（b16）或 4 位（b32），被选中的 bit 广播到这些
-位上，仅最低位有效。
+物理上 32Byte 的 predicate 寄存器为每个元素分配 2 位（16 位元素）或 4 位（32 位元素），
+被选中的 bit 广播到这些位上，仅最低位有效。
 
 函数原型：
 
@@ -44,16 +44,15 @@ tla.VectorSSA.generate_mask(offset: int) -> 'MaskSSA'
 
 参数说明：
 
-- `offset`（`int`）：编译期 DataBlock 序号。必填。b16 寄存器取 `0..15`，
-  b32 寄存器取 `0..31`。
+- `offset`（`int`）：编译期 DataBlock 序号。必填。16 位寄存器取 `0..15`，
+  32 位寄存器取 `0..31`。
 
 约束说明：
 
 - 仅支持 Ascend 950（`--npu-arch 3510`）。
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.vec.func(mode="simd")` 内调用。
-- 元素类型须为 16 位或 32 位（i16/u16/f16/bf16、i32/u32/f32）；
-  不支持 b8 与 b64。
+- 元素位宽须为 16 或 32 位；其他位宽不支持。
 - `offset` 须为 DataBlock 范围内的编译期 Python int。
 
 调用示例：

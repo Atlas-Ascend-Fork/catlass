@@ -20,26 +20,24 @@ Mask creation and tail-mask updates.
 
 Description:
 
-Build a mask from a data block of this register, wrapping Ascend C
-`MaskGenWithRegTensor` (hardware instruction `MOVVP`).
+Build a predicate mask from one data block of this register.
 
-`MaskGenWithRegTensor` is a Reg data-load interface: it reads a
-`RegTensor` and produces a `MaskReg`. The register is treated as a
-sequence of data blocks ordered by element and then by in-element
-bit (LSB first). `offset` selects one block, and each bit of that
-block becomes one predicate lane. The element width fixes both the
-block width and the block count:
+The register is treated as a sequence of data blocks ordered by
+element and then by in-element bit (LSB first). `offset` selects one
+block, and each bit of that block becomes one predicate lane. Only
+the element bit width matters, and it fixes both the block width and
+the block count:
 
-- b32 source: the 2048-bit register splits into 32 blocks of
+- 32-bit elements: the 2048-bit register splits into 32 blocks of
   8Byte (64 bits), so `offset` is `0..31`. The result is a
   `mask<64>` whose lane `L` is register bit `64 * offset + L`.
-- b16 source: the register splits into 16 blocks of 16Byte
+- 16-bit elements: the register splits into 16 blocks of 16Byte
   (128 bits), so `offset` is `0..15`. The result is a `mask<128>`
   whose lane `L` is register bit `128 * offset + L`.
 
-Physically the 32Byte `MaskReg` gives each element 2 bits (b16) or
-4 bits (b32); the selected bit is broadcast to those bits, and only
-the lowest one is effective.
+Physically the 32Byte predicate register gives each element 2 bits
+(16-bit) or 4 bits (32-bit); the selected bit is broadcast to those
+bits, and only the lowest one is effective.
 
 Prototype:
 
@@ -50,15 +48,14 @@ tla.VectorSSA.generate_mask(offset: int) -> 'MaskSSA'
 Parameters:
 
 - `offset` (`int`): Compile-time block index. Required. `0..15` for
-  a b16 register and `0..31` for a b32 register.
+  a 16-bit register and `0..31` for a 32-bit register.
 
 Constraints:
 
 - Supports Ascend 950 (`--npu-arch 3510`) only.
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func(mode="simd")`.
-- Element type must be 16-bit or 32-bit (i16/u16/f16/bf16,
-  i32/u32/f32); b8 and b64 are unsupported.
+- Element width must be 16 or 32 bits; other widths are unsupported.
 - `offset` must be a compile-time Python int within the block range.
 
 Example:

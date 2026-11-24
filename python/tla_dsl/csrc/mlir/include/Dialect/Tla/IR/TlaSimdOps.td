@@ -48,14 +48,13 @@ def Tla_UpdateMaskOp : Tla_Op<"update_mask", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Tla_MaskGenOp : Tla_Op<"mask_gen", [Pure]> {
-  let summary = "Predicate from a bit slice of a register";
+def Tla_GenerateMaskOp : Tla_Op<"generate_mask", [Pure]> {
+  let summary = "Predicate from a data block of a register";
   let description = [{
-    Take a bit slice of ``src`` and expand it into a predicate register
-    (AscendC ``MaskGenWithRegTensor`` / ``movvp``). ``src`` is viewed as a
-    bit array ordered by element then by in-element bit; ``offset`` selects one
-    slice of ``256 / sizeof(T)`` consecutive bits and each selected bit becomes
-    the predicate lane at the same position.
+    Take one data block of ``src`` and expand it into a predicate register.
+    ``src`` is viewed as a bit array ordered by element then by in-element bit;
+    ``offset`` selects one block of ``256 / sizeof(T)`` consecutive bits and each
+    selected bit becomes the predicate lane at the same position.
 
     Concretely, for a b32 source the result has ``64`` lanes and semantic lane
     ``L`` is register bit ``64 * offset + L``; for a b16 source the result has
@@ -63,8 +62,8 @@ def Tla_MaskGenOp : Tla_Op<"mask_gen", [Pure]> {
     each selected bit is broadcast to ``4`` (b32) or ``2`` (b16) adjacent
     predicate bits of the 256-bit container, matching the mask width.
 
-    ``offset`` is a compile-time slice index and must be in ``0..15`` for b16
-    and ``0..31`` for b32 (so every slice spans the full 2048-bit register). The
+    ``offset`` is a compile-time block index and must be in ``0..15`` for b16
+    and ``0..31`` for b32 (so every block spans the full 2048-bit register). The
     source element type fixes both the lane count and that range; b8 and b64
     sources are unsupported.
   }];

@@ -1413,37 +1413,34 @@ class VectorSSA(_RegisterSSA):
         """Directory: SIMD Vector Compute / Mask Compute
 
         Description:
-            Build a mask from a data block of this register, wrapping Ascend C
-            `MaskGenWithRegTensor` (hardware instruction `MOVVP`).
+            Build a predicate mask from one data block of this register.
 
-            `MaskGenWithRegTensor` is a Reg data-load interface: it reads a
-            `RegTensor` and produces a `MaskReg`. The register is treated as a
-            sequence of data blocks ordered by element and then by in-element
-            bit (LSB first). `offset` selects one block, and each bit of that
-            block becomes one predicate lane. The element width fixes both the
-            block width and the block count:
+            The register is treated as a sequence of data blocks ordered by
+            element and then by in-element bit (LSB first). `offset` selects one
+            block, and each bit of that block becomes one predicate lane. Only
+            the element bit width matters, and it fixes both the block width and
+            the block count:
 
-            - b32 source: the 2048-bit register splits into 32 blocks of
+            - 32-bit elements: the 2048-bit register splits into 32 blocks of
               8Byte (64 bits), so `offset` is `0..31`. The result is a
               `mask<64>` whose lane `L` is register bit `64 * offset + L`.
-            - b16 source: the register splits into 16 blocks of 16Byte
+            - 16-bit elements: the register splits into 16 blocks of 16Byte
               (128 bits), so `offset` is `0..15`. The result is a `mask<128>`
               whose lane `L` is register bit `128 * offset + L`.
 
-            Physically the 32Byte `MaskReg` gives each element 2 bits (b16) or
-            4 bits (b32); the selected bit is broadcast to those bits, and only
-            the lowest one is effective.
+            Physically the 32Byte predicate register gives each element 2 bits
+            (16-bit) or 4 bits (32-bit); the selected bit is broadcast to those
+            bits, and only the lowest one is effective.
 
             Parameters:
             - `offset` (`int`): Compile-time block index. Required. `0..15` for
-              a b16 register and `0..31` for a b32 register.
+              a 16-bit register and `0..31` for a 32-bit register.
 
             Constraints:
             - Supports Ascend 950 (`--npu-arch 3510`) only.
             - Must be called inside a `@tla.kernel`-decorated kernel function.
             - Must be called inside `tla.vec.func(mode="simd")`.
-            - Element type must be 16-bit or 32-bit (i16/u16/f16/bf16,
-              i32/u32/f32); b8 and b64 are unsupported.
+            - Element width must be 16 or 32 bits; other widths are unsupported.
             - `offset` must be a compile-time Python int within the block range.
 
             Example:
@@ -1461,7 +1458,7 @@ class VectorSSA(_RegisterSSA):
 
         src_value = _as_value(self)
         src_desc = _vector_ssa_type_for_mlir_value(src_value)
-        limit = _mask_gen_offset_limit("generate_mask", src_desc.element_type)
+        limit = _generate_mask_offset_limit("generate_mask", src_desc.element_type)
         bit_offset = _require_constexpr_range_bound("generate_mask", "offset", offset)
         if bit_offset < 0 or bit_offset > limit:
             _op_error(
@@ -1473,7 +1470,7 @@ class VectorSSA(_RegisterSSA):
         mask_ty = _mask_ssa_type_for_element_type(src_desc.element_type).to_mlir_type(
             src_value.type.context
         )
-        result = _tla_ops_gen.mask_gen(
+        result = _tla_ops_gen.generate_mask(
             mask_ty,
             src_value,
             mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), bit_offset),
@@ -12643,7 +12640,7 @@ _require_generated("mutex_lock")
 _require_generated("mutex_unlock")
 _require_generated("cube")
 _require_generated("vector")
-_require_generated("mask_gen")
+_require_generated("generate_mask")
 _require_generated("mmad")
 _require_generated("mmad_mx")
 _require_generated("add")
@@ -12912,20 +12909,20 @@ def update_mask(
     return MaskSSA(mask_value), as_numeric(new_true_shape)
 
 
-# MaskGenWithRegTensor (movvp) covers only 16- and 32-bit source elements; the
-# element width fixes both the mask lane count and the legal bit offset range.
-_MASK_GEN_OFFSET_LIMITS = {16: 15, 32: 31}
+# generate_mask covers only 16- and 32-bit source elements; the element width
+# fixes both the mask lane count and the legal block offset range.
+_GENERATE_MASK_OFFSET_LIMITS = {16: 15, 32: 31}
 
 
-def _mask_gen_offset_limit(op_name: str, element_type: str) -> int:
+def _generate_mask_offset_limit(op_name: str, element_type: str) -> int:
     element_bytes = dtype_size_bytes(element_type)
     if element_bytes not in (2, 4):
         _op_error(
             op_name,
             f"unsupported source element type {element_type}; "
-            "MaskGenWithRegTensor only supports b16/b32",
+            "generate_mask only supports 16- and 32-bit elements",
         )
-    return _MASK_GEN_OFFSET_LIMITS[element_bytes * 8]
+    return _GENERATE_MASK_OFFSET_LIMITS[element_bytes * 8]
 
 
 # Keep this type-only: tla.ffi lazily calls back into core_api, so a

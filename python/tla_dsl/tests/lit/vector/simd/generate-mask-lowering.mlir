@@ -29,7 +29,7 @@ module {
       %v = "tla.load"(%src_tile) : (!t_f32) -> !tla.vector<64xf32>
       %m = "tla.generate_mask"(%v) {offset = 7 : i32} : (!tla.vector<64xf32>) -> !tla.mask<64>
       %s = "tla.where"(%m, %v, %v) : (!tla.mask<64>, !tla.vector<64xf32>, !tla.vector<64xf32>) -> !tla.vector<64xf32>
-      "tla.store"(%dst_tile, %s) <{operandSegmentSizes = array<i32: 1, 1, 0, 0>}> : (!t_f32, !tla.vector<64xf32>) -> ()
+      "tla.store"(%dst_tile, %s) <{operandSegmentSizes = array<i32: 1, 1, 0, 0, 0>}> : (!t_f32, !tla.vector<64xf32>) -> ()
     }) {mode = "simd"} : () -> ()
     return
   }
@@ -52,7 +52,7 @@ module {
       %v = "tla.load"(%src_tile) : (!t_f16) -> !tla.vector<128xf16>
       %m = "tla.generate_mask"(%v) {offset = 15 : i32} : (!tla.vector<128xf16>) -> !tla.mask<128>
       %s = "tla.where"(%m, %v, %v) : (!tla.mask<128>, !tla.vector<128xf16>, !tla.vector<128xf16>) -> !tla.vector<128xf16>
-      "tla.store"(%dst_tile, %s) <{operandSegmentSizes = array<i32: 1, 1, 0, 0>}> : (!t_f16, !tla.vector<128xf16>) -> ()
+      "tla.store"(%dst_tile, %s) <{operandSegmentSizes = array<i32: 1, 1, 0, 0, 0>}> : (!t_f16, !tla.vector<128xf16>) -> ()
     }) {mode = "simd"} : () -> ()
     return
   }

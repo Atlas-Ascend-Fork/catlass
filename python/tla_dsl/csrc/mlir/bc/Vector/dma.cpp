@@ -5,11 +5,54 @@
 template <class ArchTag, LayoutTag SrcLayout, LayoutTag DstLayout, typename T>
 CATLASS_DEVICE void copyGMToUB(
     memref_t<__gm__ T, 2>* src, memref_t<__ubuf__ T, 1>* dst, const TensorDesc& srcDesc, const TensorDesc& dstDesc,
-    int64_t gmCachePolicy = kCachePolicyNormal)
+    int64_t gmCachePolicy = kCachePolicyNormal, int64_t padEnable = 0, int64_t leftPadding = 0,
+    int64_t rightPadding = 0, int64_t paddingValueBits = 0)
 {
     auto srcTensor = makeGMTensor<SrcLayout, T>(src, srcDesc, gmCachePolicy);
     auto dstTensor = makeUBTensor<DstLayout, T>(dst, dstDesc);
-    Catlass::Epilogue::Tile::CopyGm2UbTla<ArchTag, decltype(srcTensor), decltype(dstTensor)>{}(dstTensor, srcTensor);
+    Catlass::Epilogue::Tile::CopyGm2UbTla<ArchTag, decltype(srcTensor), decltype(dstTensor)> copyGm2Ub;
+    if (padEnable == 0) {
+        (void)leftPadding;
+        (void)rightPadding;
+        (void)paddingValueBits;
+        copyGm2Ub(dstTensor, srcTensor);
+        return;
+    }
+    // Pad path: only instantiate ExtParams for types known safe under ccec.
+    // Keep aligned with core_api._COPY_PAD_SAFE_DTYPES (frontend rejects others).
+    if constexpr (
+        __is_same(T, float) || __is_same(T, half) || __is_same(T, bfloat16_t) || __is_same(T, int32_t) ||
+        __is_same(T, uint32_t) || __is_same(T, int16_t) || __is_same(T, uint16_t) || __is_same(T, int8_t) ||
+        __is_same(T, uint8_t) || __is_same(T, bool) || __is_same(T, int64_t) || __is_same(T, uint64_t) ||
+        __is_same(T, double)) {
+        T padValue{};
+        if constexpr (__is_same(T, bool)) {
+            // Keep bool as 0/1; do not bit-cast arbitrary byte patterns into bool.
+            padValue = static_cast<bool>(paddingValueBits != 0);
+        } else if constexpr (sizeof(T) == 1) {
+            uint8_t v = static_cast<uint8_t>(paddingValueBits);
+            padValue = *reinterpret_cast<T*>(&v);
+        } else if constexpr (sizeof(T) == 2) {
+            uint16_t v = static_cast<uint16_t>(paddingValueBits);
+            padValue = *reinterpret_cast<T*>(&v);
+        } else if constexpr (sizeof(T) == 4) {
+            uint32_t v = static_cast<uint32_t>(paddingValueBits);
+            padValue = *reinterpret_cast<T*>(&v);
+        } else {
+            (void)paddingValueBits;
+            padValue = static_cast<T>(0);
+        }
+        // Brace-init: DataCopyPadExtParams is an aggregate under -std=c++17.
+        AscendC::DataCopyPadExtParams<T> padParams{
+            true, static_cast<uint8_t>(leftPadding), static_cast<uint8_t>(rightPadding), padValue};
+        copyGm2Ub(dstTensor, srcTensor, padParams);
+    } else {
+        // Frontend rejects CopyPadParams on these T; keep exact-byte fallback.
+        (void)leftPadding;
+        (void)rightPadding;
+        (void)paddingValueBits;
+        copyGm2Ub(dstTensor, srcTensor);
+    }
 }
 
 template <class ArchTag, LayoutTag SrcLayout, LayoutTag DstLayout, typename T>
@@ -48,13 +91,14 @@ CATLASS_DEVICE void copyUBToL1(
 extern "C" {
 #if ((defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510) || (defined(CATLASS_ARCH) && CATLASS_ARCH == 3510))
 
-#define REGISTER_GM_TO_UB(LayoutSrc, LayoutDst, DType)                                                                \
-    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_gm_##LayoutSrc##_to_ub_##LayoutDst##_##DType(      \
-        memref_t<__gm__ DType, 2>* src, memref_t<__ubuf__ DType, 1>* dst, DESC_ABI_PARAMS(src), DESC_ABI_PARAMS(dst), \
-        int64_t gmCachePolicy)                                                                                        \
-    {                                                                                                                 \
-        copyGMToUB<Catlass::Arch::Ascend950, LayoutTag::LayoutSrc, LayoutTag::LayoutDst, DType>(                      \
-            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), gmCachePolicy);                                       \
+#define REGISTER_GM_TO_UB(LayoutSrc, LayoutDst, DType)                                                                 \
+    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_gm_##LayoutSrc##_to_ub_##LayoutDst##_##DType(       \
+        memref_t<__gm__ DType, 2>* src, memref_t<__ubuf__ DType, 1>* dst, DESC_ABI_PARAMS(src), DESC_ABI_PARAMS(dst),  \
+        int64_t gmCachePolicy, int64_t padEnable, int64_t leftPadding, int64_t rightPadding, int64_t paddingValueBits) \
+    {                                                                                                                  \
+        copyGMToUB<Catlass::Arch::Ascend950, LayoutTag::LayoutSrc, LayoutTag::LayoutDst, DType>(                       \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), gmCachePolicy, padEnable, leftPadding, rightPadding,   \
+            paddingValueBits);                                                                                         \
     }
 
 #define REGISTER_UB_TO_GM(LayoutSrc, LayoutDst, DType)                                                                \
@@ -102,6 +146,16 @@ REGISTER_GM_TO_UB(RowMajor, RowMajor, double)
 REGISTER_GM_TO_UB(VectorLayout, VectorLayout, int64_t)
 REGISTER_GM_TO_UB(VectorLayout, VectorLayout, uint64_t)
 REGISTER_GM_TO_UB(VectorLayout, VectorLayout, double)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, bool)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, float)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, half)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, bf16)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, int32_t)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, int16_t)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, int8_t)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, uint8_t)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, uint16_t)
+REGISTER_GM_TO_UB(VectorLayout, VectorLayout, uint32_t)
 REGISTER_GM_TO_UB(RowMajor, RowMajor, fp8_e4m3fn_t)
 REGISTER_GM_TO_UB(RowMajor, RowMajor, fp8_e5m2_t)
 REGISTER_GM_TO_UB(RowMajor, RowMajor, float4_e2m1x2_t)

@@ -18,19 +18,23 @@ CATLASS_DEVICE void copyGMToL1(
     // selects both the layout constructor (makeGMTensor / makeL1Tensor) and the
     // copy. VectorLayout is the flat case -- both endpoints come out rank-1
     // (VectorLayout), which is exactly what the VectorLayout specialization in
-    // copy_gm_to_l1.hpp matches.
+    // copy_gm_to_l1.hpp matches. The gemv A operand is that same flat route.
     auto srcTensor = makeGMTensor<SrcLayout, T>(src, srcDesc, gmCachePolicy);
     auto dstTensor = makeL1Tensor<DstLayout, T>(dst, dstDesc);
     Catlass::Gemm::Tile::TileCopyTla<ArchTag, decltype(srcTensor), decltype(dstTensor)>{}(
         dstTensor, srcTensor, batchArgs...);
 }
 
-template <class ArchTag, LayoutTag SrcLayout, typename T>
+template <class ArchTag, LayoutTag SrcLayout, LayoutTag DstLayout, typename T>
 CATLASS_DEVICE void copyL1ToL0A(
     memref_t<__cbuf__ T, 1>* src, memref_t<__ca__ T, 1>* dst, const TensorDesc& srcDesc, const TensorDesc& dstDesc)
 {
+    // Both endpoints are selected by tag, which is what lets the zN/nZ matrix
+    // forms and the flat VectorLayout gemv form share one helper: makeL1Tensor /
+    // makeL0ATensor build the tensors, and copy_l1_to_l0a.hpp matches on their
+    // shapes.
     auto srcTensor = makeL1Tensor<SrcLayout, T>(src, srcDesc);
-    auto dstTensor = makeL0ATensor<LayoutTag::zN, T>(dst, dstDesc);
+    auto dstTensor = makeL0ATensor<DstLayout, T>(dst, dstDesc);
     Catlass::Gemm::Tile::TileCopyTla<ArchTag, decltype(srcTensor), decltype(dstTensor)>{}(dstTensor, srcTensor);
 }
 
@@ -112,6 +116,35 @@ CATLASS_DEVICE void copyL0CToL1(
     Catlass::Gemm::Tile::CopyL0CToL1Tla<
         ArchTag, decltype(srcTensor), decltype(dstTensor), Catlass::Gemm::Tile::ScaleGranularity::NO_QUANT,
         ReluEnable>{}(dstTensor, srcTensor, unitFlag);
+}
+
+// L0C -> L1 per-tensor quant.
+template <class ArchTag, LayoutTag DstLayout, typename ElementSrc, typename ElementDst, bool ReluEnable = false>
+CATLASS_DEVICE void copyL0CToL1QuantPerTensor(
+    memref_t<__cc__ ElementSrc, 1>* src, memref_t<__cbuf__ ElementDst, 1>* dst, const TensorDesc& srcDesc,
+    const TensorDesc& dstDesc, uint8_t unitFlag, float quantScale, int32_t quantOffset)
+{
+    auto srcTensor = makeL0CTensor<LayoutTag::L0Clayout, ElementSrc>(src, srcDesc);
+    auto dstTensor = makeL1Tensor<DstLayout, ElementDst>(dst, dstDesc);
+    using CopyL0CToL1Tla = Catlass::Gemm::Tile::CopyL0CToL1Tla<
+        ArchTag, decltype(srcTensor), decltype(dstTensor), Catlass::Gemm::Tile::ScaleGranularity::PER_TENSOR,
+        ReluEnable>;
+    typename CopyL0CToL1Tla::Params params(quantScale, quantOffset);
+    CopyL0CToL1Tla{params}(dstTensor, srcTensor, unitFlag);
+}
+
+// L0C -> L1 per-channel quant.
+template <class ArchTag, LayoutTag DstLayout, typename ElementSrc, typename ElementDst, bool ReluEnable = false>
+CATLASS_DEVICE void copyL0CToL1QuantPerChannel(
+    memref_t<__cc__ ElementSrc, 1>* src, memref_t<__cbuf__ ElementDst, 1>* dst, memref_t<__cbuf__ uint64_t, 1>* scale,
+    const TensorDesc& srcDesc, const TensorDesc& dstDesc, const TensorDesc& scaleDesc, uint8_t unitFlag)
+{
+    auto srcTensor = makeL0CTensor<LayoutTag::L0Clayout, ElementSrc>(src, srcDesc);
+    auto dstTensor = makeL1Tensor<DstLayout, ElementDst>(dst, dstDesc);
+    auto quantTensor = makeL1Tensor<LayoutTag::VectorLayout, uint64_t>(scale, scaleDesc);
+    Catlass::Gemm::Tile::CopyL0CToL1Tla<
+        ArchTag, decltype(srcTensor), decltype(dstTensor), Catlass::Gemm::Tile::ScaleGranularity::PER_CHANNEL,
+        ReluEnable>{}(dstTensor, srcTensor, quantTensor, unitFlag);
 }
 
 template <
@@ -270,11 +303,11 @@ REGISTER_GM_TO_L1_BATCH(ColMajorMxScaleA, zZMxScale, float8_e8m0_t)
 REGISTER_GM_TO_L1_BATCH(RowMajorMxScaleB, nNMxScale, float8_e8m0_t)
 REGISTER_GM_TO_L1_BATCH(ColMajorMxScaleB, nNMxScale, float8_e8m0_t)
 
-#define REGISTER_L1_TO_L0A(LayoutSrc, DType)                                                                          \
-    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l1_##LayoutSrc##_to_l0a_zN_##DType(                \
+#define REGISTER_L1_TO_L0A(LayoutSrc, LayoutDst, DType)                                                               \
+    [aicore] __attribute__((always_inline)) void _mlir_ciface_copy_l1_##LayoutSrc##_to_l0a_##LayoutDst##_##DType(     \
         memref_t<__cbuf__ DType, 1>* src, memref_t<__ca__ DType, 1>* dst, DESC_ABI_PARAMS(src), DESC_ABI_PARAMS(dst)) \
     {                                                                                                                 \
-        copyL1ToL0A<Catlass::Arch::Ascend950, LayoutTag::LayoutSrc, DType>(                                           \
+        copyL1ToL0A<Catlass::Arch::Ascend950, LayoutTag::LayoutSrc, LayoutTag::LayoutDst, DType>(                     \
             src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst));                                                      \
     }
 
@@ -309,6 +342,7 @@ REGISTER_GM_TO_L1(RowMajor, zN, fp8_e5m2_t)
 REGISTER_GM_TO_L1(RowMajor, zN, float4_e2m1x2_t)
 REGISTER_GM_TO_L1(RowMajor, zN, float4_e1m2x2_t)
 // Bool / i1: AscendC b8; TileCopyTla accepts bool (SizeOfBits==8) like int8_t.
+// HiFloat8: typed BC (memref i8); TileCopyTla byte-moves (Nd2Nz as int8, fractal/VL as uint8).
 REGISTER_GM_TO_L1(RowMajor, zN, bool)
 REGISTER_GM_TO_L1(RowMajor, zN, hifloat8_t)
 REGISTER_GM_TO_L1(ColumnMajor, nZ, float)
@@ -335,6 +369,8 @@ REGISTER_GM_TO_L1(zN, zN, int32_t)
 REGISTER_GM_TO_L1(zN, zN, uint8_t)
 REGISTER_GM_TO_L1(zN, zN, uint16_t)
 REGISTER_GM_TO_L1(zN, zN, uint32_t)
+REGISTER_GM_TO_L1(zN, zN, bool)
+REGISTER_GM_TO_L1(zN, zN, hifloat8_t)
 REGISTER_GM_TO_L1(zN, zN, fp8_e4m3fn_t)
 REGISTER_GM_TO_L1(zN, zN, fp8_e5m2_t)
 REGISTER_GM_TO_L1(zN, zN, float4_e2m1x2_t)
@@ -348,6 +384,8 @@ REGISTER_GM_TO_L1(nZ, nZ, int32_t)
 REGISTER_GM_TO_L1(nZ, nZ, uint8_t)
 REGISTER_GM_TO_L1(nZ, nZ, uint16_t)
 REGISTER_GM_TO_L1(nZ, nZ, uint32_t)
+REGISTER_GM_TO_L1(nZ, nZ, bool)
+REGISTER_GM_TO_L1(nZ, nZ, hifloat8_t)
 REGISTER_GM_TO_L1(nZ, nZ, fp8_e4m3fn_t)
 REGISTER_GM_TO_L1(nZ, nZ, fp8_e5m2_t)
 REGISTER_GM_TO_L1(nZ, nZ, float4_e2m1x2_t)
@@ -372,26 +410,37 @@ REGISTER_GM_TO_L1(VectorLayout, VectorLayout, uint16_t)
 REGISTER_GM_TO_L1(VectorLayout, VectorLayout, uint32_t)
 REGISTER_GM_TO_L1(VectorLayout, VectorLayout, uint64_t)
 REGISTER_GM_TO_L1(VectorLayout, VectorLayout, double)
+// AscendC a5 DataCopyPad continuous GM→L1 lists bool (1 byte / element).
 REGISTER_GM_TO_L1(VectorLayout, VectorLayout, bool)
+REGISTER_GM_TO_L1(VectorLayout, VectorLayout, fp8_e4m3fn_t)
+REGISTER_GM_TO_L1(VectorLayout, VectorLayout, fp8_e5m2_t)
+REGISTER_GM_TO_L1(VectorLayout, VectorLayout, hifloat8_t)
 
-REGISTER_L1_TO_L0A(zN, float)
-REGISTER_L1_TO_L0A(zN, half)
-REGISTER_L1_TO_L0A(zN, bf16)
-REGISTER_L1_TO_L0A(zN, int8_t)
+REGISTER_L1_TO_L0A(zN, zN, float)
+REGISTER_L1_TO_L0A(zN, zN, half)
+REGISTER_L1_TO_L0A(zN, zN, bf16)
+REGISTER_L1_TO_L0A(zN, zN, int8_t)
 // uint16_t is not in AscendC LoadData 2dv2's supported set on dav-3510
 // (uint8/uint32 yes; uint16 no). Keep GM→L1 for u16; L1→L0 only for u32.
-REGISTER_L1_TO_L0A(zN, uint32_t)
-REGISTER_L1_TO_L0A(zN, fp8_e4m3fn_t)
-REGISTER_L1_TO_L0A(zN, fp8_e5m2_t)
-REGISTER_L1_TO_L0A(zN, hifloat8_t)
-REGISTER_L1_TO_L0A(nZ, float)
-REGISTER_L1_TO_L0A(nZ, half)
-REGISTER_L1_TO_L0A(nZ, bf16)
-REGISTER_L1_TO_L0A(nZ, int8_t)
-REGISTER_L1_TO_L0A(nZ, uint32_t)
-REGISTER_L1_TO_L0A(nZ, fp8_e4m3fn_t)
-REGISTER_L1_TO_L0A(nZ, fp8_e5m2_t)
-REGISTER_L1_TO_L0A(nZ, hifloat8_t)
+REGISTER_L1_TO_L0A(zN, zN, uint32_t)
+REGISTER_L1_TO_L0A(zN, zN, fp8_e4m3fn_t)
+REGISTER_L1_TO_L0A(zN, zN, fp8_e5m2_t)
+REGISTER_L1_TO_L0A(zN, zN, hifloat8_t)
+REGISTER_L1_TO_L0A(nZ, zN, float)
+REGISTER_L1_TO_L0A(nZ, zN, half)
+REGISTER_L1_TO_L0A(nZ, zN, bf16)
+REGISTER_L1_TO_L0A(nZ, zN, int8_t)
+REGISTER_L1_TO_L0A(nZ, zN, uint32_t)
+REGISTER_L1_TO_L0A(nZ, zN, fp8_e4m3fn_t)
+REGISTER_L1_TO_L0A(nZ, zN, fp8_e5m2_t)
+REGISTER_L1_TO_L0A(nZ, zN, hifloat8_t)
+REGISTER_L1_TO_L0A(VectorLayout, VectorLayout, float)
+REGISTER_L1_TO_L0A(VectorLayout, VectorLayout, half)
+REGISTER_L1_TO_L0A(VectorLayout, VectorLayout, bf16)
+REGISTER_L1_TO_L0A(VectorLayout, VectorLayout, int8_t)
+REGISTER_L1_TO_L0A(VectorLayout, VectorLayout, fp8_e4m3fn_t)
+REGISTER_L1_TO_L0A(VectorLayout, VectorLayout, fp8_e5m2_t)
+REGISTER_L1_TO_L0A(VectorLayout, VectorLayout, hifloat8_t)
 
 REGISTER_L1_TO_L0B(zN, float)
 REGISTER_L1_TO_L0B(zN, half)
@@ -551,6 +600,54 @@ REGISTER_L1_TO_L0B_MX(nZ, float4_e1m2x2_t)
     REGISTER_L0C_TO_L1_NORELU(LayoutDst, DTypeSrc, DTypeDst) \
     REGISTER_L0C_TO_L1_RELU(LayoutDst, DTypeSrc, DTypeDst)
 
+#define REGISTER_L0C_TO_L1_PER_TENSOR_NORELU(LayoutDst, DTypeSrc, DTypeDst)                                   \
+    [aicore] __attribute__((always_inline)) void                                                              \
+        _mlir_ciface_copy_l0c_to_l1_##LayoutDst##_pertensor_##DTypeSrc##_##DTypeDst(                          \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__cbuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),     \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, float quantScale, int32_t quantOffset)                    \
+    {                                                                                                         \
+        copyL0CToL1QuantPerTensor<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, false>( \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag, quantScale, quantOffset);           \
+    }
+
+#define REGISTER_L0C_TO_L1_PER_TENSOR_RELU(LayoutDst, DTypeSrc, DTypeDst)                                    \
+    [aicore] __attribute__((always_inline)) void                                                             \
+        _mlir_ciface_copy_l0c_to_l1_##LayoutDst##_pertensor_relu_##DTypeSrc##_##DTypeDst(                    \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__cbuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),    \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, float quantScale, int32_t quantOffset)                   \
+    {                                                                                                        \
+        copyL0CToL1QuantPerTensor<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, true>( \
+            src, dst, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), unitFlag, quantScale, quantOffset);          \
+    }
+
+#define REGISTER_L0C_TO_L1_PER_TENSOR(LayoutDst, DTypeSrc, DTypeDst)    \
+    REGISTER_L0C_TO_L1_PER_TENSOR_NORELU(LayoutDst, DTypeSrc, DTypeDst) \
+    REGISTER_L0C_TO_L1_PER_TENSOR_RELU(LayoutDst, DTypeSrc, DTypeDst)
+
+#define REGISTER_L0C_TO_L1_PER_CHANNEL_NORELU(LayoutDst, DTypeSrc, DTypeDst)                                       \
+    [aicore] __attribute__((always_inline)) void                                                                   \
+        _mlir_ciface_copy_l0c_to_l1_##LayoutDst##_perchannel_##DTypeSrc##_##DTypeDst(                              \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__cbuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),          \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, memref_t<__cbuf__ uint64_t, 1>* quant, DESC_ABI_PARAMS(quant)) \
+    {                                                                                                              \
+        copyL0CToL1QuantPerChannel<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, false>(     \
+            src, dst, quant, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), TENSOR_DESC_12(quant), unitFlag);           \
+    }
+
+#define REGISTER_L0C_TO_L1_PER_CHANNEL_RELU(LayoutDst, DTypeSrc, DTypeDst)                                         \
+    [aicore] __attribute__((always_inline)) void                                                                   \
+        _mlir_ciface_copy_l0c_to_l1_##LayoutDst##_perchannel_relu_##DTypeSrc##_##DTypeDst(                         \
+            memref_t<__cc__ DTypeSrc, 1>* src, memref_t<__cbuf__ DTypeDst, 1>* dst, DESC_ABI_PARAMS(src),          \
+            DESC_ABI_PARAMS(dst), uint8_t unitFlag, memref_t<__cbuf__ uint64_t, 1>* quant, DESC_ABI_PARAMS(quant)) \
+    {                                                                                                              \
+        copyL0CToL1QuantPerChannel<Catlass::Arch::Ascend950, LayoutTag::LayoutDst, DTypeSrc, DTypeDst, true>(      \
+            src, dst, quant, TENSOR_DESC_12(src), TENSOR_DESC_12(dst), TENSOR_DESC_12(quant), unitFlag);           \
+    }
+
+#define REGISTER_L0C_TO_L1_PER_CHANNEL(LayoutDst, DTypeSrc, DTypeDst)    \
+    REGISTER_L0C_TO_L1_PER_CHANNEL_NORELU(LayoutDst, DTypeSrc, DTypeDst) \
+    REGISTER_L0C_TO_L1_PER_CHANNEL_RELU(LayoutDst, DTypeSrc, DTypeDst)
+
 #define REGISTER_L0C_TO_UB_NORELU(LayoutDst, mode, MODE, DTypeSrc, DTypeDst)                                      \
     [aicore] __attribute__((always_inline)) void                                                                  \
         _mlir_ciface_copy_l0c_to_ub_##LayoutDst##_##mode##_##DTypeSrc##_##DTypeDst(                               \
@@ -600,6 +697,8 @@ REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, half)
 REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, bf16)
 REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, int8_t)
 REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, uint8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, fp8_e4m3fn_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, float, hifloat8_t)
 REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, int32_t, half)
 REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, int32_t, bf16)
 REGISTER_L0C_TO_GM_PER_TENSOR(RowMajor, int32_t, int8_t)
@@ -609,6 +708,8 @@ REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, half)
 REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, bf16)
 REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, int8_t)
 REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, uint8_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, fp8_e4m3fn_t)
+REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, float, hifloat8_t)
 REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, int32_t, half)
 REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, int32_t, bf16)
 REGISTER_L0C_TO_GM_PER_TENSOR(ColumnMajor, int32_t, int8_t)
@@ -620,6 +721,8 @@ REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, float, half)
 REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, float, bf16)
 REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, float, int8_t)
 REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, float, uint8_t)
+REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, float, fp8_e4m3fn_t)
+REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, float, hifloat8_t)
 REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, int32_t, half)
 REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, int32_t, bf16)
 REGISTER_L0C_TO_UB_PER_TENSOR(RowMajor, int32_t, int8_t)
@@ -629,6 +732,8 @@ REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, float, half)
 REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, float, bf16)
 REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, float, int8_t)
 REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, float, uint8_t)
+REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, float, fp8_e4m3fn_t)
+REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, float, hifloat8_t)
 REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, int32_t, half)
 REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, int32_t, bf16)
 REGISTER_L0C_TO_UB_PER_TENSOR(ColumnMajor, int32_t, int8_t)
@@ -638,6 +743,23 @@ REGISTER_L0C_TO_L1(zN, float, float)
 REGISTER_L0C_TO_L1(zN, float, half)
 REGISTER_L0C_TO_L1(zN, float, bf16)
 REGISTER_L0C_TO_L1(zN, int32_t, int32_t)
+
+// L0C -> L1 quant, only dst layout zN is enabled
+REGISTER_L0C_TO_L1_PER_TENSOR(zN, float, float)
+REGISTER_L0C_TO_L1_PER_TENSOR(zN, float, half)
+REGISTER_L0C_TO_L1_PER_TENSOR(zN, float, bf16)
+REGISTER_L0C_TO_L1_PER_TENSOR(zN, float, int8_t)
+REGISTER_L0C_TO_L1_PER_TENSOR(zN, int32_t, half)
+REGISTER_L0C_TO_L1_PER_TENSOR(zN, int32_t, bf16)
+REGISTER_L0C_TO_L1_PER_TENSOR(zN, int32_t, int8_t)
+
+REGISTER_L0C_TO_L1_PER_CHANNEL(zN, float, float)
+REGISTER_L0C_TO_L1_PER_CHANNEL(zN, float, half)
+REGISTER_L0C_TO_L1_PER_CHANNEL(zN, float, bf16)
+REGISTER_L0C_TO_L1_PER_CHANNEL(zN, float, int8_t)
+REGISTER_L0C_TO_L1_PER_CHANNEL(zN, int32_t, half)
+REGISTER_L0C_TO_L1_PER_CHANNEL(zN, int32_t, bf16)
+REGISTER_L0C_TO_L1_PER_CHANNEL(zN, int32_t, int8_t)
 
 // RowMajor nosplit (the only split mode ReLU is registered for)
 REGISTER_L0C_TO_UB(RowMajor, nosplit, NO_SPLIT, float, float)
@@ -716,6 +838,8 @@ REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, half)
 REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, bf16)
 REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, int8_t)
 REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, uint8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, fp8_e4m3fn_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, float, hifloat8_t)
 REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, int32_t, half)
 REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, int32_t, bf16)
 REGISTER_L0C_TO_GM_PER_CHANNEL(RowMajor, int32_t, int8_t)
@@ -725,6 +849,8 @@ REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, half)
 REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, bf16)
 REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, int8_t)
 REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, uint8_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, fp8_e4m3fn_t)
+REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, float, hifloat8_t)
 REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, int32_t, half)
 REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, int32_t, bf16)
 REGISTER_L0C_TO_GM_PER_CHANNEL(ColumnMajor, int32_t, int8_t)
@@ -736,6 +862,8 @@ REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, float, half)
 REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, float, bf16)
 REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, float, int8_t)
 REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, float, uint8_t)
+REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, float, fp8_e4m3fn_t)
+REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, float, hifloat8_t)
 REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, int32_t, half)
 REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, int32_t, bf16)
 REGISTER_L0C_TO_UB_PER_CHANNEL(RowMajor, int32_t, int8_t)
@@ -745,6 +873,8 @@ REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, float, half)
 REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, float, bf16)
 REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, float, int8_t)
 REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, float, uint8_t)
+REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, float, fp8_e4m3fn_t)
+REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, float, hifloat8_t)
 REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, int32_t, half)
 REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, int32_t, bf16)
 REGISTER_L0C_TO_UB_PER_CHANNEL(ColumnMajor, int32_t, int8_t)

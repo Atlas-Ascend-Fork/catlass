@@ -53,14 +53,31 @@ static Value strideElemsToByteOffI32(OpBuilder& b, Location loc, Value strideEle
     return b.create<arith::MulIOp>(loc, s, scale);
 }
 
-/// HIVM store Dist for elem type: f32→2 (NORM_B32), f16/bf16→1 (NORM_B16).
-static int32_t hivmStoreDistForElem(Type elemType)
+/// Align b64 UPDATE follows AscendC RegTraitNumOne: reinterpret as
+/// ``uint32_t``, ``postUpdateStride * 2`` in u32 elems (= same byte off as
+/// ``stride * 8``), DistVST ``NORM_B32``. ``TypeGet<double>`` → ``vector_u64``,
+/// same ActualT==8 path as i64/u64.
+static bool isAlignB64Elem(Type elemType)
 {
-    if (elemType.isF32())
-        return 2;
-    if (elemType.isF16() || elemType.isBF16())
-        return 1;
-    return 0;
+    return elemType.isInteger(64) || elemType.isF64();
+}
+
+/// Align UPDATE has no ``vldsx1.post.v256f8*`` / f4 / e8m0 / Bool post; these
+/// move as s8 bits (AscendC ``SupportBytes<1>()`` / ``TypeGet<bool>`` →
+/// ``vector_s8`` → ``uint8_t``/``int8_t`` vlds/vsts).
+static bool isAlignPostByteAliasElem(Type elemType)
+{
+    return isBoolElementType(elemType) ||
+           isa<Float8E4M3FNType, Float8E5M2Type, ::tla::HiFloat8Type, ::tla::Float8E8M0Type, ::tla::Float4E2M1x2Type,
+               ::tla::Float4E1M2x2Type>(elemType);
+}
+
+/// True when the integer element should take the unsigned HIVM load/store
+/// variant; signed and signless share the signed variant.
+static bool isUnsignedHivmElem(Type elemType)
+{
+    auto intTy = dyn_cast<IntegerType>(elemType);
+    return intTy && intTy.isUnsigned();
 }
 
 /// Cast ``newPtr`` to the live UB pointer type without UnrealizedConversionCast
@@ -86,16 +103,56 @@ static FailureOr<std::pair<Value, Value>> emitVldsx1Post(
     Type ubPtrTy = getUbPtrType(b.getContext());
     Type structTy = LLVM::LLVMStructType::getLiteral(b.getContext(), {vecTy, ubPtrTy});
     Operation* op = nullptr;
+    Value vec;
+    Value newPtr;
+    if (isAlignPostByteAliasElem(elemType)) {
+        // No Align ``.post.v256f8*``; HIVM only exposes s8/u8 post for b8.
+        Type i8VecTy = VectorType::get({256}, IntegerType::get(b.getContext(), 8));
+        Type s8StructTy = LLVM::LLVMStructType::getLiteral(b.getContext(), {i8VecTy, ubPtrTy});
+        op = b.create<hivm_regbaseintrins::Vldsx1PostV256S8InstrOp>(loc, s8StructTy, ptr, byteOff, dist, postEn);
+        Value i8Vec = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
+        newPtr = castToLiveUbPtr(b, loc, b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 1), ubPtrTy);
+        vec = (vecTy == i8VecTy) ? i8Vec : b.create<mlir::vector::BitCastOp>(loc, vecTy, i8Vec).getResult();
+        return std::make_pair(vec, newPtr);
+    }
     if (elemType.isF32())
         op = b.create<hivm_regbaseintrins::Vldsx1PostV64F32InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
     else if (elemType.isF16())
         op = b.create<hivm_regbaseintrins::Vldsx1PostV128F16InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
     else if (elemType.isBF16())
         op = b.create<hivm_regbaseintrins::Vldsx1PostV128BF16InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
-    else
+    else if (elemType.isInteger(8)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::Vldsx1PostV256U8InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+        else
+            op = b.create<hivm_regbaseintrins::Vldsx1PostV256S8InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+    } else if (elemType.isInteger(16)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::Vldsx1PostV128U16InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+        else
+            op = b.create<hivm_regbaseintrins::Vldsx1PostV128S16InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+    } else if (elemType.isInteger(32)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::Vldsx1PostV64U32InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+        else
+            op = b.create<hivm_regbaseintrins::Vldsx1PostV64S32InstrOp>(loc, structTy, ptr, byteOff, dist, postEn);
+    } else if (isAlignB64Elem(elemType)) {
+        // AscendC: vlds((RegTensor<uint32_t>&)dst, uint32_t*&, stride*2, …).
+        // byteOff stays stride_elems×8 (equivalent to (stride×2)×sizeof(u32)).
+        // LLVM dialect structs require signless element types — use i32 carrier
+        // (still the U32 intrinsic) then bitcast back to the semantic vecTy.
+        Type i32 = IntegerType::get(b.getContext(), 32);
+        Type i32VecTy = VectorType::get({64}, i32);
+        Type i32StructTy = LLVM::LLVMStructType::getLiteral(b.getContext(), {i32VecTy, ubPtrTy});
+        op = b.create<hivm_regbaseintrins::Vldsx1PostV64U32InstrOp>(loc, i32StructTy, ptr, byteOff, dist, postEn);
+        Value i32Vec = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
+        newPtr = castToLiveUbPtr(b, loc, b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 1), ubPtrTy);
+        vec = (vecTy == i32VecTy) ? i32Vec : b.create<mlir::vector::BitCastOp>(loc, vecTy, i32Vec).getResult();
+        return std::make_pair(vec, newPtr);
+    } else
         return failure();
-    Value vec = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
-    Value newPtr = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 1);
+    vec = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
+    newPtr = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 1);
     newPtr = castToLiveUbPtr(b, loc, newPtr, ubPtrTy);
     return std::make_pair(vec, newPtr);
 }
@@ -105,10 +162,21 @@ static FailureOr<Value> emitVstsx1Post(
     OpBuilder& b, Location loc, Value src, Value ptr, Value strideElems, Value preg, Type elemType)
 {
     Value byteOff = strideElemsToByteOffI32(b, loc, strideElems, elemType);
-    Value dist = b.create<arith::ConstantIntOp>(loc, hivmStoreDistForElem(elemType), /*width=*/32);
+    // DistVST NORM_B8/B16/B32 encodes 0/1/2; b64 uses the b32 carrier.
+    const int64_t elemBytes = elementStorageBytes(elemType);
+    const int64_t normDist = elemBytes == 1 ? 0 : elemBytes == 2 ? 1 : 2;
+    Value dist = b.create<arith::ConstantIntOp>(loc, normDist, /*width=*/32);
     Value postEn = b.create<arith::ConstantIntOp>(loc, /*value=*/1, /*width=*/32);
     Type ubPtrTy = getUbPtrType(b.getContext());
     Operation* op = nullptr;
+    if (isAlignPostByteAliasElem(elemType)) {
+        Type i8VecTy = VectorType::get({256}, IntegerType::get(b.getContext(), 8));
+        Value srcI8 =
+            (src.getType() == i8VecTy) ? src : b.create<mlir::vector::BitCastOp>(loc, i8VecTy, src).getResult();
+        op = b.create<hivm_regbaseintrins::Vstsx1PostV256S8InstrOp>(
+            loc, ubPtrTy, srcI8, ptr, byteOff, dist, postEn, preg);
+        return castToLiveUbPtr(b, loc, op->getResult(0), ubPtrTy);
+    }
     if (elemType.isF32())
         op =
             b.create<hivm_regbaseintrins::Vstsx1PostV64F32InstrOp>(loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
@@ -118,7 +186,39 @@ static FailureOr<Value> emitVstsx1Post(
     else if (elemType.isBF16())
         op = b.create<hivm_regbaseintrins::Vstsx1PostV128BF16InstrOp>(
             loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
-    else
+    else if (elemType.isInteger(8)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::Vstsx1PostV256U8InstrOp>(
+                loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+        else
+            op = b.create<hivm_regbaseintrins::Vstsx1PostV256S8InstrOp>(
+                loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+    } else if (elemType.isInteger(16)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::Vstsx1PostV128U16InstrOp>(
+                loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+        else
+            op = b.create<hivm_regbaseintrins::Vstsx1PostV128S16InstrOp>(
+                loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+    } else if (elemType.isInteger(32)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::Vstsx1PostV64U32InstrOp>(
+                loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+        else
+            op = b.create<hivm_regbaseintrins::Vstsx1PostV64S32InstrOp>(
+                loc, ubPtrTy, src, ptr, byteOff, dist, postEn, preg);
+    } else if (isAlignB64Elem(elemType)) {
+        // AscendC: vsts((RegTensor<uint32_t>&)src, uint32_t*&, stride*2,
+        //               DIST_NORM_B32, expandedMask, POST). Caller must pass
+        //               the ppack+pintlv_b32 expanded preg (see lowerStoreUpdate).
+        // Signless i32 carrier for LLVM dialect; U32 intrinsic encodes unsigned.
+        Type i32 = IntegerType::get(b.getContext(), 32);
+        Type i32VecTy = VectorType::get({64}, i32);
+        Value srcI32 =
+            (src.getType() == i32VecTy) ? src : b.create<mlir::vector::BitCastOp>(loc, i32VecTy, src).getResult();
+        op = b.create<hivm_regbaseintrins::Vstsx1PostV64U32InstrOp>(
+            loc, ubPtrTy, srcI32, ptr, byteOff, dist, postEn, preg);
+    } else
         return failure();
     return castToLiveUbPtr(b, loc, op->getResult(0), ubPtrTy);
 }
@@ -136,6 +236,28 @@ static Type dataVectorType(OpBuilder& b, Type elemType)
         return VectorType::get({128}, b.getF16Type());
     if (elemType.isBF16())
         return VectorType::get({128}, b.getBF16Type());
+    // AscendC ``TypeGet<double>`` → ``vector_u64``; AVE keeps f64, UnAlign post uses s64 bits.
+    if (elemType.isF64())
+        return VectorType::get({32}, b.getF64Type());
+    // UnAlign has native ``vldus/vstus.post.f8e*``; AVE keeps the fp8 element.
+    if (isa<Float8E4M3FNType>(elemType))
+        return VectorType::get({256}, Float8E4M3FNType::get(b.getContext()));
+    if (isa<Float8E5M2Type>(elemType))
+        return VectorType::get({256}, Float8E5M2Type::get(b.getContext()));
+    // Bool / HiFloat8 / e8m0 / fp4x2: no HIVM unalign mover for the IR type;
+    // AVE payload is i8 (AscendC UnAlign UPDATE casts these to ``uint8_t`` /
+    // ``int8_t``; ``TypeGet<bool>`` → ``vector_s8``).
+    if (isBoolElementType(elemType) ||
+        isa<::tla::HiFloat8Type, ::tla::Float8E8M0Type, ::tla::Float4E2M1x2Type, ::tla::Float4E1M2x2Type>(elemType))
+        return VectorType::get({256}, IntegerType::get(b.getContext(), 8));
+    if (auto intTy = dyn_cast<IntegerType>(elemType)) {
+        unsigned width = intTy.getWidth();
+        if (width != 8 && width != 16 && width != 32 && width != 64)
+            return {};
+        // AVE rejects ui*; carry unsigned as signless of the same width.
+        Type aveElem = intTy.isUnsigned() ? IntegerType::get(b.getContext(), width) : Type(intTy);
+        return VectorType::get({static_cast<int64_t>(256 / (width / 8))}, aveElem);
+    }
     return {};
 }
 
@@ -154,7 +276,7 @@ static Value emitEmptyStoreUreg(OpBuilder& b, Location loc)
     return b.create<hivm_regbaseintrins::InitVectorAlignDataInstrOp>(loc, uregVectorType(b)).getResult();
 }
 
-static Value getVectorHelperStorageIdentity(Value source);
+static Value getVectorHelperStorageIdentity(Value source, Region& outlinedRegion);
 
 /// Emit ``vldus.post`` and return ``{vec, newUreg, newPtr}``.
 ///
@@ -177,6 +299,45 @@ static FailureOr<std::tuple<Value, Value, Value>> emitVldusPost(
         op = b.create<hivm_regbaseintrins::VldusPostF16InstrOp>(loc, structTy, ptr, ureg, countBytes);
     else if (elemType.isBF16())
         op = b.create<hivm_regbaseintrins::VldusPostBF16InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    else if (elemType.isInteger(8)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::VldusPostU8InstrOp>(loc, structTy, ptr, ureg, countBytes);
+        else
+            op = b.create<hivm_regbaseintrins::VldusPostS8InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    } else if (elemType.isInteger(16)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::VldusPostU16InstrOp>(loc, structTy, ptr, ureg, countBytes);
+        else
+            op = b.create<hivm_regbaseintrins::VldusPostS16InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    } else if (elemType.isInteger(32)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::VldusPostU32InstrOp>(loc, structTy, ptr, ureg, countBytes);
+        else
+            op = b.create<hivm_regbaseintrins::VldusPostS32InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    } else if (elemType.isInteger(64))
+        // HIVM exposes only the s64 post form; u64 bits share that path.
+        op = b.create<hivm_regbaseintrins::VldusPostS64InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    else if (elemType.isF64()) {
+        // No ``vldus.post.f64``; AscendC → ``vector_u64``, HIVM s64 post + bitcast.
+        Type i64VecTy = VectorType::get({32}, IntegerType::get(b.getContext(), 64));
+        Type s64StructTy = LLVM::LLVMStructType::getLiteral(
+            b.getContext(), {i64VecTy, uregVectorType(b), getUbPtrType(b.getContext())});
+        op = b.create<hivm_regbaseintrins::VldusPostS64InstrOp>(loc, s64StructTy, ptr, ureg, countBytes);
+        Value i64Vec = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
+        Value newUreg = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 1);
+        Value newPtr = castToLiveUbPtr(
+            b, loc, b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 2), getUbPtrType(b.getContext()));
+        Value f64Vec = b.create<mlir::vector::BitCastOp>(loc, vecTy, i64Vec).getResult();
+        return std::make_tuple(f64Vec, newUreg, newPtr);
+    } else if (isa<Float8E4M3FNType>(elemType))
+        op = b.create<hivm_regbaseintrins::VldusPostF8E4InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    else if (isa<Float8E5M2Type>(elemType))
+        op = b.create<hivm_regbaseintrins::VldusPostF8E5InstrOp>(loc, structTy, ptr, ureg, countBytes);
+    else if (
+        isBoolElementType(elemType) ||
+        isa<::tla::HiFloat8Type, ::tla::Float8E8M0Type, ::tla::Float4E2M1x2Type, ::tla::Float4E1M2x2Type>(elemType))
+        // No ``vldus.post`` for Bool/hif8/e8m0/fp4x2; AscendC → int8_t/uint8_t.
+        op = b.create<hivm_regbaseintrins::VldusPostS8InstrOp>(loc, structTy, ptr, ureg, countBytes);
     else
         return failure();
     Value vec = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
@@ -200,6 +361,36 @@ static FailureOr<std::pair<Value, Value>> emitVstusPost(
         op = b.create<hivm_regbaseintrins::VstusPostF16InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
     else if (elemType.isBF16())
         op = b.create<hivm_regbaseintrins::VstusPostBF16InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    else if (elemType.isInteger(8)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::VstusPostU8InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+        else
+            op = b.create<hivm_regbaseintrins::VstusPostS8InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    } else if (elemType.isInteger(16)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::VstusPostU16InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+        else
+            op = b.create<hivm_regbaseintrins::VstusPostS16InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    } else if (elemType.isInteger(32)) {
+        if (isUnsignedHivmElem(elemType))
+            op = b.create<hivm_regbaseintrins::VstusPostU32InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+        else
+            op = b.create<hivm_regbaseintrins::VstusPostS32InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    } else if (elemType.isInteger(64) || elemType.isF64()) {
+        // HIVM s64 post; f64 AVE carrier may still be f64 — bitcast to s64 bits.
+        Type i64VecTy = VectorType::get({32}, IntegerType::get(b.getContext(), 64));
+        Value srcI64 =
+            (src.getType() == i64VecTy) ? src : b.create<mlir::vector::BitCastOp>(loc, i64VecTy, src).getResult();
+        op = b.create<hivm_regbaseintrins::VstusPostS64InstrOp>(loc, structTy, srcI64, ptr, countBytes, ureg);
+    } else if (isa<Float8E4M3FNType>(elemType))
+        op = b.create<hivm_regbaseintrins::VstusPostF8E4InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    else if (isa<Float8E5M2Type>(elemType))
+        op = b.create<hivm_regbaseintrins::VstusPostF8E5InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
+    else if (
+        isBoolElementType(elemType) ||
+        isa<::tla::HiFloat8Type, ::tla::Float8E8M0Type, ::tla::Float4E2M1x2Type, ::tla::Float4E1M2x2Type>(elemType))
+        // No ``vstus.post`` for Bool/hif8/e8m0/fp4x2; AscendC → int8_t/uint8_t.
+        op = b.create<hivm_regbaseintrins::VstusPostS8InstrOp>(loc, structTy, src, ptr, countBytes, ureg);
     else
         return failure();
     Value newUreg = b.create<LLVM::ExtractValueOp>(loc, op->getResult(0), 0);
@@ -286,6 +477,8 @@ static hivmave::StoreDist mapTlaStoreDistToAve(::StoreDist dist)
             return hivmave::StoreDist::PK_B32;
         case ::StoreDist::pack_b16:
             return hivmave::StoreDist::PK_B16;
+        case ::StoreDist::pack_b64:
+            return hivmave::StoreDist::PK_B64;
         case ::StoreDist::pack4_b32:
             return hivmave::StoreDist::PK4_B32;
         case ::StoreDist::first_element_b8:
@@ -294,6 +487,12 @@ static hivmave::StoreDist mapTlaStoreDistToAve(::StoreDist dist)
             return hivmave::StoreDist::ONEPT_B16;
         case ::StoreDist::first_element_b32:
             return hivmave::StoreDist::ONEPT_B32;
+        case ::StoreDist::intlv_b8:
+            return hivmave::StoreDist::INTLV_B8;
+        case ::StoreDist::intlv_b16:
+            return hivmave::StoreDist::INTLV_B16;
+        case ::StoreDist::intlv_b32:
+            return hivmave::StoreDist::INTLV_B32;
         // If other StoreDist added, complete here
         default:
             return hivmave::StoreDist::NORM_B8;
@@ -306,7 +505,7 @@ static bool isDualDestLoadDist(hivmave::LoadDist pattern)
            pattern == hivmave::LoadDist::DINTLV_B32;
 }
 
-static bool isDualDestStoreDist(hivmave::StoreDist pattern)
+static bool isDualSourceStoreDist(hivmave::StoreDist pattern)
 {
     return pattern == hivmave::StoreDist::INTLV_B8 || pattern == hivmave::StoreDist::INTLV_B16 ||
            pattern == hivmave::StoreDist::INTLV_B32;
@@ -357,7 +556,7 @@ static FailureOr<Value> memrefByteAddrI64(OpBuilder& b, Location loc, Value ubMe
     return b.create<arith::IndexCastOp>(loc, b.getI64Type(), byteAddr).getResult();
 }
 
-// Map a 1/2/4-byte MaskSSA UB tile memref onto an i1 view of ``lanes``
+// Map a 1/2/4/8-byte MaskSSA UB tile memref onto an i1 view of ``lanes``
 // predicate bits at the same byte address (AscendC MaskDist::DIST_NORM /
 // plds/psts.b8). UB element width types the pointer; the hardware transfer
 // is always the bit-level plds/psts.b8 path.
@@ -369,7 +568,7 @@ static FailureOr<Value> materializeI1MaskMemrefFromUb(OpBuilder& b, Location loc
     if (!srcTy)
         return failure();
     int64_t elemBytes = elementStorageBytes(srcTy.getElementType());
-    if (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)
+    if (elemBytes != 1 && elemBytes != 2 && elemBytes != 4 && elemBytes != 8)
         return failure();
     auto addrOr = memrefByteAddrI64(b, loc, ubMemref);
     if (failed(addrOr))
@@ -740,6 +939,23 @@ static void annotateAivLibraryCall(func::FuncOp callee)
     callee->setAttr(hivm::TFuncCoreTypeAttr::name, hivm::TFuncCoreTypeAttr::get(ctx, hivm::TFuncCoreType::AIV));
 }
 
+// 64-bit AVE library calls cannot legalize a <32xi64> result in the device
+// backend; route them through linked bitcode helpers (same ABI as the shift
+// stubs: <32xi64> vectors and the native b64 predicate).
+static Value createInlineB64Call(
+    OpBuilder& b, Location loc, ModuleOp module, StringRef name, TypeRange inputTypes, Type resultType,
+    ValueRange operands)
+{
+    auto callee = module.lookupSymbol<func::FuncOp>(name);
+    if (!callee) {
+        OpBuilder moduleBuilder(module.getBodyRegion());
+        auto fnType = FunctionType::get(b.getContext(), inputTypes, {resultType});
+        callee = moduleBuilder.create<func::FuncOp>(loc, name, fnType);
+        annotateAivLibraryCall(callee);
+    }
+    return b.create<func::CallOp>(loc, callee, operands).getResult(0);
+}
+
 // MaskLoadDist US/DS: one bc symbol per UB element byte width. Element type
 // is address typing only; plds always takes __ubuf__ uint32_t*. Typed stubs
 // keep the memref ABI exact (PointerCast-to-i8 views have tripped BiShengLIR).
@@ -791,20 +1007,22 @@ static func::FuncOp getOrCreateMaskLoadUsDsLibraryCall(
     return callee;
 }
 
-static std::string getSqueezeLibraryCallName(Type elementType)
+static std::string getSqueezeLibraryCallName(Type elementType, bool storeReg)
 {
+    std::string name;
     if (elementType.isF32())
-        return "vsqueeze_float";
-    if (elementType.isF16())
-        return "vsqueeze_half";
-    if (auto intType = dyn_cast<IntegerType>(elementType)) {
-        // vsqz moves whole elements and is sign-agnostic, but every 8/16/32-bit
-        // signedness still needs its own ABI stub (VectorReg<int|uint*_t>).
+        name = "vsqueeze_float";
+    else if (elementType.isF16())
+        name = "vsqueeze_half";
+    else if (auto intType = dyn_cast<IntegerType>(elementType)) {
+        // Preserve the signedness when selecting the bitcode ABI stub.
         unsigned width = intType.getWidth();
         if (width == 8 || width == 16 || width == 32)
-            return std::string("vsqueeze_") + (intType.isUnsigned() ? "uint" : "int") + std::to_string(width) + "_t";
+            name = std::string("vsqueeze_") + (intType.isUnsigned() ? "uint" : "int") + std::to_string(width) + "_t";
     }
-    return {};
+    if (!name.empty() && storeReg)
+        name += "_store_reg";
+    return name;
 }
 
 static std::string getVectorPackLibraryCallName(Type srcElement, Type dstElement, ::RegPart part)
@@ -1119,6 +1337,60 @@ static func::FuncOp getOrCreateLoadDintlvB8LibraryCall(ModuleOp module, Location
     return callee;
 }
 
+// Dual-source INTLV store mirrors Load DINTLV: emit HIVM ``vstsx2`` with the
+// AVE StoreDist enum as ``dist`` (no AIV bc). Carriers are signless integer
+// vectors of the Dist width — same bit-move model as AscendC's typed
+// StoreAlign<DIST_INTLV_*> after TypeGet aliasing.
+static Value bitcastToIntlvCarrier(OpBuilder& b, Location loc, Value src, int64_t elemBytes)
+{
+    auto srcTy = dyn_cast<VectorType>(src.getType());
+    if (!srcTy)
+        return nullptr;
+    Type carrierElem = IntegerType::get(b.getContext(), elemBytes * 8);
+    auto carrierTy = VectorType::get({srcTy.getNumElements()}, carrierElem);
+    if (srcTy == carrierTy)
+        return src;
+    return b.create<mlir::vector::BitCastOp>(loc, carrierTy, src).getResult();
+}
+
+static LogicalResult emitVstsx2Intlv(
+    OpBuilder& b, Location loc, hivmave::StoreDist pattern, Value data0, Value data1, Value ubPtr, Value mask)
+{
+    Value constantZero = b.create<arith::ConstantIntOp>(loc, 0, 32);
+    Value distribution = b.create<arith::ConstantIntOp>(loc, static_cast<uint32_t>(pattern), 32);
+    switch (pattern) {
+        case hivmave::StoreDist::INTLV_B8:
+            b.create<hivm_regbaseintrins::Vstsx2V256B8InstrOp>(
+                loc, data0, data1, ubPtr, constantZero, distribution, constantZero, mask);
+            return success();
+        case hivmave::StoreDist::INTLV_B16:
+            b.create<hivm_regbaseintrins::Vstsx2V128B16InstrOp>(
+                loc, data0, data1, ubPtr, constantZero, distribution, constantZero, mask);
+            return success();
+        case hivmave::StoreDist::INTLV_B32:
+            b.create<hivm_regbaseintrins::Vstsx2V64B32InstrOp>(
+                loc, data0, data1, ubPtr, constantZero, distribution, constantZero, mask);
+            return success();
+        default:
+            return failure();
+    }
+}
+
+// PACK_B64: AscendC ``vsts(src, dst, 0, PK_B64, mask)``. AVE→bc has no
+// ``masked_store_PK_B64_*`` stub, so emit HIVM ``vstsx1.v32{s,u}64`` with
+// DistVST ``PK_B64`` (=10, same ordinal as AVE StoreDist::PK_B64).
+static void emitVstsx1PackB64(OpBuilder& b, Location loc, Value data, Value ubPtr, Value mask)
+{
+    Value constantZero = b.create<arith::ConstantIntOp>(loc, 0, 32);
+    Value distribution = b.create<arith::ConstantIntOp>(loc, static_cast<uint32_t>(hivmave::StoreDist::PK_B64), 32);
+    Type i64 = IntegerType::get(b.getContext(), 64);
+    auto i64VecTy = VectorType::get({32}, i64);
+    Value srcI64 =
+        (data.getType() == i64VecTy) ? data : b.create<mlir::vector::BitCastOp>(loc, i64VecTy, data).getResult();
+    b.create<hivm_regbaseintrins::Vstsx1V32S64InstrOp>(
+        loc, srcI64, ubPtr, constantZero, distribution, constantZero, mask);
+}
+
 static func::FuncOp getOrCreateLoadUpdateRetptrLibraryCall(
     ModuleOp module, Location loc, Type vecType, StringRef calleeName)
 {
@@ -1272,14 +1544,14 @@ static Value createVectorBinaryResult(
             return nullptr;
         case VectorBinaryKind::ShiftLeft:
         case VectorBinaryKind::ShiftRight: {
-            // The verifier restricts shift sources to signed (signless)
-            // i8/i16/i32 and the shift vector to the same signless width.
-            // Hence the signed intrinsics are the only valid lowering.
-            if (!dyn_cast<IntegerType>(elementType))
+            if (!isa<IntegerType>(elementType) || elementType.isInteger(64))
                 return nullptr;
             if (kind == VectorBinaryKind::ShiftLeft)
-                return b.create<hivm_regbaseintrins::VshlSXInstrOp>(loc, vecType, lhs, rhs, mask).getRes();
-            return b.create<hivm_regbaseintrins::VshrSXInstrOp>(loc, vecType, lhs, rhs, mask).getRes();
+                return isUnsigned ?
+                           b.create<hivm_regbaseintrins::VshlUXInstrOp>(loc, vecType, lhs, rhs, mask).getRes() :
+                           b.create<hivm_regbaseintrins::VshlSXInstrOp>(loc, vecType, lhs, rhs, mask).getRes();
+            return isUnsigned ? b.create<hivm_regbaseintrins::VshrUXInstrOp>(loc, vecType, lhs, rhs, mask).getRes() :
+                                b.create<hivm_regbaseintrins::VshrSXInstrOp>(loc, vecType, lhs, rhs, mask).getRes();
         }
     }
     return nullptr;
@@ -2201,10 +2473,8 @@ static FailureOr<Value> createImplicitVectorStoreMask(
         return storeOp.emitError("unsupported packed-store predicate geometry"), failure();
     int64_t destLaneMultiplier = *destLaneMultiplierOr;
 
-    // The supported vector frontend has no 64-bit on-chip element type. Raw
-    // i64 IR historically used a B32 PLT predicate for omitted masks; keep that
-    // behavior instead of introducing an unproven B32 PGE encoding for B64
-    // stores. Proper B64 predicate support is separate work.
+    // PACK_B64 builds its implicit mask through PLT.b32 before
+    // converting it to the hardware b64 predicate layout.
     bool supportsImplicitAll = getBitSizeOfFixedWidthScalarType(opCtx.elementType) <= 32;
 
     // FIRST_ELEMENT modes ignore predicate bits in the backend. Supplying a
@@ -2268,11 +2538,16 @@ static FailureOr<Value> createVectorScalarBinaryResult(
     OpBuilder& b, Location loc, VectorOpInfo info, VecLowerCtx& ctx, Value lhs, Value scalar, Value mask)
 {
     if (info.kind == VectorBinaryKind::ShiftLeft || info.kind == VectorBinaryKind::ShiftRight) {
-        if (!isa<IntegerType>(ctx.elementType) || !scalar.getType().isInteger(16))
+        if (!isa<IntegerType>(ctx.elementType) || ctx.elementType.isInteger(64) || !scalar.getType().isInteger(16))
             return failure();
+        const bool isUnsigned = isUnsignedInt(ctx.elementType);
         if (info.kind == VectorBinaryKind::ShiftLeft)
-            return b.create<hivm_regbaseintrins::VshlsSXInstrOp>(loc, ctx.vecType, lhs, scalar, mask).getRes();
-        return b.create<hivm_regbaseintrins::VshrsSXInstrOp>(loc, ctx.vecType, lhs, scalar, mask).getRes();
+            return isUnsigned ?
+                       b.create<hivm_regbaseintrins::VshlsUXInstrOp>(loc, ctx.vecType, lhs, scalar, mask).getRes() :
+                       b.create<hivm_regbaseintrins::VshlsSXInstrOp>(loc, ctx.vecType, lhs, scalar, mask).getRes();
+        return isUnsigned ?
+                   b.create<hivm_regbaseintrins::VshrsUXInstrOp>(loc, ctx.vecType, lhs, scalar, mask).getRes() :
+                   b.create<hivm_regbaseintrins::VshrsSXInstrOp>(loc, ctx.vecType, lhs, scalar, mask).getRes();
     }
 
     if (info.kind == VectorBinaryKind::Add || info.kind == VectorBinaryKind::Mul ||
@@ -2298,6 +2573,10 @@ static FailureOr<Value> createVectorScalarBinaryResult(
 
 static FailureOr<Type> lowerSCFCarrierType(Type type)
 {
+    if (isa<::tla::UregType>(type)) {
+        OpBuilder builder(type.getContext());
+        return uregVectorType(builder);
+    }
     if (auto vectorType = dyn_cast<::tla::VectorSSAType>(type)) {
         auto ctx = deriveVecCtxForElement(vectorType.getElementType());
         if (failed(ctx))
@@ -2325,9 +2604,27 @@ static LogicalResult materializeTensorDescSubview(
 {
     Location loc = descOp.getLoc();
     Value baseMemref = valueMap.lookup(descOp.getResult());
-    if (!baseMemref)
+    Value descBase = descOp.getBase();
+    Value address = valueMap.lookup(descBase);
+    if (!address) {
+        if (auto intToPtr = descBase.getDefiningOp<::tla::IntToPtrOp>())
+            address = lookupOrCloneScalarValue(b, intToPtr.getAddr(), valueMap);
+    }
+    if (address && !address.getType().isIntOrIndex() && !isa<LLVM::LLVMPointerType>(address.getType()))
+        address = {};
+
+    auto sourceType = baseMemref ? dyn_cast<MemRefType>(baseMemref.getType()) : MemRefType{};
+    if (!baseMemref && address) {
+        // A pointer selected inside the helper may have no base argument
+        // at the call site. Its descriptor has an unknown backing extent.
+        auto bridgedType = getBridgedTensorMemrefType(descOp.getResult());
+        if (failed(bridgedType))
+            return failure();
+        sourceType = MemRefType::get(
+            {ShapedType::kDynamic}, bridgedType->getElementType(), AffineMap(), bridgedType->getMemorySpace());
+    }
+    if (!baseMemref && !address)
         return descOp.emitError("failed to map tla.tensor_desc base in vector helper"), failure();
-    auto sourceType = dyn_cast<MemRefType>(baseMemref.getType());
     if (!sourceType || sourceType.getRank() != 1)
         return descOp.emitError("expected rank-1 base memref for vector tensor_desc"), failure();
     auto lanesOr = getVectorLaneCount(sourceType.getElementType());
@@ -2340,8 +2637,10 @@ static LogicalResult materializeTensorDescSubview(
     // seed helper arg (for ABI dedup / memref type only) — that seed must not
     // replace a mapped live address. If the live addr is not reachable in the
     // helper, keep the seed memref (ordinary lit / non-UPDATE paths).
-    auto rebuildFromAddrI64 = [&](Value addr) {
-        Value addrI64 = ::tla::castValueToI64(b, loc, addr);
+    if (address) {
+        if (isa<LLVM::LLVMPointerType>(address.getType()))
+            address = b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), address);
+        Value addrI64 = ::tla::castValueToI64(b, loc, address);
         SmallVector<Value, 1> dynamicSizes;
         if (!sourceType.hasStaticShape()) {
             for (int64_t dim : sourceType.getShape()) {
@@ -2350,17 +2649,6 @@ static LogicalResult materializeTensorDescSubview(
             }
         }
         baseMemref = b.create<hivm::PointerCastOp>(loc, sourceType, addrI64, dynamicSizes).getResult();
-    };
-    Value descBase = descOp.getBase();
-    if (Value mappedBase = valueMap.lookup(descBase)) {
-        if (mappedBase.getType().isInteger(64) || isa<IndexType>(mappedBase.getType()))
-            rebuildFromAddrI64(mappedBase);
-        else if (isa<LLVM::LLVMPointerType>(mappedBase.getType())) {
-            rebuildFromAddrI64(b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), mappedBase));
-        }
-    } else if (auto intToPtr = descBase.getDefiningOp<::tla::IntToPtrOp>()) {
-        if (Value addr = lookupOrCloneScalarValue(b, intToPtr.getAddr(), valueMap))
-            rebuildFromAddrI64(addr);
     }
 
     Value rowOff = lookupOrCloneScalarValue(b, descOp.getCoord0(), valueMap);
@@ -2439,10 +2727,9 @@ static LogicalResult materializeTensorDescSubview(
     return success();
 }
 
-/// Effective UB pointer for a tile: same address ordinary load/store and
-/// UPDATE `.post` use. Prefer the live ``tensor_desc(inttoptr(i64))`` address
-/// so UPDATE next windows that share a storage-identity seed memref still
-/// advance. Fall back to the mapped memref view when no live ptr is reachable.
+/// UB pointer for an UPDATE window at the origin. Prefer the live
+/// ``tensor_desc(inttoptr(i64))`` address so UPDATE next windows that share
+/// a storage-identity seed memref still advance.
 static FailureOr<Value> resolveEffectiveUbPtr(
     Value tensor, OpBuilder& b, Location loc, DenseMap<Value, Value>& valueMap)
 {
@@ -2499,7 +2786,7 @@ static LogicalResult lowerLoad(
     if (!source)
         return failure();
 
-    // MaskSSA result: 1/2/4-byte UB → predicate.
+    // MaskSSA result: 1/2/4/8-byte UB → predicate.
     // DIST_US / DIST_DS: AscendC MaskDist via linked bc (plds dist=1/2).
     // IR i1→plds hardcodes dist=0, so US/DS must not go through VFLoad.
     if (auto maskType = dyn_cast<::tla::MaskSSAType>(loadOp.getResult().getType())) {
@@ -2511,7 +2798,6 @@ static LogicalResult lowerLoad(
             return loadOp.emitError("mask load_dist must be norm|us|ds"), failure();
 
         if (pattern == hivmave::LoadDist::US || pattern == hivmave::LoadDist::DS) {
-            ModuleOp module = loadOp->getParentOfType<ModuleOp>();
             auto srcMemTy = dyn_cast<MemRefType>(source.getType());
             if (!srcMemTy)
                 return failure();
@@ -2527,7 +2813,6 @@ static LogicalResult lowerLoad(
                        failure();
             auto call = b.create<func::CallOp>(loc, callee, ValueRange{callArg});
             Value loaded = castMaskToPregType(b, loc, call.getResult(0), fullPregVecType(b.getContext()));
-            (void)lanes;
             valueMap[loadOp.getResult()] = loaded;
             return success();
         }
@@ -2566,13 +2851,11 @@ static LogicalResult lowerLoad(
                    "load_dist values require one vector result "
                    "(optional live !tla.ptr is separate)"),
                failure();
-    // Bool: AscendC DATA_BLOCK_COPY accepts bool via b8; keep non-NORM LoadDist
-    // rejected (those dists are not DATA_BLOCK_COPY).
+    // Bool is b8 move-only transport (TypeGet<bool>→vector_s8); allowed on NORM
+    // and b8 Dist / DINTLV_B8 / BlockLoad the same as other SupportBytes<1> types.
     bool isBoolLoad = isBoolVectorElement(sourceType.getElementType()) ||
                       (isa<::tla::VectorSSAType>(loadOp.getResult().getType()) &&
                        isBoolVectorElement(cast<::tla::VectorSSAType>(loadOp.getResult().getType()).getElementType()));
-    if (isBoolLoad && pattern != hivmave::LoadDist::NORM)
-        return loadOp.emitError("Bool VectorSSA is move-only; non-NORM load_dist is unsupported"), failure();
     if (pattern == hivmave::LoadDist::DINTLV_B8) {
         // Encoded byte types use i8 carriers; select from the original TLA type.
         Type elementType = cast<::tla::TlaTensorType>(loadOp.getSource().getType()).getPtr().getPointee();
@@ -2583,10 +2866,11 @@ static LogicalResult lowerLoad(
         Value ptr = intToUbPtr(b, loc, byteAddr);
         Type pairType = LLVM::LLVMStructType::getLiteral(b.getContext(), {opCtx->vecType, opCtx->vecType});
         Value pair;
-        if (elementType.isInteger(8)) {
+        // Bool (i1) and signed/signless i8 share the s8 dual load; u8 uses u8.
+        if (elementType.isInteger(8) || isBoolElementType(elementType)) {
             Value constantZero = b.create<arith::ConstantIntOp>(loc, 0, 32);
             Value distribution = b.create<arith::ConstantIntOp>(loc, static_cast<uint32_t>(pattern), 32);
-            if (elementType.isUnsignedInteger())
+            if (elementType.isInteger(8) && elementType.isUnsignedInteger())
                 pair = b.create<hivm_regbaseintrins::Vldsx2V256U8InstrOp>(
                             loc, pairType, ptr, constantZero, distribution, constantZero)
                            .getResult();
@@ -2638,21 +2922,26 @@ static LogicalResult lowerLoad(
         Value distribution = b.create<arith::ConstantIntOp>(loc, static_cast<uint32_t>(pattern), 32);
         auto pairType = LLVM::LLVMStructType::getLiteral(b.getContext(), {opCtx->vecType, opCtx->vecType});
         Value pair;
-        if (sourceType.getElementType().isF32()) {
+        Type elemTy = sourceType.getElementType();
+        if (elemTy.isF32()) {
             pair = b.create<hivm_regbaseintrins::Vldsx2V64F32InstrOp>(
                         loc, pairType, pointer, constantZero, distribution, constantZero)
                        .getResult();
-        } else if (sourceType.getElementType().isBF16()) {
+        } else if (elemTy.isInteger(32)) {
+            // AscendC DINTLV_B32: b32 deinterleave (i32/u32 share u32 mover).
+            pair = b.create<hivm_regbaseintrins::Vldsx2V64U32InstrOp>(
+                        loc, pairType, pointer, constantZero, distribution, constantZero)
+                       .getResult();
+        } else if (elemTy.isBF16()) {
             pair = b.create<hivm_regbaseintrins::Vldsx2V128BF16InstrOp>(
                         loc, pairType, pointer, constantZero, distribution, constantZero)
                        .getResult();
-        } else if (sourceType.getElementType().isF16()) {
+        } else if (elemTy.isF16()) {
             pair = b.create<hivm_regbaseintrins::Vldsx2V128F16InstrOp>(
                         loc, pairType, pointer, constantZero, distribution, constantZero)
                        .getResult();
         } else {
-            // Integer loads preserve bits; signed and unsigned b16 share
-            // the same native byte transfer and signless register carrier.
+            // Integer b16 loads preserve bits; signed/unsigned share u16 mover.
             pair = b.create<hivm_regbaseintrins::Vldsx2V128U16InstrOp>(
                         loc, pairType, pointer, constantZero, distribution, constantZero)
                        .getResult();
@@ -2695,34 +2984,44 @@ static LogicalResult lowerLoad(
         return success();
     }
 
-    // Partial logical loads keep the native b64 path used by Scatter.
-    if ((sourceType.getElementType().isInteger(64) || sourceType.getElementType().isF64()) &&
+    bool unaligned = loadOp.getUnalignedUbAccess().value_or(false);
+    if (isAlignB64Elem(sourceType.getElementType()) &&
         cast<::tla::VectorSSAType>(loadOp.getResult().getType()).getValidLanes() == 32) {
-        if (pattern != hivmave::LoadDist::NORM || loadOp.getBlockStride() ||
-            loadOp.getUnalignedUbAccess().value_or(false))
-            return loadOp.emitError("64-bit register load currently requires aligned NORM distribution"), failure();
-        auto words = VectorType::get({64}, b.getI32Type());
-        auto wordsMemOr = materializeDataMemref(b, loc, source, b.getI32Type());
-        if (failed(wordsMemOr))
-            return loadOp.emitError("failed to materialize i32 memref view for 64-bit VectorSSA load"), failure();
-        source = *wordsMemOr;
-        Value loaded = createVFLoad(b, loc, words, source, zero, hivmave::LoadDist::NORM, false).getRes();
+        Value loaded;
+        if (unaligned) {
+            auto addr = memrefByteAddrI64(b, loc, source);
+            if (failed(addr))
+                return loadOp.emitError("64-bit unaligned load requires an effective UB address"), failure();
+            Value ptr = intToUbPtr(b, loc, *addr);
+            auto ureg = emitVldas(b, loc, ptr);
+            Value bytes = b.create<arith::ConstantIntOp>(loc, 256, 32);
+            auto result = emitVldusPost(b, loc, ptr, *ureg, bytes, b.getI32Type());
+            if (failed(result))
+                return failure();
+            loaded = std::get<0>(*result);
+        } else {
+            auto words = VectorType::get({64}, b.getI32Type());
+            auto wordsMem = materializeDataMemref(b, loc, source, b.getI32Type());
+            if (failed(wordsMem))
+                return loadOp.emitError("failed to materialize i32 memref view for 64-bit VectorSSA load"), failure();
+            loaded = createVFLoad(b, loc, words, *wordsMem, zero, pattern, false).getRes();
+        }
         valueMap[loadOp.getResult()] = b.create<mlir::vector::BitCastOp>(loc, opCtx->vecType, loaded).getResult();
         return success();
     }
 
-    // DINTLV_* still takes a VL-wide tile view (same as AVE ProcessVsstb /
-    // HIVM2VLLoadOpLowering): the distribution pattern reads 2*VL from that
-    // base address. Do not widen the memref to 2*VL — that breaks hivmc ABI.
     Value loadMemref = source;
-    if (isBoolLoad)
-        // RegTensor<bool> → vector_s8: same-shape i8 UB view at bc/AVE.
+    if (isBoolLoad) {
         loadMemref = materializeSameShapeI8Memref(b, loc, source);
-    auto vfLoad =
-        createVFLoad(b, loc, opCtx->vecType, loadMemref, zero, pattern, loadOp.getUnalignedUbAccess().value_or(false));
+    } else if (unaligned && sourceType.getElementType().isUnsignedInteger()) {
+        // The AVE unaligned load creates an LLVM struct and needs signless lanes.
+        auto carrier = materializeDataMemref(b, loc, source, opCtx->vecType.getElementType());
+        if (failed(carrier))
+            return failure();
+        loadMemref = *carrier;
+    }
+    auto vfLoad = createVFLoad(b, loc, opCtx->vecType, loadMemref, zero, pattern, unaligned);
     valueMap[loadOp.getResult()] = vfLoad.getRes();
-    if (dual)
-        valueMap[r2] = vfLoad.getRes1();
     return success();
 }
 
@@ -2763,9 +3062,7 @@ static LogicalResult lowerLoadUpdate(
         tlaResultElem = tlaVec.getElementType();
     if (tlaSrcElem != tlaResultElem)
         return loadOp.emitError("load_update source and result element types must match"), failure();
-    // Align/Unalign UPDATE stay move-only for Bool; DATA_BLOCK_COPY matches AscendC.
-    if ((isBoolVectorElement(tlaSrcElem) || isBoolVectorElement(tlaResultElem)) && !loadOp.getBlockStride())
-        return loadOp.emitError("Bool VectorSSA is move-only; load_update is unsupported"), failure();
+    // Bool Align UPDATE: AscendC move-only b8 (emitted as s8 post alias).
     auto opCtx = deriveVecCtxForElement(tlaSrcElem);
     if (failed(opCtx))
         return loadOp.emitError("unsupported element type for load_update vector helper"), failure();
@@ -3062,6 +3359,28 @@ static LogicalResult lowerArange(
     return success();
 }
 
+static bool isShift(VectorBinaryKind kind)
+{
+    return kind == VectorBinaryKind::ShiftLeft || kind == VectorBinaryKind::ShiftRight;
+}
+
+static Value lowerShift64(
+    OpBuilder& b, Location loc, ModuleOp module, const VectorOpInfo& info, Value lhs, Value amount, Value mask)
+{
+    const bool isUnsigned = isUnsignedInt(cast<::tla::VectorSSAType>(info.operands.lhs.getType()).getElementType());
+    std::string name = (Twine(info.mnemonic) + (isUnsigned ? "_uint64_t" : "_int64_t")).str();
+    VectorType pregType = fullPregVecType(b.getContext());
+    Value preg = castMaskToPregType(b, loc, mask, pregType);
+    auto callee = module.lookupSymbol<func::FuncOp>(name);
+    if (!callee) {
+        OpBuilder moduleBuilder(module.getBodyRegion());
+        auto type = FunctionType::get(b.getContext(), {lhs.getType(), amount.getType(), pregType}, {lhs.getType()});
+        callee = moduleBuilder.create<func::FuncOp>(loc, name, type);
+        annotateAivLibraryCall(callee);
+    }
+    return b.create<func::CallOp>(loc, callee, ValueRange{lhs, amount, preg}).getResult(0);
+}
+
 static LogicalResult lowerVectorBinary(
     Operation& op, const VectorOpInfo* info, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
     AutoFullPredicateCache& fullMasks)
@@ -3096,8 +3415,11 @@ static LogicalResult lowerVectorBinary(
         mask = allTrueMaskFor(fullMasks, loc, opVecType, operands.lhs.getType());
     }
     // createVectorBinaryResult peels unsigned from the tla lhs type.
-    Value result = createVectorBinaryResult(
-        b, loc, info->kind, operands.lhs.getType(), opVecType.getElementType(), opVecType, lhs, rhs, mask);
+    Value result =
+        isShift(info->kind) && opVecType.getElementType().isInteger(64) ?
+            lowerShift64(b, loc, module, *info, lhs, rhs, mask) :
+            createVectorBinaryResult(
+                b, loc, info->kind, operands.lhs.getType(), opVecType.getElementType(), opVecType, lhs, rhs, mask);
     if (!result)
         return failure();
     valueMap[op.getResult(0)] = result;
@@ -3139,6 +3461,10 @@ static LogicalResult lowerVectorScalarBinary(
     } else {
         mask = fullMasks.get(loc, opCtx->lanes);
     }
+    if (isShift(info->kind) && opCtx->elementType.isInteger(64)) {
+        valueMap[op.getResult(0)] = lowerShift64(b, loc, module, *info, lhs, *scalarOr, mask);
+        return success();
+    }
     auto result = createVectorScalarBinaryResult(b, loc, *info, *opCtx, lhs, *scalarOr, mask);
     if (failed(result))
         return failure();
@@ -3146,9 +3472,7 @@ static LogicalResult lowerVectorScalarBinary(
     return success();
 }
 
-/// tla.squeeze: mask-compress src lanes via linked bitcode (vsqz).
-/// Uses NO_STORE_REG; streaming writeback stays on ``store_unalign_update`` /
-/// ``store_unalign_post`` rather than squeeze STORE_REG.
+/// Lower squeeze to vsqz, selecting the stub that records the byte count when requested.
 static LogicalResult lowerSqueeze(
     ::tla::SqueezeOp squeezeOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
     AutoFullPredicateCache& fullMasks)
@@ -3165,9 +3489,9 @@ static LogicalResult lowerSqueeze(
     if (failed(opCtx))
         return failure();
     // ``srcTy`` is the AVE (signless) vector type; recover the original tla
-    // element type so unsigned 8/16-bit squeeze picks the uint*_t stub.
+    // element type so unsigned squeeze picks the uint*_t stub.
     Type tlaElem = tlaElementOr(squeezeOp.getSrc().getType(), srcTy.getElementType());
-    std::string calleeName = getSqueezeLibraryCallName(tlaElem);
+    std::string calleeName = getSqueezeLibraryCallName(tlaElem, squeezeOp.getStoreReg());
     if (calleeName.empty())
         return squeezeOp.emitError("unsupported element type for tla.squeeze: ") << tlaElem, failure();
     VectorType pregVecType = fullPregVecType(b.getContext());
@@ -3822,6 +4146,42 @@ static LogicalResult lowerCmp(
             return failure();
     } else {
         mask = fullMasks.get(loc, opCtx->lanes);
+        // PGE has no b64 mode; the omitted-mask carrier is the b32 predicate.
+        // Pack its low half into the native b64 predicate like tla.create_mask
+        // does before the compare reaches the 64-bit helper.
+        if (tlaElem.isInteger(64)) {
+            Value lower = b.create<arith::ConstantIntOp>(loc, 0, 32);
+            mask = b.create<hivm_regbaseintrins::PunpackInstrOp>(loc, opCtx->maskVecType, mask, lower).getResult();
+        }
+    }
+    if (tlaElem.isInteger(64)) {
+        // The 64-bit AVE cmp/select ABI does not legalize in the device
+        // backend; call the linked bitcode helpers directly.
+        const bool scalar = !isa<::tla::VectorSSAType>(cmpOp.getRhs().getType());
+        const bool isUnsigned = tlaElem.isUnsignedInteger();
+        std::string typeName = isUnsigned ? "uint64_t" : "int64_t";
+        // Must match the extern "C" names exported by
+        // csrc/mlir/bc/Vector/cmp_sel_reg.cpp.
+        std::string calleeName = (scalar ? "cmps_" : "cmp_") + cmpOp.getMode().str() + "_" + typeName;
+        Value rhs;
+        if (scalar) {
+            rhs = lookupOrCloneScalarValue(b, cmpOp.getRhs(), valueMap);
+            if (!rhs)
+                return failure();
+            if (auto intTy = dyn_cast<IntegerType>(rhs.getType()); intTy && intTy.isUnsigned()) {
+                Type signless = IntegerType::get(b.getContext(), intTy.getWidth());
+                rhs = b.create<UnrealizedConversionCastOp>(loc, signless, rhs).getResult(0);
+            }
+        } else {
+            rhs = valueMap.lookup(cmpOp.getRhs());
+            if (!rhs)
+                return failure();
+        }
+        SmallVector<Type, 3> inputTypes{
+            opCtx->vecType, scalar ? Type(b.getI64Type()) : Type(opCtx->vecType), opCtx->maskVecType};
+        valueMap[cmpOp.getResult()] =
+            createInlineB64Call(b, loc, module, calleeName, inputTypes, opCtx->maskVecType, ValueRange{lhs, rhs, mask});
+        return success();
     }
     if (isa<::tla::VectorSSAType>(cmpOp.getRhs().getType())) {
         Value rhs = valueMap.lookup(cmpOp.getRhs());
@@ -3832,20 +4192,45 @@ static LogicalResult lowerCmp(
         Value rhs = lookupOrCloneScalarValue(b, cmpOp.getRhs(), valueMap);
         if (!rhs)
             return failure();
-        auto scalarOr = castScalarForVectorElement(rhs, opCtx->elementType);
+        // The AVE scalar ABI is signless; unsigned TLA scalars are bit-identical.
+        if (auto intTy = dyn_cast<IntegerType>(rhs.getType()); intTy && intTy.isUnsigned()) {
+            Type signless = IntegerType::get(b.getContext(), intTy.getWidth());
+            rhs = b.create<UnrealizedConversionCastOp>(loc, signless, rhs).getResult(0);
+        }
+        auto scalarOr = castScalarForVectorElement(rhs, aveVectorElementType(opCtx->elementType));
         if (failed(scalarOr))
             return failure();
         Value scalar = *scalarOr;
-        // VFCmpS scalar ODS is signless; keep the vector unsigned for VCmpU*.
-        if (auto intTy = dyn_cast<IntegerType>(scalar.getType())) {
-            if (intTy.isUnsigned()) {
-                Type signless = IntegerType::get(b.getContext(), intTy.getWidth());
-                scalar = b.create<UnrealizedConversionCastOp>(loc, signless, scalar).getResult(0);
-            }
-        }
         valueMap[cmpOp.getResult()] = b.create<hivmave::VFCmpS>(loc, opCtx->maskVecType, *cmpType, lhs, scalar, mask);
     }
     return success();
+}
+
+/// AscendC StoreAlign b64 (RegTraitNumOne):
+/// ``ppack(tmp, mask, LOWEST); pintlv_b32(dst0, dst1, tmp, tmp);`` then
+/// ``vsts(uint32_t, …, dst0)``. Expands each logical b64 enable into two
+/// consecutive b32 DistVST slots. ``mask`` must already be in AscendC's
+/// single-register b64 layout (every eighth bit) — ``create_mask`` /
+/// ``update_mask`` apply ``Punpack`` for lanes==32; generated plt/pge masks
+/// need that Punpack first.
+static Value expandB64MaskForU32AlignStore(OpBuilder& b, Location loc, Value mask)
+{
+    VectorType pregType = fullPregVecType(b.getContext());
+    Value preg = castMaskToPregType(b, loc, mask, pregType);
+    // HighLowPart::LOWEST == 0 (same encoding AscendC passes to ppack).
+    Value lowest = b.create<arith::ConstantIntOp>(loc, /*value=*/0, /*width=*/32);
+    Value packed = b.create<hivm_regbaseintrins::PpackInstrOp>(loc, pregType, preg, lowest).getResult();
+    auto pairType = LLVM::LLVMStructType::getLiteral(b.getContext(), {pregType, pregType});
+    auto pintlv = b.create<hivm_regbaseintrins::PintlvB32InstrOp>(loc, pairType, packed, packed);
+    return b.create<LLVM::ExtractValueOp>(loc, pintlv.getResult(), 0);
+}
+
+static Value unpackB64Mask(OpBuilder& b, Location loc, Value mask)
+{
+    VectorType pregType = fullPregVecType(b.getContext());
+    Value lower = b.create<arith::ConstantIntOp>(loc, 0, 32);
+    return b.create<hivm_regbaseintrins::PunpackInstrOp>(
+        loc, pregType, castMaskToPregType(b, loc, mask, pregType), lower);
 }
 
 static LogicalResult lowerStore(
@@ -3858,7 +4243,7 @@ static LogicalResult lowerStore(
     if (!dest || !source)
         return failure();
 
-    // MaskSSA source: 1/2/4-byte UB ← i1 memref view ← masked_store <NORM_B8>.
+    // MaskSSA source: 1/2/4/8-byte UB ← i1 memref view ← masked_store <NORM_B8>.
     if (isa<::tla::MaskSSAType>(storeOp.getSource().getType())) {
         auto maskType = cast<::tla::MaskSSAType>(storeOp.getSource().getType());
         int64_t lanes = maskType.getPhysicalLanes();
@@ -3879,87 +4264,113 @@ static LogicalResult lowerStore(
         return success();
     }
 
-    if (auto vectorType = dyn_cast<::tla::VectorSSAType>(storeOp.getSource().getType())) {
-        // Explicit masks use the native b64 path, including predicates
-        // produced for Scatter. Only omitted masks use the i32 carrier.
-        if ((vectorType.getElementType().isInteger(64) || vectorType.getElementType().isF64()) && !storeOp.getMask()) {
-            if (storeOp.getBlockStride() || storeOp.getUnalignedUbAccess().value_or(false) ||
-                (storeOp.getStoreDist() && storeOp.getStoreDist()->getStoreDist() != ::StoreDist::norm))
-                return storeOp.emitError("64-bit register store without a mask requires aligned NORM distribution"),
-                       failure();
-            Value mask;
-            if (isProvablyFullVectorStore(storeOp, 32)) {
-                mask = fullMasks.get(loc, 64);
-            } else {
-                auto count = getTlaTensorValidLaneCount(b, loc, storeOp.getDest(), valueMap);
-                if (failed(count))
-                    return failure();
-                Value two = b.create<arith::ConstantIndexOp>(loc, 2);
-                Value activeWords = b.create<arith::MulIOp>(loc, *count, two);
-                mask = createPredicatePlt(b, loc, fullPregVecType(b.getContext()), 64, activeWords).getRes();
-            }
-            auto words = VectorType::get({64}, b.getI32Type());
+    Type tlaStoreElem = cast<::tla::VectorSSAType>(storeOp.getSource().getType()).getElementType();
+    auto opCtx = deriveVecCtxForElement(tlaStoreElem);
+    if (failed(opCtx))
+        return failure();
+    bool isB64 = isAlignB64Elem(tlaStoreElem);
+    if (storeOp.getUnalignedUbAccess().value_or(false)) {
+        auto count = getTlaTensorValidLaneCount(b, loc, storeOp.getDest(), valueMap);
+        if (failed(count))
+            return failure();
+        // The mapped view includes both the live UPDATE base and the tile offset.
+        auto addr = memrefByteAddrI64(b, loc, dest);
+        if (failed(addr))
+            return storeOp.emitError("unaligned store requires an effective UB address"), failure();
+        Value ptr = intToUbPtr(b, loc, *addr);
+        Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+        Value full = b.create<arith::ConstantIndexOp>(loc, opCtx->lanes);
+        Value nonnegative = b.create<arith::MaxSIOp>(loc, *count, zero);
+        Value lanes = b.create<arith::MinSIOp>(loc, nonnegative, full);
+        Value bytes = strideElemsToByteOffI32(b, loc, lanes, tlaStoreElem);
+        Type carrier = tlaStoreElem;
+        if (isB64) {
+            carrier = b.getI32Type();
+            auto words = VectorType::get({64}, carrier);
             source = b.create<mlir::vector::BitCastOp>(loc, words, source).getResult();
-            auto wordsMemOr = materializeDataMemref(b, loc, dest, b.getI32Type());
-            if (failed(wordsMemOr))
-                return storeOp.emitError("failed to materialize i32 memref view for 64-bit VectorSSA store"), failure();
-            dest = *wordsMemOr;
-            Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
-            b.create<hivmave::VFMaskedStoreOp>(loc, dest, ValueRange{zero}, mask, source);
+        }
+        Value ureg = emitEmptyStoreUreg(b, loc);
+        auto result = emitVstusPost(b, loc, source, ptr, ureg, bytes, carrier);
+        if (failed(result))
+            return storeOp.emitError("unsupported element type for unaligned store: ") << tlaStoreElem, failure();
+        return emitVstas(b, loc, result->first, result->second);
+    }
+
+    Value mask = storeOp.getMask() ? valueMap.lookup(storeOp.getMask()) : Value{};
+    if (storeOp.getMask() && !mask)
+        return failure();
+
+    auto dist = storeOp.getStoreDist() ? storeOp.getStoreDist()->getStoreDist() : ::StoreDist::norm;
+    if (isB64 && dist == ::StoreDist::norm) {
+        auto words = VectorType::get({64}, b.getI32Type());
+        source = b.create<mlir::vector::BitCastOp>(loc, words, source).getResult();
+        if (mask) {
+            mask = expandB64MaskForU32AlignStore(b, loc, mask);
+        } else if (isProvablyFullVectorStore(storeOp, 32)) {
+            mask = fullMasks.get(loc, 64);
+        } else {
+            auto count = getTlaTensorValidLaneCount(b, loc, storeOp.getDest(), valueMap);
+            if (failed(count))
+                return failure();
+            Value two = b.create<arith::ConstantIndexOp>(loc, 2);
+            Value activeWords = b.create<arith::MulIOp>(loc, *count, two);
+            mask = createPredicatePlt(b, loc, fullPregVecType(b.getContext()), 64, activeWords).getRes();
+        }
+        auto wordsMemOr = materializeDataMemref(b, loc, dest, b.getI32Type());
+        if (failed(wordsMemOr))
+            return storeOp.emitError("failed to materialize i32 memref view for 64-bit VectorSSA store"), failure();
+        Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+        b.create<hivmave::VFMaskedStoreOp>(loc, *wordsMemOr, ValueRange{zero}, mask, source);
+        return success();
+    }
+
+    auto sourceTy = dyn_cast<VectorType>(source.getType());
+    if (!sourceTy)
+        return failure();
+    Type tlaDestElem = cast<::tla::TlaTensorType>(storeOp.getDest().getType()).getPtr().getPointee();
+    Value storeDest = dest;
+    // Same-shape i8 view only when both sides are Bool (TypeGet<bool> → vector_s8).
+    if (isBoolVectorElement(tlaStoreElem) && isBoolVectorElement(tlaDestElem))
+        storeDest = materializeSameShapeI8Memref(b, loc, dest);
+
+    // Dual-source INTLV: same shape as Load DINTLV — HIVM vstsx2 + StoreDist.
+    // AscendC asc_storealign_intlv ignores the predicate; pass all-true preg.
+    if (auto storeDistAttr = storeOp.getStoreDist()) {
+        hivmave::StoreDist pattern = mapTlaStoreDistToAve(storeDistAttr->getStoreDist());
+        if (isDualSourceStoreDist(pattern)) {
+            if (!storeOp.getSource2())
+                return storeOp.emitError("intlv store_dist requires a second source"), failure();
+            Value source2Val = valueMap.lookup(storeOp.getSource2());
+            if (!source2Val)
+                return failure();
+            int64_t elemBytes = elementStorageBytes(tlaStoreElem);
+            if (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)
+                return storeOp.emitError("unsupported element type for intlv store"), failure();
+            Value data0 = bitcastToIntlvCarrier(b, loc, source, elemBytes);
+            Value data1 = bitcastToIntlvCarrier(b, loc, source2Val, elemBytes);
+            if (!data0 || !data1)
+                return storeOp.emitError("intlv store sources are not vectors"), failure();
+            auto metadata = b.create<mlir::memref::ExtractStridedMetadataOp>(loc, storeDest);
+            Value base = b.create<mlir::memref::ExtractAlignedPointerAsIndexOp>(loc, metadata.getBaseBuffer());
+            Value elementBytes = b.create<arith::ConstantIndexOp>(loc, elemBytes);
+            Value offset = b.create<arith::MulIOp>(loc, metadata.getOffset(), elementBytes);
+            Value address = b.create<arith::AddIOp>(loc, base, offset);
+            Value pointer = intToUbPtr(b, loc, ::tla::castValueToI64(b, loc, address));
+            Value mask = fullMasks.get(loc, opCtx->lanes);
+            if (failed(emitVstsx2Intlv(b, loc, pattern, data0, data1, pointer, mask)))
+                return storeOp.emitError("unexpected dual store_dist"), failure();
             return success();
         }
     }
 
     Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
-    Value mask;
-    auto sourceTy = dyn_cast<VectorType>(source.getType());
-    if (!sourceTy)
-        return failure();
-    // Prefer the TLA VectorSSA element (Bool=i1) over the already-lowered AVE
-    // carrier (i8) so Bool stores keep AscendC move-only semantics.
-    Type tlaStoreElem = sourceTy.getElementType();
-    if (auto tlaVec = dyn_cast<::tla::VectorSSAType>(storeOp.getSource().getType()))
-        tlaStoreElem = tlaVec.getElementType();
-    Type tlaDestElem = tlaStoreElem;
-    if (auto tlaTensor = dyn_cast<::tla::TlaTensorType>(storeOp.getDest().getType()))
-        tlaDestElem = tlaTensor.getPtr().getPointee();
-    else if (auto destMem = dyn_cast<MemRefType>(dest.getType()))
-        tlaDestElem = destMem.getElementType();
-    // Pack / first_element dists intentionally remap widths (verified upstream).
-    // Only Bool cross-stores need an exact-match gate (i8 carrier must not sneak
-    // a Bool↔Int8 move-only bypass). Non-Bool mismatches stay historically open.
-    bool remapsElementWidth = false;
-    if (auto storeDist = storeOp.getStoreDist()) {
-        ::StoreDist dist = storeDist->getStoreDist();
-        remapsElementWidth = dist == ::StoreDist::pack_b16 || dist == ::StoreDist::pack_b32 ||
-                             dist == ::StoreDist::pack4_b32 || dist == ::StoreDist::first_element_b8 ||
-                             dist == ::StoreDist::first_element_b16 || dist == ::StoreDist::first_element_b32;
-    }
-    if (!remapsElementWidth && tlaStoreElem != tlaDestElem &&
-        (isBoolVectorElement(tlaStoreElem) || isBoolVectorElement(tlaDestElem)))
-        return storeOp.emitError("store source and destination element types must match"), failure();
-    auto opCtx = deriveVecCtxForElement(tlaStoreElem);
-    if (failed(opCtx))
-        return failure();
-    Value storeDest = dest;
-    // Same-shape i8 view only when both sides are Bool (TypeGet<bool> → vector_s8).
-    if (isBoolVectorElement(tlaStoreElem) && isBoolVectorElement(tlaDestElem))
-        storeDest = materializeSameShapeI8Memref(b, loc, dest);
-    if (storeOp.getMask()) {
-        mask = valueMap.lookup(storeOp.getMask());
-        if (!mask)
-            return failure();
-    } else {
+    if (!mask) {
         auto implicitMask = createImplicitVectorStoreMask(b, loc, storeOp, *opCtx, valueMap, fullMasks);
         if (failed(implicitMask))
             return storeOp.emitError("failed to determine omitted tla.store active lanes"), failure();
         mask = *implicitMask;
     }
-    if (storeOp.getUnalignedUbAccess().value_or(false)) {
-        // store_unalign (NORMAL): mark AVE masked-store as unaligned UB access.
-        auto store = b.create<hivmave::VFMaskedStoreOp>(loc, storeDest, ValueRange{zero}, mask, source);
-        store->setAttr(hivmave::UnalignedAttr::name, hivmave::UnalignedAttr::get(b.getContext()));
-    } else if (storeOp.getBlockStride()) {
+    if (storeOp.getBlockStride()) {
         Value blockStrideVal = lookupOrCloneScalarValue(b, storeOp.getBlockStride(), valueMap);
         if (!blockStrideVal)
             return failure();
@@ -3983,14 +4394,20 @@ static LogicalResult lowerStore(
         b.create<func::CallOp>(loc, callee, ValueRange{storeSrc, storeDest, blockStrideVal, pregMask});
     } else {
         auto storeDistAttr = storeOp.getStoreDist();
-        if (storeDistAttr && storeDistAttr->getStoreDist() != ::StoreDist::norm) {
-            if (isBoolVectorElement(tlaStoreElem))
-                return storeOp.emitError("Bool VectorSSA is move-only; non-NORM store_dist is unsupported"), failure();
+        if (storeDistAttr && storeDistAttr->getStoreDist() == ::StoreDist::pack_b64) {
+            // No AIV ``masked_store_PK_B64_*``; emit HIVM vstsx1 with DistVST PK_B64.
+            auto metadata = b.create<mlir::memref::ExtractStridedMetadataOp>(loc, storeDest);
+            Value base = b.create<mlir::memref::ExtractAlignedPointerAsIndexOp>(loc, metadata.getBaseBuffer());
+            Value elementBytes = b.create<arith::ConstantIndexOp>(loc, elementStorageBytes(tlaDestElem));
+            Value offset = b.create<arith::MulIOp>(loc, metadata.getOffset(), elementBytes);
+            Value address = b.create<arith::AddIOp>(loc, base, offset);
+            Value pointer = intToUbPtr(b, loc, ::tla::castValueToI64(b, loc, address));
+            Value pregMask = storeOp.getMask() ? castMaskToPregType(b, loc, mask, fullPregVecType(b.getContext())) :
+                                                 unpackB64Mask(b, loc, mask);
+            emitVstsx1PackB64(b, loc, source, pointer, pregMask);
+        } else if (storeDistAttr && storeDistAttr->getStoreDist() != ::StoreDist::norm) {
+            // Bool uses the i8 UB view (storeDest) for b8 Dist / FIRST_ELEMENT.
             hivmave::StoreDist pattern = mapTlaStoreDistToAve(storeDistAttr->getStoreDist());
-            bool isDual = isDualDestStoreDist(pattern);
-            if (isDual) {
-                return storeOp.emitError("dual mode not implemented.");
-            }
             b.create<hivmave::VFMaskedStoreOp>(loc, pattern, storeDest, ValueRange{zero}, mask, source);
         } else {
             // NORM mode (Bool uses i8 view of byte-addressed UB).
@@ -4024,13 +4441,12 @@ static LogicalResult lowerStoreUpdate(
         tlaDestElem = destMem.getElementType();
     if (tlaStoreElem != tlaDestElem)
         return storeOp.emitError("store_update source and destination element types must match"), failure();
-    // Align/Unalign UPDATE stay move-only for Bool; DATA_BLOCK_COPY matches AscendC.
-    if (isBoolVectorElement(tlaStoreElem) && !storeOp.getBlockStride())
-        return storeOp.emitError("Bool VectorSSA is move-only; store_update is unsupported"), failure();
+    // Bool Align UPDATE: AscendC move-only b8 (AVE i8 carrier → s8 post).
     Value mask;
     auto opCtx = deriveVecCtxForElement(tlaStoreElem);
     if (failed(opCtx))
         return failure();
+    bool generatedMaskNeedsB64Punpack = false;
     if (storeOp.getMask()) {
         mask = valueMap.lookup(storeOp.getMask());
         if (!mask)
@@ -4043,14 +4459,24 @@ static LogicalResult lowerStoreUpdate(
             Value active = b.create<arith::ConstantIndexOp>(loc, activeLanes);
             mask = createPredicatePlt(b, loc, opCtx->maskVecType, opCtx->lanes, active).getRes();
         }
+        generatedMaskNeedsB64Punpack = isAlignB64Elem(sourceTy.getElementType());
     } else {
         auto destLanes = getTlaTensorValidLaneCount(b, loc, storeOp.getDest(), valueMap);
         if (failed(destLanes))
             return failure();
         mask = createPredicatePlt(b, loc, opCtx->maskVecType, opCtx->lanes, *destLanes).getRes();
+        generatedMaskNeedsB64Punpack = isAlignB64Elem(sourceTy.getElementType());
     }
     VectorType pregVecType = fullPregVecType(b.getContext());
-    Value pregMask = castMaskToPregType(b, loc, mask, pregVecType);
+    Value pregMask;
+    if (isAlignB64Elem(sourceTy.getElementType())) {
+        // Match AscendC: b64 MaskReg → ppack+pintlv → u32 DistVST store preg.
+        if (generatedMaskNeedsB64Punpack)
+            mask = unpackB64Mask(b, loc, mask);
+        pregMask = expandB64MaskForU32AlignStore(b, loc, mask);
+    } else {
+        pregMask = castMaskToPregType(b, loc, mask, pregVecType);
+    }
     auto ptrOr = resolveEffectiveUbPtr(storeOp.getDest(), b, loc, valueMap);
     if (failed(ptrOr))
         return storeOp.emitError(
@@ -4086,17 +4512,23 @@ static LogicalResult lowerStoreUpdate(
         stride = lookupOrCloneScalarValue(b, storeOp.getPostUpdateStride(), valueMap);
     if (!stride)
         return storeOp.emitError("failed to materialize post_update_stride in vector helper"), failure();
-    FailureOr<Value> newPtrOr = emitVstsx1Post(b, loc, source, *ptrOr, stride, pregMask, sourceTy.getElementType());
+    FailureOr<Value> newPtrOr = emitVstsx1Post(b, loc, source, *ptrOr, stride, pregMask, tlaStoreElem);
     if (failed(newPtrOr))
-        return storeOp.emitError("unsupported element type for tla.store_update: ") << sourceTy.getElementType(),
-               failure();
+        return storeOp.emitError("unsupported element type for tla.store_update: ") << tlaStoreElem, failure();
     mapUpdateNextPtrI64(storeOp.getNextPtr(), b.create<LLVM::PtrToIntOp>(loc, b.getI64Type(), *newPtrOr), valueMap);
     return success();
 }
 
+static LogicalResult lowerCompressedUpdate(
+    ::tla::StoreUnalignUpdateOp op, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& map);
+static LogicalResult lowerCompressedPost(
+    ::tla::StoreUnalignPostOp op, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& map);
+
 static LogicalResult lowerStoreUnalignUpdate(
-    ::tla::StoreUnalignUpdateOp op, OpBuilder& b, DenseMap<Value, Value>& valueMap)
+    ::tla::StoreUnalignUpdateOp op, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap)
 {
+    if (op.getCompressed())
+        return lowerCompressedUpdate(op, b, module, valueMap);
     Location loc = op.getLoc();
     Value src = valueMap.lookup(op.getSource());
     if (!src)
@@ -4113,12 +4545,22 @@ static LogicalResult lowerStoreUnalignUpdate(
     auto srcTy = dyn_cast<VectorType>(src.getType());
     if (!srcTy)
         return failure();
-    Type elemType = srcTy.getElementType();
-    Value countBytes = strideElemsToByteOffI32(b, loc, postUpdateStride, elemType);
+    // Prefer TLA VectorSSA / tensor element (Bool=i1) over the AVE i8 carrier.
+    Type tlaStoreElem = srcTy.getElementType();
+    if (auto tlaVec = dyn_cast<::tla::VectorSSAType>(op.getSource().getType()))
+        tlaStoreElem = tlaVec.getElementType();
+    Type tlaDestElem = tlaStoreElem;
+    if (auto destTensor = dyn_cast<::tla::TlaTensorType>(op.getDest().getType()))
+        tlaDestElem = destTensor.getPtr().getPointee();
+    if (tlaStoreElem != tlaDestElem)
+        return op.emitError("store_unalign_update source and destination element types must match"), failure();
+    // Stride bytes follow storage width (Bool i1 → 1B); emit uses TLA elem so
+    // Bool hits the s8 alias path rather than mistaking the i8 carrier alone.
+    Value countBytes = strideElemsToByteOffI32(b, loc, postUpdateStride, tlaDestElem);
     Value uregIn = valueMap.lookup(op.getUregIn());
     if (!uregIn)
         return op.emitError("store_unalign_update ureg_in not mapped in vector helper"), failure();
-    FailureOr<std::pair<Value, Value>> emitted = emitVstusPost(b, loc, src, *ptrOr, uregIn, countBytes, elemType);
+    FailureOr<std::pair<Value, Value>> emitted = emitVstusPost(b, loc, src, *ptrOr, uregIn, countBytes, tlaDestElem);
     if (failed(emitted))
         return op.emitError("unsupported element type for tla.store_unalign_update"), failure();
     valueMap[op.getUregOut()] = emitted->first;
@@ -4146,8 +4588,11 @@ static LogicalResult lowerCreateUreg(::tla::CreateUregOp op, OpBuilder& b, Dense
     return success();
 }
 
-static LogicalResult lowerStoreUnalignPost(::tla::StoreUnalignPostOp op, OpBuilder& b, DenseMap<Value, Value>& valueMap)
+static LogicalResult lowerStoreUnalignPost(
+    ::tla::StoreUnalignPostOp op, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap)
 {
+    if (op.getCompressed())
+        return lowerCompressedPost(op, b, module, valueMap);
     Location loc = op.getLoc();
     Value ureg = valueMap.lookup(op.getUreg());
     if (!ureg)
@@ -4158,9 +4603,116 @@ static LogicalResult lowerStoreUnalignPost(::tla::StoreUnalignPostOp op, OpBuild
     return emitVstas(b, loc, ureg, *ptrOr);
 }
 
-/// scf.for: rebuild the loop, including loop-carried iter_args, and lower its
-/// body. Init args and the scf.yield operands may be register, index, scalar,
-/// or ``!tla.ureg`` SSA (inserted by tla-unalign-ureg; carried like any other).
+static func::FuncOp getOrCreateCompressionCall(
+    ModuleOp module, Location loc, StringRef name, TypeRange args, TypeRange results)
+{
+    if (auto function = module.lookupSymbol<func::FuncOp>(name))
+        return function;
+    OpBuilder moduleBuilder(module.getBodyRegion());
+    auto function =
+        moduleBuilder.create<func::FuncOp>(loc, name, FunctionType::get(module.getContext(), args, results));
+    annotateAivLibraryCall(function);
+    return function;
+}
+
+static std::string compressionStoreName(Type elementType)
+{
+    std::string name = getSqueezeLibraryCallName(elementType, false);
+    if (name.empty())
+        return {};
+    return "squeeze_store_" + name.substr(std::string("vsqueeze_").size());
+}
+
+static LogicalResult lowerClearSqueezeState(::tla::ClearSqueezeStateOp op, OpBuilder& b, ModuleOp module)
+{
+    auto function = getOrCreateCompressionCall(module, op.getLoc(), "squeeze_stream_clear", {}, {});
+    b.create<func::CallOp>(op.getLoc(), function, ValueRange{});
+    return success();
+}
+
+static LogicalResult lowerCompressedUpdate(
+    ::tla::StoreUnalignUpdateOp op, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& map)
+{
+    Value source = map.lookup(op.getSource());
+    Value state = map.lookup(op.getUregIn());
+    if (!source || !state)
+        return op.emitOpError("compression source or ureg_in was not lowered");
+    auto pointer = resolveEffectiveUbPtr(op.getDest(), b, op.getLoc(), map);
+    if (failed(pointer))
+        return op.emitOpError("compression store requires a live UB destination");
+    Type element = cast<::tla::VectorSSAType>(op.getSource().getType()).getElementType();
+    std::string name = compressionStoreName(element);
+    if (name.empty())
+        return op.emitOpError("unsupported compression store element type");
+    auto function = getOrCreateCompressionCall(
+        module, op.getLoc(), name, TypeRange{source.getType(), pointer->getType(), state.getType()},
+        TypeRange{state.getType()});
+    auto call = b.create<func::CallOp>(op.getLoc(), function, ValueRange{source, *pointer, state});
+    map[op.getUregOut()] = call.getResult(0);
+    if (!op.getNextPtr().use_empty())
+        mapUpdateNextPtrI64(op.getNextPtr(), b.create<LLVM::PtrToIntOp>(op.getLoc(), b.getI64Type(), *pointer), map);
+    return success();
+}
+
+static LogicalResult lowerCompressedPost(
+    ::tla::StoreUnalignPostOp op, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& map)
+{
+    Value state = map.lookup(op.getUreg());
+    Value dest = op.getDest();
+    Value pointer;
+    if (isa<::tla::TlaTensorType>(dest.getType())) {
+        auto resolved = resolveEffectiveUbPtr(dest, b, op.getLoc(), map);
+        if (succeeded(resolved))
+            pointer = *resolved;
+    } else if (Value address = lookupOrCloneScalarValue(b, dest, map)) {
+        pointer = intToUbPtr(b, op.getLoc(), address);
+    }
+    if (!state || !pointer)
+        return op.emitOpError("compression stream tail requires a live UB destination and ureg");
+    // VSTAR writes the buffered bytes for every element type.
+    auto function = getOrCreateCompressionCall(
+        module, op.getLoc(), "squeeze_store_post_uint8_t", TypeRange{pointer.getType(), state.getType()}, {});
+    b.create<func::CallOp>(op.getLoc(), function, ValueRange{pointer, state});
+    return success();
+}
+
+static scf::IfOp lowerCompressedForExit(scf::ForOp loop)
+{
+    // A compressed store updates the alignment register in place. With the
+    // test in the loop header, the device compiler can copy that register
+    // only on reentry and leave the tail write using stale state on exit.
+    // Test after the body so both successors receive the current state.
+    Location loc = loop.getLoc();
+    OpBuilder b(loop);
+    auto predicate = loop.getUnsignedCmp() ? arith::CmpIPredicate::ult : arith::CmpIPredicate::slt;
+    Value enters = b.create<arith::CmpIOp>(loc, predicate, loop.getLowerBound(), loop.getUpperBound());
+    auto guard = b.create<scf::IfOp>(loc, loop.getResultTypes(), enters, /*withElseRegion=*/true);
+
+    SmallVector<Value> inits{loop.getLowerBound()};
+    llvm::append_range(inits, loop.getInitArgs());
+    b.setInsertionPointToEnd(guard.thenBlock());
+    auto rotated = b.create<scf::WhileOp>(
+        loc, TypeRange(ValueRange(inits)), inits, /*beforeBuilder=*/nullptr,
+        [](OpBuilder& body, Location loc, ValueRange args) { body.create<scf::YieldOp>(loc, args); });
+    rotated.getBefore().takeBody(loop.getRegion());
+    b.create<scf::YieldOp>(loc, rotated.getResults().drop_front());
+
+    auto yield = cast<scf::YieldOp>(rotated.getBeforeBody()->getTerminator());
+    b.setInsertionPoint(yield);
+    Value next = b.create<arith::AddIOp>(
+        loc, rotated.getBeforeBody()->getArgument(0), loop.getStep(), arith::IntegerOverflowFlags::nsw);
+    Value continues = b.create<arith::CmpIOp>(loc, predicate, next, loop.getUpperBound());
+    SmallVector<Value> results{next};
+    llvm::append_range(results, yield.getOperands());
+    b.create<scf::ConditionOp>(loc, continues, results);
+    yield.erase();
+
+    b.setInsertionPointToEnd(guard.elseBlock());
+    b.create<scf::YieldOp>(loc, loop.getInitArgs());
+    loop.erase();
+    return guard;
+}
+
 static LogicalResult lowerScfFor(
     scf::ForOp forOp, OpBuilder& b, ModuleOp module, DenseMap<Value, Value>& valueMap,
     AutoFullPredicateCache& fullMasks)
@@ -4270,12 +4822,19 @@ static LogicalResult lowerScfFor(
         });
     if (failed(bodyStatus))
         return failure();
+    ValueRange results = newFor.getResults();
+    if (forOp
+            .walk([](::tla::StoreUnalignUpdateOp store) {
+                return store.getCompressed() ? WalkResult::interrupt() : WalkResult::advance();
+            })
+            .wasInterrupted())
+        results = lowerCompressedForExit(newFor).getResults();
     // Only remap for *results*. Do not overwrite valueMap entries for yield
     // operands: those SSA values often exist outside the loop (e.g. ``b`` in
     // ``a = b``), and remapping them to for-results corrupts post-loop users
     // even on zero-trip loops. Stream-tail Post uses for results, covered here.
     for (auto [i, oldRes] : llvm::enumerate(forOp.getResults())) {
-        Value newRes = newFor.getResult(i);
+        Value newRes = results[i];
         if (wasIndex[i] && !oldRes.use_empty())
             newRes = b.create<arith::IndexCastOp>(loc, b.getIndexType(), newRes);
         valueMap[oldRes] = newRes;
@@ -4444,14 +5003,11 @@ static LogicalResult lowerNestedVectorOp(
         return vec && isa<::tla::Float8E8M0Type>(vec.getElementType());
     };
     if (llvm::any_of(op.getOperandTypes(), isE8M0Vector) || llvm::any_of(op.getResultTypes(), isE8M0Vector)) {
-        if (auto load = dyn_cast<::tla::LoadOp>(op)) {
-            if (!load.getLoadDist() || load.getLoadDist()->getLoadDist() != ::LoadDist::dintlv_b8)
-                return op.emitError("E8M0 vector load requires DIST_DINTLV_B8");
-        } else if (auto store = dyn_cast<::tla::StoreOp>(op)) {
-            if (store.getUnalignedUbAccess() || store.getBlockStride() ||
-                (store.getStoreDist() && store.getStoreDist()->getStoreDist() != ::StoreDist::norm))
-                return op.emitError("E8M0 vector store requires normal aligned access");
-        } else if (!isa<scf::ForOp, scf::IfOp>(op)) {
+        // AscendC b8 transport (SupportBytes<1>→uint8_t): NORM / byte Dist /
+        // DINTLV_B8 / Block / UnAlign / UPDATE. Reject non-transport ops below.
+        if (!isa<
+                ::tla::LoadOp, ::tla::StoreOp, ::tla::LoadUpdateOp, ::tla::StoreUpdateOp, ::tla::LoadUnalignUpdateOp,
+                ::tla::StoreUnalignUpdateOp, scf::ForOp, scf::IfOp>(op)) {
             return op.emitError("E8M0 arithmetic and register casts are unsupported; only transport is allowed");
         }
     }
@@ -4465,9 +5021,14 @@ static LogicalResult lowerNestedVectorOp(
                            auto vec = dyn_cast<::tla::VectorSSAType>(type);
                            return vec && isa<::tla::HiFloat8Type>(vec.getElementType());
                        });
-    if (hasHiFloat8 && !isa<
-                           ::tla::CastOp, ::tla::BitCastOp, ::tla::LoadOp, ::tla::StoreOp, ::tla::WhereOp,
-                           ::tla::InterleaveOp, ::tla::DeInterleaveOp, ::tla::GatherOp, scf::ForOp, scf::IfOp>(op))
+    auto isMoveOnlyEncodingOp = [](Operation& candidate) {
+        return isa<
+            ::tla::CastOp, ::tla::BitCastOp, ::tla::LoadOp, ::tla::StoreOp, ::tla::LoadUpdateOp, ::tla::StoreUpdateOp,
+            ::tla::LoadUnalignUpdateOp, ::tla::StoreUnalignUpdateOp, ::tla::LoadUnalignPreOp, ::tla::CreateUregOp,
+            ::tla::StoreUnalignPostOp, ::tla::WhereOp, ::tla::InterleaveOp, ::tla::DeInterleaveOp, ::tla::GatherOp,
+            scf::ForOp, scf::IfOp>(candidate);
+    };
+    if (hasHiFloat8 && !isMoveOnlyEncodingOp(op))
         return op.emitError("HiFloat8 arithmetic is unsupported; convert or bitcast the register explicitly");
     // Packed pairs use byte carriers. Bitwise ops act on the whole carrier
     // without interpreting the two nibbles, so they are explicit byte-level
@@ -4478,10 +5039,13 @@ static LogicalResult lowerNestedVectorOp(
     };
     bool hasFp4Vector =
         llvm::any_of(op.getOperandTypes(), isFp4Vector) || llvm::any_of(op.getResultTypes(), isFp4Vector);
-    if (hasFp4Vector && !isa<
-                            ::tla::CastOp, ::tla::BitCastOp, ::tla::LoadOp, ::tla::StoreOp, ::tla::WhereOp,
-                            ::tla::InterleaveOp, ::tla::DeInterleaveOp, ::tla::GatherOp, ::tla::BitwiseNotOp,
-                            ::tla::BitwiseAndOp, ::tla::BitwiseOrOp, ::tla::BitwiseXorOp, scf::ForOp, scf::IfOp>(op))
+    if (hasFp4Vector &&
+        !isa<
+            ::tla::CastOp, ::tla::BitCastOp, ::tla::LoadOp, ::tla::StoreOp, ::tla::LoadUpdateOp, ::tla::StoreUpdateOp,
+            ::tla::LoadUnalignUpdateOp, ::tla::StoreUnalignUpdateOp, ::tla::LoadUnalignPreOp, ::tla::CreateUregOp,
+            ::tla::StoreUnalignPostOp, ::tla::WhereOp, ::tla::InterleaveOp, ::tla::DeInterleaveOp, ::tla::GatherOp,
+            ::tla::BitwiseNotOp, ::tla::BitwiseAndOp, ::tla::BitwiseOrOp, ::tla::BitwiseXorOp, scf::ForOp, scf::IfOp>(
+            op))
         return op.emitError("FP4x2 arithmetic is unsupported; only bitwise, select and layout ops are allowed");
 
     // make_shape / make_coord are dead after tla-lower-tensor-desc (their leaves
@@ -4564,16 +5128,18 @@ static LogicalResult lowerNestedVectorOp(
 
     if (auto preOp = dyn_cast<::tla::LoadUnalignPreOp>(op))
         return lowerLoadUnalignPre(preOp, b, valueMap);
+    if (auto clear = dyn_cast<::tla::ClearSqueezeStateOp>(op))
+        return lowerClearSqueezeState(clear, b, module);
     if (auto emptyOp = dyn_cast<::tla::CreateUregOp>(op))
         return lowerCreateUreg(emptyOp, b, valueMap);
     if (auto postOp = dyn_cast<::tla::StoreUnalignPostOp>(op))
-        return lowerStoreUnalignPost(postOp, b, valueMap);
+        return lowerStoreUnalignPost(postOp, b, module, valueMap);
 
     if (auto loadUnalignUpdateOp = dyn_cast<::tla::LoadUnalignUpdateOp>(op))
         return lowerLoadUnalignUpdate(loadUnalignUpdateOp, b, valueMap);
 
     if (auto storeUnalignUpdateOp = dyn_cast<::tla::StoreUnalignUpdateOp>(op))
-        return lowerStoreUnalignUpdate(storeUnalignUpdateOp, b, valueMap);
+        return lowerStoreUnalignUpdate(storeUnalignUpdateOp, b, module, valueMap);
 
     // Preserve local-memory ordering while outlining a vec.func into its AVE
     // helper. Every operation in the source region must be recreated explicitly;
@@ -4649,15 +5215,6 @@ static LogicalResult lowerNestedVectorOp(
         if (!mask || !x || !y)
             return failure();
 
-        // Bool VectorSSA is move-only; vsel on the i8 carrier would silently
-        // accept lane select beyond the supported surface.
-        if (auto xVec = dyn_cast<::tla::VectorSSAType>(whereOp.getX().getType());
-            xVec && isBoolVectorElement(xVec.getElementType()))
-            return whereOp.emitError(
-                       "Bool VectorSSA is move-only (load/store); "
-                       "where/select is not supported"),
-                   failure();
-
         // After type conversion all MaskSSA values use vector<256xi1>, so the
         // original TLA operand type determines whether this is predicate select.
         if (isa<::tla::MaskSSAType>(whereOp.getX().getType())) {
@@ -4675,6 +5232,17 @@ static LogicalResult lowerNestedVectorOp(
         auto xTy = dyn_cast<VectorType>(x.getType());
         if (!xTy)
             return failure();
+        if (auto tlaVec = dyn_cast<::tla::VectorSSAType>(whereOp.getX().getType());
+            tlaVec && tlaVec.getElementType().isInteger(64)) {
+            // The 64-bit AVE vsel ABI does not legalize in the device backend;
+            // call the linked bitcode helper with the native b64 predicate.
+            // Name must match csrc/mlir/bc/Vector/cmp_sel_reg.cpp.
+            std::string name = tlaVec.getElementType().isUnsignedInteger() ? "select_uint64_t" : "select_int64_t";
+            SmallVector<Type, 3> inputTypes{fullPregVecType(b.getContext()), xTy, xTy};
+            valueMap[whereOp.getResult()] =
+                createInlineB64Call(b, loc, module, name, inputTypes, xTy, ValueRange{mask, x, y});
+            return success();
+        }
         auto opCtx = deriveVecCtxForElement(xTy.getElementType());
         if (failed(opCtx))
             return failure();
@@ -4934,192 +5502,113 @@ static Value stripHelperAddressCasts(Value address)
     return address;
 }
 
-/// Chase ``scf.for`` / ``scf.while`` iter_args *and* results back to their init
-/// so ``tensor_desc(inttoptr(scf_i64))`` shares one helper memref *identity*
-/// with the seed tile (parent UB). This is allocation dedup / call-site ABI
-/// only — not the effective address used by ordinary load/store or UPDATE.
-/// Post-loop epilogue tiles carry for/while *results*; without chasing those,
-/// helper-call materialization would take an address defined inside
-/// ``tla.vec.func`` and leave an external use that blocks eraseOp.
+static Value getScfLoopCarrierInit(Value value)
+{
+    if (auto argument = dyn_cast<BlockArgument>(value)) {
+        Operation* parent = argument.getOwner()->getParentOp();
+        unsigned index = argument.getArgNumber();
+        if (auto loop = dyn_cast<scf::ForOp>(parent); loop && index > 0 && index <= loop.getNumRegionIterArgs())
+            return loop.getInitArgs()[index - 1];
+        if (auto loop = dyn_cast<scf::WhileOp>(parent); loop && index < loop.getInits().size())
+            return loop.getInits()[index];
+        return {};
+    }
+    if (auto loop = value.getDefiningOp<scf::ForOp>())
+        return loop.getInitArgs()[cast<OpResult>(value).getResultNumber()];
+    if (auto loop = value.getDefiningOp<scf::WhileOp>()) {
+        unsigned index = cast<OpResult>(value).getResultNumber();
+        if (index < loop.getInits().size())
+            return loop.getInits()[index];
+    }
+    return {};
+}
+
+// Use the loop's initial address for the helper argument. Inside the helper,
+// tensor accesses still use the address carried by the loop.
 static Value chaseScfCarrierInit(Value address)
 {
     address = stripHelperAddressCasts(address);
-    // No fixed step budget: stop at a fixed point or SSA cycle (visited).
     DenseSet<Value> visited;
     while (visited.insert(address).second) {
-        if (auto ba = dyn_cast<BlockArgument>(address)) {
-            Operation* parent = ba.getOwner()->getParentOp();
-            if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-                // Region args: induction var then iter_args.
-                unsigned argNum = ba.getArgNumber();
-                if (argNum == 0)
-                    break;
-                unsigned iterIdx = argNum - 1;
-                if (iterIdx >= forOp.getNumRegionIterArgs())
-                    break;
-                address = stripHelperAddressCasts(forOp.getInitArgs()[iterIdx]);
-                continue;
-            }
-            if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
-                unsigned argNum = ba.getArgNumber();
-                if (argNum >= whileOp.getInits().size())
-                    break;
-                address = stripHelperAddressCasts(whileOp.getInits()[argNum]);
-                continue;
-            }
+        Value init = getScfLoopCarrierInit(address);
+        if (!init)
             break;
-        }
-        // Epilogue after the loop: carrier is an scf.for / scf.while result.
-        if (auto forOp = address.getDefiningOp<scf::ForOp>()) {
-            unsigned idx = cast<OpResult>(address).getResultNumber();
-            if (idx >= forOp.getNumRegionIterArgs())
-                break;
-            address = stripHelperAddressCasts(forOp.getInitArgs()[idx]);
-            continue;
-        }
-        if (auto whileOp = address.getDefiningOp<scf::WhileOp>()) {
-            unsigned idx = cast<OpResult>(address).getResultNumber();
-            if (idx >= whileOp.getInits().size())
-                break;
-            address = stripHelperAddressCasts(whileOp.getInits()[idx]);
-            continue;
-        }
-        break;
+        address = stripHelperAddressCasts(init);
     }
     return address;
 }
 
-// Allocation identity for helper-operand dedup. Must not be used as the
-// effective load/store address (live inttoptr / descriptor coord own that).
-// Chase UPDATE next_ptr producers, tile_view, and ptrtoint/inttoptr / SCF
-// carrier wrappers back to the same seed so chained UPDATE windows share one
-// helper memref. Do not chase ``tla.ptr_add`` or peel lowered i64 addi/muli.
-static Value getVectorHelperStorageIdentity(Value source)
+// Follow the address through views, UPDATE and other pointer wrappers. Leave
+// pointer arithmetic alone because the same SSA address seeds the helper ABI.
+static Value getVectorHelperStorageParent(Value source)
 {
-    // IR-wrapper chase only (not loop trip count). Unbounded except SSA cycles.
+    if (auto desc = source.getDefiningOp<::tla::TensorDescOp>())
+        return desc.getBase();
+    if (auto make = source.getDefiningOp<::tla::MakeTensorOp>())
+        return make.getPtr();
+    if (auto make = source.getDefiningOp<::tla::MakeTensorLikeOp>())
+        return make.getPtr();
+    if (auto tile = source.getDefiningOp<::tla::TileViewOp>())
+        return tile.getSource();
+    if (auto ptr = source.getDefiningOp<::tla::TensorPtrOp>())
+        return ptr.getSrc();
+    if (auto load = source.getDefiningOp<::tla::LoadUpdateOp>())
+        return load.getSource();
+    if (auto load = source.getDefiningOp<::tla::LoadUnalignUpdateOp>())
+        return load.getSource();
+    if (auto store = source.getDefiningOp<::tla::StoreUpdateOp>())
+        return store.getDest();
+    if (auto store = source.getDefiningOp<::tla::StoreUnalignUpdateOp>())
+        return store.getDest();
+    if (auto toInt = source.getDefiningOp<::tla::PtrToIntOp>())
+        return toInt.getPtr();
+    if (auto toInt = source.getDefiningOp<LLVM::PtrToIntOp>())
+        return toInt.getArg();
+    if (auto toPtr = source.getDefiningOp<::tla::IntToPtrOp>())
+        return toPtr.getAddr();
+    if (auto toPtr = source.getDefiningOp<LLVM::IntToPtrOp>())
+        return toPtr.getArg();
+    if (auto extract = source.getDefiningOp<mlir::memref::ExtractAlignedPointerAsIndexOp>())
+        return extract.getSource();
+    if (auto cast = source.getDefiningOp<mlir::memref::CastOp>())
+        return cast.getSource();
+    return {};
+}
+
+// For results selected inside the helper, deduplicate only when every branch
+// leads to the same seed. Results from outside already name a live address.
+static Value getVectorHelperStorageIdentity(Value source, Region& outlinedRegion)
+{
     DenseSet<Value> visited;
-    while (visited.insert(source).second) {
-        source = stripHelperAddressCasts(source);
-        // Tile SSA carried across ``scf.for`` / ``scf.while`` (iter_arg or result)
-        // must share the seed identity with the init window. Otherwise a
-        // once→for→once UnAlign stream registers the post-loop tile as a new
-        // helper operand whose ``inttoptr`` addr is an in-region ``ptrtoint`` of
-        // the live next_ptr — dominate check rejects the outline (silent
-        // legalize failure). Same chase as ``chaseScfCarrierInit`` but on the
-        // tensor/ptr carrier itself, not only the i64 address.
-        if (auto ba = dyn_cast<BlockArgument>(source)) {
-            Operation* parent = ba.getOwner()->getParentOp();
-            if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-                unsigned argNum = ba.getArgNumber();
-                if (argNum > 0 && argNum - 1 < forOp.getNumRegionIterArgs()) {
-                    source = forOp.getInitArgs()[argNum - 1];
-                    continue;
-                }
-            } else if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
-                unsigned argNum = ba.getArgNumber();
-                if (argNum < whileOp.getInits().size()) {
-                    source = whileOp.getInits()[argNum];
-                    continue;
-                }
-            }
-            break;
-        }
-        if (auto forOp = source.getDefiningOp<scf::ForOp>()) {
-            unsigned idx = cast<OpResult>(source).getResultNumber();
-            if (idx < forOp.getNumRegionIterArgs()) {
-                source = forOp.getInitArgs()[idx];
+    SmallVector<Value, 2> pending{source};
+    Value identity;
+    while (!pending.empty()) {
+        Value value = stripHelperAddressCasts(pending.pop_back_val());
+        if (!visited.insert(value).second)
+            continue;
+        if (outlinedRegion.isAncestor(value.getParentRegion())) {
+            if (auto conditional = value.getDefiningOp<scf::IfOp>()) {
+                unsigned index = cast<OpResult>(value).getResultNumber();
+                pending.push_back(conditional.thenYield().getOperand(index));
+                pending.push_back(conditional.elseYield().getOperand(index));
                 continue;
             }
-            break;
-        }
-        if (auto whileOp = source.getDefiningOp<scf::WhileOp>()) {
-            unsigned idx = cast<OpResult>(source).getResultNumber();
-            if (idx < whileOp.getInits().size()) {
-                source = whileOp.getInits()[idx];
+            if (Value init = getScfLoopCarrierInit(value)) {
+                pending.push_back(init);
                 continue;
             }
-            break;
         }
-        if (auto descOp = source.getDefiningOp<::tla::TensorDescOp>()) {
-            source = descOp.getBase();
+        if (Value parent = getVectorHelperStorageParent(value)) {
+            pending.push_back(parent);
             continue;
         }
-        if (auto makeOp = source.getDefiningOp<::tla::MakeTensorOp>()) {
-            source = makeOp.getPtr();
-            continue;
-        }
-        if (auto makeLikeOp = source.getDefiningOp<::tla::MakeTensorLikeOp>()) {
-            source = makeLikeOp.getPtr();
-            continue;
-        }
-        if (auto tileOp = source.getDefiningOp<::tla::TileViewOp>()) {
-            source = tileOp.getSource();
-            continue;
-        }
-        if (auto tensorPtr = source.getDefiningOp<::tla::TensorPtrOp>()) {
-            source = tensorPtr.getSrc();
-            continue;
-        }
-        if (auto loadUpdate = source.getDefiningOp<::tla::LoadUpdateOp>()) {
-            source = loadUpdate.getSource();
-            continue;
-        }
-        if (auto loadUnalignUpdate = source.getDefiningOp<::tla::LoadUnalignUpdateOp>()) {
-            source = loadUnalignUpdate.getSource();
-            continue;
-        }
-        if (auto storeUpdate = source.getDefiningOp<::tla::StoreUpdateOp>()) {
-            source = storeUpdate.getDest();
-            continue;
-        }
-        if (auto storeUnalignUpdate = source.getDefiningOp<::tla::StoreUnalignUpdateOp>()) {
-            source = storeUnalignUpdate.getDest();
-            continue;
-        }
-        if (auto ptrToInt = source.getDefiningOp<::tla::PtrToIntOp>()) {
-            source = ptrToInt.getPtr();
-            continue;
-        }
-        if (auto llvmPtrToInt = source.getDefiningOp<LLVM::PtrToIntOp>()) {
-            source = llvmPtrToInt.getArg();
-            continue;
-        }
-        if (auto intToPtr = source.getDefiningOp<::tla::IntToPtrOp>()) {
-            // Address SSA is i64; chase SCF carriers then unwrap ptrtoint seeds.
-            Value addr = chaseScfCarrierInit(intToPtr.getAddr());
-            if (auto fromPtr = addr.getDefiningOp<::tla::PtrToIntOp>()) {
-                source = fromPtr.getPtr();
-                continue;
-            }
-            if (auto fromPtr = addr.getDefiningOp<LLVM::PtrToIntOp>()) {
-                source = fromPtr.getArg();
-                continue;
-            }
-            return addr;
-        }
-        if (auto llvmIntToPtr = source.getDefiningOp<LLVM::IntToPtrOp>()) {
-            Value addr = chaseScfCarrierInit(llvmIntToPtr.getArg());
-            if (auto fromPtr = addr.getDefiningOp<::tla::PtrToIntOp>()) {
-                source = fromPtr.getPtr();
-                continue;
-            }
-            if (auto fromPtr = addr.getDefiningOp<LLVM::PtrToIntOp>()) {
-                source = fromPtr.getArg();
-                continue;
-            }
-            return addr;
-        }
-        if (auto castOp = source.getDefiningOp<mlir::memref::CastOp>()) {
-            source = castOp.getSource();
-            continue;
-        }
-        if (auto pointerCast = source.getDefiningOp<hivm::PointerCastOp>())
-            return stripHelperAddressCasts(pointerCast.getSingleAddr());
-        if (source.getDefiningOp<::tla::AllocPtrOp>())
+        if (auto pointerCast = value.getDefiningOp<hivm::PointerCastOp>())
+            value = stripHelperAddressCasts(pointerCast.getSingleAddr());
+        if (identity && identity != value)
             return source;
-        break;
+        identity = value;
     }
-    return source;
+    return identity ? identity : source;
 }
 
 static FailureOr<MemRefType> getVectorHelperOperandType(Value source)
@@ -5132,12 +5621,13 @@ static FailureOr<MemRefType> getVectorHelperOperandType(Value source)
 // Add `source` as a helper operand unless another operand already represents
 // the same allocation with the same helper memref type. Record every source's
 // representative so scalar views can reuse a tensor operand's helper argument.
-static void addVectorHelperOperand(Value source, SmallVectorImpl<Value>& operands, DenseMap<Value, Value>& aliases)
+static void addVectorHelperOperand(
+    Value source, Region& outlinedRegion, SmallVectorImpl<Value>& operands, DenseMap<Value, Value>& aliases)
 {
-    Value identity = getVectorHelperStorageIdentity(source);
+    Value identity = getVectorHelperStorageIdentity(source, outlinedRegion);
     FailureOr<MemRefType> sourceType = getVectorHelperOperandType(source);
     for (Value operand : operands) {
-        if (identity != getVectorHelperStorageIdentity(operand))
+        if (identity != getVectorHelperStorageIdentity(operand, outlinedRegion))
             continue;
         FailureOr<MemRefType> operandType = getVectorHelperOperandType(operand);
         // Same allocation seed: reuse the representative even when ``source`` is
@@ -5182,51 +5672,65 @@ static LogicalResult collectVectorHelperOperands(
     Block* block, Region& outlinedRegion, Operation* callSite, DominanceInfo& dominanceInfo,
     SmallVectorImpl<Value>& operands, DenseMap<Value, Value>& aliases)
 {
+    auto collectWindow = [&](Value window) {
+        if (auto desc = window.getDefiningOp<::tla::TensorDescOp>()) {
+            Value base = desc.getBase();
+            if (auto ptr = base.getDefiningOp<::tla::IntToPtrOp>()) {
+                // Local addresses are computed in the helper. Capture a seed
+                // only if it is available at the call site.
+                if (outlinedRegion.isAncestor(ptr.getAddr().getParentRegion()) &&
+                    !dominanceInfo.dominates(getVectorHelperStorageIdentity(window, outlinedRegion), callSite))
+                    return;
+            }
+        }
+        addVectorHelperOperand(window, outlinedRegion, operands, aliases);
+    };
     for (Operation& op : block->getOperations()) {
         if (auto loadOp = dyn_cast<::tla::LoadOp>(op)) {
-            addVectorHelperOperand(loadOp.getSource(), operands, aliases);
+            collectWindow(loadOp.getSource());
             continue;
         }
         if (auto loadUpdateOp = dyn_cast<::tla::LoadUpdateOp>(op)) {
-            addVectorHelperOperand(loadUpdateOp.getSource(), operands, aliases);
+            collectWindow(loadUpdateOp.getSource());
             continue;
         }
         if (auto loadUnalignUpdateOp = dyn_cast<::tla::LoadUnalignUpdateOp>(op)) {
-            addVectorHelperOperand(loadUnalignUpdateOp.getSource(), operands, aliases);
+            collectWindow(loadUnalignUpdateOp.getSource());
             continue;
         }
         if (auto preOp = dyn_cast<::tla::LoadUnalignPreOp>(op)) {
-            addVectorHelperOperand(preOp.getSource(), operands, aliases);
+            collectWindow(preOp.getSource());
             continue;
         }
         if (auto storeOp = dyn_cast<::tla::StoreOp>(op)) {
-            addVectorHelperOperand(storeOp.getDest(), operands, aliases);
+            collectWindow(storeOp.getDest());
             continue;
         }
         if (auto storeUpdateOp = dyn_cast<::tla::StoreUpdateOp>(op)) {
-            addVectorHelperOperand(storeUpdateOp.getDest(), operands, aliases);
+            collectWindow(storeUpdateOp.getDest());
             continue;
         }
         if (auto storeUnalignUpdateOp = dyn_cast<::tla::StoreUnalignUpdateOp>(op)) {
-            addVectorHelperOperand(storeUnalignUpdateOp.getDest(), operands, aliases);
+            collectWindow(storeUnalignUpdateOp.getDest());
             continue;
         }
         if (auto postOp = dyn_cast<::tla::StoreUnalignPostOp>(op)) {
-            addVectorHelperOperand(postOp.getDest(), operands, aliases);
+            if (isa<::tla::TlaTensorType>(postOp.getDest().getType()))
+                collectWindow(postOp.getDest());
             continue;
         }
         if (auto printOp = dyn_cast<::tla::PrintTensorOp>(op)) {
-            addVectorHelperOperand(printOp.getValue(), operands, aliases);
+            collectWindow(printOp.getValue());
             continue;
         }
         if (auto gatherOp = dyn_cast<::tla::GatherOp>(op)) {
             // Only UB-tensor gather needs a helper memref argument.
             if (isa<::tla::TlaTensorType>(gatherOp.getX().getType()))
-                addVectorHelperOperand(gatherOp.getX(), operands, aliases);
+                collectWindow(gatherOp.getX());
             continue;
         }
         if (auto scatterOp = dyn_cast<::tla::ScatterOp>(op)) {
-            addVectorHelperOperand(scatterOp.getDst(), operands, aliases);
+            collectWindow(scatterOp.getDst());
             continue;
         }
         // A memref-backed tensor.ptr in an extern argument reads the aligned address.
@@ -5234,7 +5738,7 @@ static LogicalResult collectVectorHelperOperands(
             auto source = getScalarAccessHelperMemref(addr.getSource(), outlinedRegion, callSite, dominanceInfo);
             if (failed(source))
                 return failure();
-            addVectorHelperOperand(*source, operands, aliases);
+            addVectorHelperOperand(*source, outlinedRegion, operands, aliases);
             continue;
         }
         if (auto memLoad = dyn_cast<mlir::memref::LoadOp>(op)) {
@@ -5242,7 +5746,7 @@ static LogicalResult collectVectorHelperOperands(
                 getScalarAccessHelperMemref(memLoad.getMemRef(), outlinedRegion, callSite, dominanceInfo);
             if (failed(source))
                 return failure();
-            addVectorHelperOperand(*source, operands, aliases);
+            addVectorHelperOperand(*source, outlinedRegion, operands, aliases);
             continue;
         }
         if (auto memStore = dyn_cast<mlir::memref::StoreOp>(op)) {
@@ -5250,7 +5754,7 @@ static LogicalResult collectVectorHelperOperands(
                 getScalarAccessHelperMemref(memStore.getMemRef(), outlinedRegion, callSite, dominanceInfo);
             if (failed(source))
                 return failure();
-            addVectorHelperOperand(*source, operands, aliases);
+            addVectorHelperOperand(*source, outlinedRegion, operands, aliases);
             continue;
         }
         for (Region& region : op.getRegions())
@@ -5391,9 +5895,10 @@ static FailureOr<func::FuncOp> buildHelperFunc(
     // in lowerNestedVectorOp can map it.
     DenseMap<Value, Value> baseToArg;
     DenseMap<Value, Value> identityToArg;
+    Region& outlinedRegion = vecFuncOp.getBody();
     for (Value operand : helperOperands) {
         if (Value arg = valueMap.lookup(operand)) {
-            identityToArg[getVectorHelperStorageIdentity(operand)] = arg;
+            identityToArg[getVectorHelperStorageIdentity(operand, outlinedRegion)] = arg;
             if (auto d = operand.getDefiningOp<::tla::TensorDescOp>())
                 baseToArg[d.getBase()] = arg;
         }
@@ -5406,7 +5911,8 @@ static FailureOr<func::FuncOp> buildHelperFunc(
             return;
         }
         // Distinct ``inttoptr(scf_i64)`` ops share chased seed identity.
-        if (auto it = identityToArg.find(getVectorHelperStorageIdentity(desc.getResult())); it != identityToArg.end())
+        if (auto it = identityToArg.find(getVectorHelperStorageIdentity(desc.getResult(), outlinedRegion));
+            it != identityToArg.end())
             valueMap[desc.getResult()] = it->second;
     });
     // A descriptor produced *outside* the region and used inside it needs the
@@ -5490,6 +5996,7 @@ public:
         SmallVector<::tla::StoreUpdateOp, 2> storeUpdates;
         SmallVector<Value, 4> unalignLoads;
         int unalignStores = 0;
+        bool hasCompressedStore = false;
         bool hasDebugPrint = false;
         bool hasExtern = false;
         vecFuncOp->walk([&](Operation* op) {
@@ -5516,8 +6023,9 @@ public:
                 stores.push_back(store);
             } else if (auto storeUpdate = dyn_cast<::tla::StoreUpdateOp>(op)) {
                 storeUpdates.push_back(storeUpdate);
-            } else if (isa<::tla::StoreUnalignUpdateOp>(op)) {
+            } else if (auto store = dyn_cast<::tla::StoreUnalignUpdateOp>(op)) {
                 ++unalignStores;
+                hasCompressedStore |= store.getCompressed();
             } else if (isVectorComputeOp(op)) {
                 computeOps.push_back(op);
             }
@@ -5791,7 +6299,7 @@ public:
             invalidScalarAccessBase = true;
             return failure();
         }
-        if (helperOperands.empty() && !hasDebugPrint && !hasExtern)
+        if (helperOperands.empty() && !hasDebugPrint && !hasExtern && !hasCompressedStore)
             return rewriter.notifyMatchFailure(vecFuncOp, "expected vector region tensor operands");
         // Scalars captured from outside the region (e.g. a sub_block_idx computed at
         // the top of the kernel) are passed as trailing scalar arguments.
@@ -5817,7 +6325,7 @@ public:
             // Prefer storage-identity seed (AllocPtr / outside ptr_add): SCF +
             // UPDATE next_ptr chase. Fall back to the inttoptr addr only when
             // identity itself is still an address SSA.
-            Value identity = getVectorHelperStorageIdentity(tensor);
+            Value identity = getVectorHelperStorageIdentity(tensor, vecFuncOp.getBody());
             Value callAddr = identity;
             if (!dominanceInfo.dominates(callAddr, vecFuncOp.getOperation())) {
                 callAddr = stripHelperAddressCasts(chaseScfCarrierInit(itp.getAddr()));
@@ -5826,11 +6334,11 @@ public:
                 while (peelVisited.insert(callAddr).second &&
                        !dominanceInfo.dominates(callAddr, vecFuncOp.getOperation())) {
                     if (auto p2i = callAddr.getDefiningOp<::tla::PtrToIntOp>()) {
-                        callAddr = getVectorHelperStorageIdentity(p2i.getPtr());
+                        callAddr = getVectorHelperStorageIdentity(p2i.getPtr(), vecFuncOp.getBody());
                         continue;
                     }
                     if (auto p2i = callAddr.getDefiningOp<LLVM::PtrToIntOp>()) {
-                        callAddr = getVectorHelperStorageIdentity(p2i.getArg());
+                        callAddr = getVectorHelperStorageIdentity(p2i.getArg(), vecFuncOp.getBody());
                         continue;
                     }
                     break;
@@ -5882,11 +6390,13 @@ public:
                 // materializeTensorDescParameteri / resolveEffectiveUbPtr.
                 if (auto itp = ptr.getDefiningOp<::tla::IntToPtrOp>()) {
                     Value liveAddr = stripHelperAddressCasts(itp.getAddr());
-                    Value seedAddr = stripHelperAddressCasts(chaseScfCarrierInit(liveAddr));
+                    Value seedAddr = liveAddr;
+                    if (!dominanceInfo.dominates(liveAddr, vecFuncOp.getOperation()))
+                        seedAddr = chaseScfCarrierInit(liveAddr);
                     // Once→for→once UnAlign: live addr may be in-region ptrtoint of
                     // next_ptr; peel to a dominating seed (same as outline check).
                     if (!dominanceInfo.dominates(seedAddr, vecFuncOp.getOperation())) {
-                        Value identity = getVectorHelperStorageIdentity(tensor);
+                        Value identity = getVectorHelperStorageIdentity(tensor, vecFuncOp.getBody());
                         if (dominanceInfo.dominates(identity, vecFuncOp.getOperation())) {
                             OpBuilder::InsertionGuard guard(rewriter);
                             rewriter.setInsertionPoint(vecFuncOp);
@@ -5898,6 +6408,12 @@ public:
                             else if (isa<LLVM::LLVMPointerType>(identity.getType()))
                                 seedAddr = rewriter.create<LLVM::PtrToIntOp>(
                                     vecFuncOp.getLoc(), rewriter.getI64Type(), identity);
+                            else if (isa<MemRefType>(identity.getType())) {
+                                Location loc = vecFuncOp.getLoc();
+                                Value address =
+                                    rewriter.create<mlir::memref::ExtractAlignedPointerAsIndexOp>(loc, identity);
+                                seedAddr = ::tla::castValueToI64(rewriter, loc, address);
+                            }
                         }
                     }
                     if (seedAddr != liveAddr) {

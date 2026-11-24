@@ -39,14 +39,14 @@ The body is per-thread scalar code. These are available:
 - `tla.range` loops and runtime `if`.
 - `tla.print` for per-thread scalars, formatted strings, and GM/UB prefixes -- see [Debug and Printing](../language/debug.md).
 - `tla.arch.warp_reduce_sync` for add/max/min reductions over the active lanes of a warp -- see **System Variable Access**.
-- Warp queries `tla.arch.warpsize` / `lane_idx` / `lanemask_eq` / `lanemask_lt` / `lanemask_le` / `lanemask_gt` / `lanemask_ge` -- see **System Variable Access**.
+- Warp queries `tla.arch.warpsize` / `lane_idx` / `lanemask_eq` / `lanemask_lt` / `lanemask_le` / `lanemask_gt` / `lanemask_ge` / `activemask` -- see **System Variable Access**.
 - `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`, and the launch-level `tla.arch.block_idx` / `block_num` -- see **System Variable Access**.
 
 These are not, and are rejected when the kernel is compiled:
 
 - Register-vector and mask ops -- `VectorSSA` / `MaskSSA` values, the arithmetic and mask APIs under **SIMD Vector Compute**, `Tensor.load` / `Tensor.store`, `tla.full`, `tla.create_mask`. These APIs operate on SIMD register-vector values.
 - `tla.copy`: a DMA needs the tensor itself, and a SIMT region may capture only scalar runtime values. Stage data before the region, or let each thread address global memory directly.
-- `tla.local_mem_bar` and `tla.pipe_barrier`.
+- `tla.local_mem_bar`, `tla.data_sync_barrier` and `tla.pipe_barrier`.
 - `while` loops, in any `tla.vec.func`; carry the iteration through `tla.range` instead.
 - A nested `tla.vec.func`.
 

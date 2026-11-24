@@ -26,7 +26,7 @@ Context labels: **Host** means a Python script outside `@tla.kernel`; **kernel**
 | [`@tla.extern`](runtime/kernel_entry.md#tlaextern) | Declare an Ascend C ABI entry implemented by inline source. | Host declaration; calls belong in one Cube or Vector region, including SIMD VFs. SIMT VFs are unsupported. |
 | [`tla.compile`](runtime/compile_launch.md#tlacompile) | Compile a kernel from type samples and return a `JitCompiledFunction`. | Host; samples need not be bound NPU buffers. Launch options such as `block_num` and `stream` belong to the compiled call. |
 | [`tla.JitCompiledFunction.__call__`](runtime/compile_launch.md#tlajitcompiledfunction__call__) | Launch a compiled kernel and reuse its executor and binary. | Host; tensor arguments must be bound NPU buffers. `make_fake_tensor` results cannot be launched. |
-| [`tla.from_dlpack`](runtime/host_tensor.md#tlafrom_dlpack) | Bind a DLPack tensor as a TLA Host tensor without copying device data. | Host; `layout_tag` is required. NPU buffers support launch; CPU buffers provide compile-only metadata. |
+| [`tla.from_dlpack`](runtime/host_tensor.md#tlafrom_dlpack) | Bind a DLPack tensor as a TLA Host tensor without copying device data. | `layout_tag` is required for all inputs, including 4D packed NZ views. NPU buffers support launch. CPU buffers provide compile-only metadata. |
 | [`tla.make_tensor`](runtime/host_tensor.md#tlamake_tensor) | Dual-mode Host bind via `tla.make_ptr` + `tla.make_layout`. | Host path skips DLPack; Kernel path still emits IR. |
 | [`tla.make_fake_tensor`](runtime/host_tensor.md#tlamake_fake_tensor) | Create a metadata-only compile sample. | Host; no device buffer and no launch. Shape-related inputs are Python integer trees, not Kernel layout values. |
 
@@ -95,6 +95,7 @@ start from the [Synchronization Guide](../kernel_development/core_concepts/sync.
 | [`tla.pipe_barrier`](language/sync.md#tlapipe_barrier) | Insert a barrier on a hardware pipe. | Kernel / Cube or Vector; not available inside SIMT. |
 | [`tla.mutex`](language/sync.md#tlamutex), [`tla.mutex_guard`](language/sync.md#tlamutex_guard), [`tla.mutex_lock`](language/sync.md#tlamutex_lock), [`tla.mutex_unlock`](language/sync.md#tlamutex_unlock) | Protect a named resource with explicit locking or a scoped guard. | Kernel / Cube or Vector for lock operations; a guard block must emit `copy` or `mmad` and must not explicitly lock or unlock. |
 | [`tla.local_mem_bar`](language/sync.md#tlalocal_mem_bar) | Order accesses between local-memory types. | Kernel / Vector / SIMD; inside `tla.vec.func`, with a supported `MemType` pair. Not available in SIMT. |
+| [`tla.data_sync_barrier`](language/sync.md#tladata_sync_barrier) | Wait for earlier memory accesses of a storage domain (GM / UB) to complete. | Kernel / Cube or Vector; not inside `tla.vec.func`; `UB` rejected in `tla.cube()`; covers GM and UB only, not L1/L0 buffers. Cross-core visibility applies to D-cache-bypassing GM accesses (`WriteGmBypassDCache` via `tla.extern`). |
 | [`tla.arch.sync_threads`](language/system.md#tlaarchsync_threads) | Synchronize threads in one SIMT block. | Kernel / Vector / SIMT; every thread must reach the barrier. It is not a cross-core or pipe barrier. |
 
 ### Resources and Debugging

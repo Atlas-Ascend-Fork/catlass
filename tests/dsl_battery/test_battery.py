@@ -56,6 +56,20 @@ FIXPIPE_QUANT_SRC_DST = (
     ("i32", "u8"),
 )
 
+#: The L0C -> L1 quantized-store examples fix their own shape (M=50/N=60/K=64)
+#: and the zN layout, so a case varies only the dtype pair and the relu flag.
+#: `--src-dtype` names the first operand (f32 -> f32 accumulator, i8 -> i32) and
+#: `--quant-dtype` the tile the fixpipe writes to L1, which both routes support
+#: for f16/bf16/i8 -- there is no u8 or f32 destination on this route.
+L0C2L1_FIXPIPE_QUANT_SRC_DST = (
+    ("f32", "f16"),
+    ("f32", "bf16"),
+    ("f32", "i8"),
+    ("i8", "f16"),
+    ("i8", "bf16"),
+    ("i8", "i8"),
+)
+
 #: The basic_mixed per-tensor example ships float destinations only.
 MIXED_FIXPIPE_QUANT_SRC_DST = (
     ("f32", "f32"),
@@ -115,6 +129,18 @@ L1_FILL_CASE_IDS = {f"fill-l1-{dtype}" for dtype, _ in L1_FILL_VARIANTS}
 # Flat VectorLayout GM->L1 continuous-run dtypes (narrow + 64-bit staging).
 VECTOR_LAYOUT_GM_L1_DTYPES = ("i8", "f16", "bf16", "i64", "u64", "f64")
 VECTOR_LAYOUT_GM_L1_CASE_IDS = {f"vector-layout-gm-l1-{dtype}" for dtype in VECTOR_LAYOUT_GM_L1_DTYPES}
+GM_L1_BOOL_HIF8_CASES = (
+    "vector-bool",
+    "vector-hif8",
+    "nd2nz-bool",
+    "nd2nz-hif8",
+    "nd2nz-i8",
+)
+GM_L1_BOOL_HIF8_CASE_IDS = {f"gm-l1-bool-hif8-{case}" for case in GM_L1_BOOL_HIF8_CASES}
+HOST_DLPACK_GM_L1_CASES = {
+    f"host-dlpack-{layout.lower()}-gm-l1": layout
+    for layout in ("zN", "nZ")
+}
 
 EVG_OPS = (
     "add",
@@ -374,6 +400,11 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             ]],
         )
 
+    yield (
+        "atomic-max-min-writeback",
+        [["end_to_end/atomic_writeback.py", *dev]],
+    )
+
     # --- basic_matmul_bias: a required 1 x N bias operand, loaded GM -> L1 ->
     # biasbuf through the flat VectorLayout routes and consumed by the first MMAD of
     # every block. Operand dtypes follow basic_matmul.py, and the output follows
@@ -406,11 +437,70 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             ]],
         )
 
+    # --- basic_matmul_gemv: m = 1, and the lhs layout alone selects the mode.
+    # A rank-1 VectorLayout lhs keeps A flat through GM -> L1 -> L0A and reaches
+    # the gemv MMAD; B stays nZ and C stays L0Clayout, as in the matrix form.
+    # The default shape walks every L1 N tile and sixteen L0 K tiles, so the
+    # dtype sweep runs on it rather than on a single tile. The tail cases pin
+    # the K remainder inside one L0 tile (100 = 64 + 36) and an N remainder
+    # across the block grid (300 = 128 + 128 + 44).
+    for dtype in ("f32", "f16", "i8", "f8e5m2"):
+        yield (
+            f"mmad-gemv-{dtype}",
+            [[
+                "tla/kernel/matmul/basic_mmad/basic_matmul_gemv.py",
+                "--dtype-ab", dtype, *dev,
+            ]],
+        )
+    yield (
+        "mmad-gemv-tail-k",
+        [[
+            "tla/kernel/matmul/basic_mmad/basic_matmul_gemv.py",
+            "--n", "128", "--k", "100", "--dtype-ab", "f32", "--block-num", "1", *dev,
+        ]],
+    )
+    yield (
+        "mmad-gemv-tail-n",
+        [[
+            "tla/kernel/matmul/basic_mmad/basic_matmul_gemv.py",
+            "--n", "300", "--k", "64", "--dtype-ab", "f16", *dev,
+        ]],
+    )
+
     yield ("mmad-ptr", [["tla/kernel/matmul/basic_mmad/basic_mmad_ptr.py", *dev]])
 
     # basic_mmad_l0c2l1: cube-only E=(A@B)@D, L0C->L1 (fixpipe) staging reused
     # as the second mmad's LHS; single static tile (M=50/N=60/K=64).
     yield ("mmad-l0c2l1", [["tla/kernel/matmul/basic_mmad/basic_matmul_l0c2l1.py", *dev]])
+
+    # --- basic_mmad L0C->L1 fixpipe quant, with and without relu ---
+    # Same fixpipe route as the per-tensor / per-channel cases below, except the
+    # quantized tile lands in L1 and becomes the second mmad's LHS instead of
+    # leaving for GM. `--src-dtype` picks the accumulator the same way
+    # `--dtype-ab` does above (f32 -> f32, i8 -> i32), and the example itself
+    # fixes the shape and the zN store, so only dtype pair and relu vary.
+    for src, dst in L0C2L1_FIXPIPE_QUANT_SRC_DST:
+        for relu in (0, 1):
+            yield (
+                f"mmad-l0c2l1-fixpipe-per-tensor-{src}-{dst}-relu{relu}",
+                [[
+                    "tla/kernel/matmul/basic_mmad/basic_matmul_l0c2l1_fixpipe_per_tensor.py",
+                    "--src-dtype", src, "--quant-dtype", dst,
+                    "--relu-enable", str(relu),
+                    *dev,
+                ]],
+            )
+    for src, dst in L0C2L1_FIXPIPE_QUANT_SRC_DST:
+        for relu in (0, 1):
+            yield (
+                f"mmad-l0c2l1-fixpipe-per-channel-{src}-{dst}-relu{relu}",
+                [[
+                    "tla/kernel/matmul/basic_mmad/basic_matmul_l0c2l1_fixpipe_per_channel.py",
+                    "--src-dtype", src, "--quant-dtype", dst,
+                    "--relu-enable", str(relu),
+                    *dev,
+                ]],
+            )
 
     # --- basic_mmad fixpipe per-tensor quant, with and without relu ---
     # `--dtype-ab` picks the accumulator (f32 -> f32, i8 -> i32) and with it the
@@ -472,6 +562,12 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                     *([mode] if mode else []),
                 ]],
             )
+
+    # --- data_sync_barrier: official pattern (bypass GM writes + dsb + flag poll) ---
+    yield (
+        "sync-data-sync-barrier",
+        [["end_to_end/data_sync_barrier.py", *dev]],
+    )
 
     # --- extern_op: user-provided Ascend C functions called from TLA kernels ---
     yield (
@@ -574,6 +670,22 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         [["end_to_end/hifp8_gm_ub_copy.py", *dev]],
     )
 
+    # GM→UB CopyPadParams (right_padding=1) then aligned UB→GM writeback.
+    yield (
+        "gm-ub-copy-pad",
+        [["end_to_end/gm_ub_copy_pad.py", *dev]],
+    )
+
+    # --- scalar dcache maintenance: dcci_cacheline / dcci_cachelines / dci ---
+    # Each case dirties one GM word from the kernel and the host reads it back,
+    # so the dcci cases must publish it and the dci case must discard it. One
+    # core, one buffer per case.
+    yield (
+        "dcache-maintenance",
+        [["dsl_tutorials/dcache_maintenance/dcache_maintenance.py", *dev]],
+    )
+
+
     # --- basic_mixed ---
     # One test on purpose: the second invocation exercises cache reuse and is
     # only meaningful straight after the one that populates the cache.
@@ -610,6 +722,12 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         "host-make-tensor-torch-vadd",
         [["end_to_end/host_make_tensor_torch_vadd.py", *dev, "--block-num", "1"]],
     )
+    # Host from_dlpack NZFamily (4-leaf / 13-slot ABI) → GM zN/nZ → L1 copy.
+    for case_id, layout in HOST_DLPACK_GM_L1_CASES.items():
+        yield (
+            case_id,
+            [["end_to_end/host_dlpack_zn_gm_to_l1_copy.py", *dev, "--layout", layout]],
+        )
     # tla.full with a runtime scalar (kernel argument captured into the vector
     # helper, lowered to ave.hir.broadcast / vdups.z). Kernel is not
     # block-partitioned, so launch a single vector core.
@@ -744,6 +862,11 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         [["dsl_tutorials/vector_simt_ops/multi_ops_simt/multi_ops_simt.py", *dev]],
     )
 
+    yield "dcache-prefetch", [["end_to_end/dcache_prefetch.py", *dev]]
+    yield (
+        "simt-warp-activemask",
+        [["end_to_end/warp_activemask.py", *dev]],
+    )
     yield (
         "simt-warp-lane-masks",
         [["end_to_end/warp_lane_masks.py", *dev]],
@@ -882,7 +1005,7 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         "vector-compare-mask",
         [[
             "dsl_tutorials/vector_simd_ops/compare_mask.py", "--batch-run", *COMPARE_MASK_OPS,
-            "--shape", "400", "--batch-size", "4", *dev,
+            "--all-dtypes", "--shape", "512", "--batch-size", "4", *dev,
         ]],
     )
     yield (
@@ -947,6 +1070,14 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             for part in ("low", "high")
             for signed_unpack in (False, True)
         ],
+    )
+    # UnPack 32-bit sources -> 64-bit destinations: the composed (no native
+    # vunpack) sign/zero-extension route, both register halves; the script
+    # also regresses the 8/16-bit native paths. Battery-only script under
+    # python/tla_dsl/tests/end_to_end/.
+    yield (
+        "unpack",
+        [["end_to_end/unpack_op.py", *dev]],
     )
     yield (
         "vector-mask-select-op",
@@ -1106,6 +1237,23 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
             for shift_op in ("shift_left", "shift_right", "shift_lefts", "shift_rights")
         ],
     )
+    yield (
+        "vector-shift-vv64-pipeline",
+        [
+            [
+                "dsl_tutorials/vector_simd_ops/shift_op.py",
+                op,
+                "--dtype",
+                dtype,
+                "--shape",
+                str(elements),
+                *dev,
+            ]
+            for op in ("shift_left", "shift_right")
+            for dtype in ("i64", "u64")
+            for elements in (3072, 4096, 8192, 11264, 32769)
+        ],
+    )
     # AscendC LoadAlign<T, MaskDist> address typing (copy-capable: i8/i16/i32).
     for mask_dt in ("i8", "i16", "i32"):
         yield (
@@ -1134,9 +1282,31 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
                 ]
             ],
         )
+    # Align UPDATE e2e: one shape (400). ``add`` covers arith dtypes;
+    # ``copy`` covers f8e4/e5/e8m0/fp4x2 (move-only; host uint8 + element_type).
+    # b64/hif8: no GM↔UB route — frontend UT only.
     yield (
         "vector-load-store-update",
-        [["dsl_tutorials/vector_simd_ops/load_store_update.py", "add", "--shape", "400", *dev]],
+        [[
+            "dsl_tutorials/vector_simd_ops/load_store_update.py",
+            "add",
+            "--all-dtypes",
+            "--shape",
+            "400",
+            *dev,
+        ]],
+    )
+    # shape=400 exercises the b8 VL tail (144) via update_mask, including e8m0.
+    yield (
+        "vector-load-store-update-copy-f8",
+        [[
+            "dsl_tutorials/vector_simd_ops/load_store_update.py",
+            "copy",
+            "--all-dtypes",
+            "--shape",
+            "400",
+            *dev,
+        ]],
     )
     yield (
         "vector-load-store-block-update",
@@ -1353,6 +1523,18 @@ def _cases(device: int) -> Iterator[tuple[str, list[list[str]]]]:
         [["end_to_end/img2col_k_window_conv.py", *dev, "--control-shift"]],
     )
 
+    # --- end_to_end: GM↔UB bool + GM→L1 bool/hif8 (needs L1 debug readback) ---
+    yield (
+        "gm-ub-bool-copy",
+        [["end_to_end/gm_ub_bool_copy.py", *dev]],
+    )
+    for case in GM_L1_BOOL_HIF8_CASES:
+        yield (
+            f"gm-l1-bool-hif8-{case}",
+            [["end_to_end/gm_l1_bool_hif8_copy.py", *dev, "--case", case]],
+        )
+
+
     # --- print_tensor, local AIC storage ---
     # Base cases sweep dtypes; repeated entries verify in-process cache reuse.
     local_common = [
@@ -1412,6 +1594,8 @@ def test_case(case_id: str, device: int) -> None:
         case_id == L1_PRINT_CASE_ID
         or case_id in L1_FILL_CASE_IDS
         or case_id in VECTOR_LAYOUT_GM_L1_CASE_IDS
+        or case_id in GM_L1_BOOL_HIF8_CASE_IDS
+        or case_id in HOST_DLPACK_GM_L1_CASES
     ):
         from catlass.base_dsl.runtime import ascend_debug_fifo
 

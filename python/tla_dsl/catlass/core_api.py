@@ -6,6 +6,7 @@ import builtins as _builtins
 import inspect
 import math
 import os
+import struct
 import sys
 
 import numpy as np
@@ -86,8 +87,8 @@ _CAST_SAME_TYPE_FLOAT_DTYPES = frozenset({"f16", "bf16", "f32"})
 # and valid bit counts; element widths may differ. HiF8 and FP4x2 values retain their
 # formats in TLA IR and use byte registers in native lowering.
 #
-# E8M0 registers support DINTLV_B8 transport and normal stores only; register
-# bitcasts remain unsupported. Logical FP4 types are also
+# E8M0 registers support DINTLV_B8 / INTLV_B8 transport and normal stores;
+# register bitcasts remain unsupported. Logical FP4 types are also
 # excluded: their 4-bit values differ from byte registers holding two values
 # per lane.
 #
@@ -132,6 +133,8 @@ from .base_dsl.typing import (
     UInt32,
     UInt64,
     as_numeric,
+    _float_literal_attr,
+    _emit_integer_literal,
 )
 from .base_dsl.typing import Pointer, TypedPointer
 from .tla.tensor import normalize_tile_view_coord
@@ -171,16 +174,20 @@ from .types import (
 from .params import (
     AtomicMode,
     CachePolicy,
+    DcciTarget,
     RegPart,
     RegSlot,
     HF32Mode,
     ComputeOrder,
     CopyL0C2DstParams,
+    CopyPadParams,
     CopyParams,
+    CopyUbToGmParams,
     HistogramsBinType,
     HistogramsParams,
     HistogramsType,
     L0C2UBMode,
+    DsbTarget,
     MemType,
     QuantMode,
     ReduceMode,
@@ -198,7 +205,47 @@ _PIPE_VALUES = {
     "fix",
 }
 _MISSING = object()
-_SUPPORTED_COMPARE_ELEMENT_TYPES = frozenset({"f16", "f32", "i32", "u32", "u16", "u8"})
+_SUPPORTED_COMPARE_ELEMENT_TYPES = frozenset(
+    {
+        "f16",
+        "bf16",
+        "f32",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+    }
+)
+# AscendC Select: bool plus the 8/16/32/64-bit integers and half/float/bf16.
+# AVE vectors are signless, so unsigned arms select whole bytes like their
+# signed twins; Bool rides the b8 carrier. The low-precision formats below
+# select whole byte/pair carriers too: f8e4m3fn/f8e5m2 use the native f8 vsel,
+# hif8 and the packed FP4 pair carriers ride the i8 path.
+_SUPPORTED_SELECT_ELEMENT_TYPES = frozenset(
+    {
+        "i1",
+        "i8",
+        "u8",
+        "i16",
+        "u16",
+        "i32",
+        "u32",
+        "f16",
+        "bf16",
+        "f32",
+        "i64",
+        "u64",
+        "f8e4m3fn",
+        "f8e5m2",
+        "hif8",
+        "f4e2m1x2",
+        "f4e1m2x2",
+    }
+)
 _MASK_CMP_MODES = ("lt", "le", "gt", "ge", "eq", "ne")
 # The two packed 4-bit cube float formats. Same width, different exponent /
 # mantissa split, and the two matmul operands may use different ones.
@@ -395,6 +442,17 @@ def _check_compare_element_type_supported(op_name: str, element_type: str) -> No
     _op_error(
         op_name,
         f"unsupported compare element type {element_type}; "
+        f"supported element types are {supported}",
+    )
+
+
+def _check_select_element_type_supported(op_name: str, element_type: str) -> None:
+    if element_type in _SUPPORTED_SELECT_ELEMENT_TYPES:
+        return
+    supported = ", ".join(sorted(_SUPPORTED_SELECT_ELEMENT_TYPES))
+    _op_error(
+        op_name,
+        f"unsupported select element type {element_type}; "
         f"supported element types are {supported}",
     )
 
@@ -1099,7 +1157,8 @@ class VectorSSA(_RegisterSSA):
             rounding. Use Float32 for arithmetic or UInt8 bitcast to inspect
             encoded bits. CAST_HYBRID is only supported for Float32 -> HiFloat8;
             it follows CANN's native hybrid rounding and does not guarantee the
-            nearest representable value. The default is CAST_ROUND.
+            nearest representable value. Specify CAST_ROUND or CAST_HYBRID
+            explicitly for Float32 -> HiFloat8.
 
             Float4E2M1x2 and Float4E1M2x2 store two FP4 values per byte,
             low nibble first. Tensor shapes and offsets count packed pairs.
@@ -1145,9 +1204,10 @@ class VectorSSA(_RegisterSSA):
             - `params.round_mode` accepts `CAST_ROUND` / `CAST_FLOOR` /
               `CAST_CEIL` / `CAST_TRUNC` / `CAST_RINT` / `CAST_ODD` /
               `CAST_NONE`. `CAST_HYBRID` is supported only for Float32 ->
-              HiFloat8. `CAST_NONE` must be passed explicitly: lossless casts
-              drop the round operand; lossy casts lower as `CAST_RINT`
-              (ties to even).
+              HiFloat8. `CastParams` defaults to `CAST_NONE`. Lossless casts
+              omit the rounding operand. On supported routes that consume a
+              rounding mode, including same-type float casts, `CAST_NONE`
+              uses `CAST_RINT` (ties to even).
 
             Example:
             ```python
@@ -1164,11 +1224,10 @@ class VectorSSA(_RegisterSSA):
                     sat_mode=tla.params.SatMode.UNKNOWN,
                     round_mode=tla.params.RoundMode.CAST_TRUNC,
                 ))
-                # CAST_NONE must be explicit; lossy paths behave as CAST_RINT.
+                # The default CAST_NONE uses CAST_RINT on this conversion.
                 as_i32 = as_f32.to(tla.Int32, tla.params.CastParams(
                     reg_slot=tla.params.RegSlot.ZERO,
                     sat_mode=tla.params.SatMode.NOSAT,
-                    round_mode=tla.params.RoundMode.CAST_NONE,
                 ))
             ```
         """
@@ -1811,6 +1870,128 @@ def _as_i64_value(value: Any, *, loc: mlir_ir.Location | None = None) -> mlir_ir
     raise TlaLoweringError(f"Expected i64-like operand, got {type(value).__name__}")
 
 
+def _is_bool_like_pad_operand(value: Any) -> bool:
+    """True for Python bool, ``tla.Bool``, or ``i1`` SSA (not integer 0/1)."""
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, Bool) or (
+        isinstance(value, Numeric) and type(value).dtype.lower() in ("i1", "bool")
+    ):
+        return True
+    resolved = _resolve_bound_value(value)
+    if isinstance(resolved, bool):
+        return True
+    if isinstance(resolved, Bool) or (
+        isinstance(resolved, Numeric) and type(resolved).dtype.lower() in ("i1", "bool")
+    ):
+        return True
+    if isinstance(resolved, mlir_ir.Value) and mlir_ir.IntegerType.isinstance(
+        resolved.type
+    ):
+        return mlir_ir.IntegerType(resolved.type).width == 1
+    return False
+
+
+def _as_i64_copy_pad_operand(
+    value: Any, *, what: str, loc: mlir_ir.Location | None = None
+) -> mlir_ir.Value:
+    """Widen CopyPadParams left/right/value SSA to signless ``i64``.
+
+    Rejects ``bool`` / ``tla.Bool`` / ``i1``. Unsigned integers go uiN→iN via
+    ``builtin.unrealized_conversion_cast`` then ``arith.extui`` (or identity at
+    width 64), not the signed ``arith.extsi`` path used by ``_as_i64_value``.
+    """
+    if _is_bool_like_pad_operand(value):
+        raise TypeError(
+            f"CopyPadParams.{what} must not be bool/tla.Bool/i1; "
+            "use a non-boolean integer (e.g. Int32/Int64)"
+        )
+    resolved = _resolve_bound_value(value)
+    i64_type = mlir_ir.IntegerType.get_signless(64)
+    if isinstance(resolved, Numeric):
+        dtype = type(resolved).dtype.lower()
+        host = resolved.value
+        # Whole-number float hosts on Int*/UInt* (e.g. Int32(9.0), UInt32(1.0))
+        # must lower as signless i64 constants — same as int hosts — so static
+        # checks and IR emission stay aligned and uiN constants are not emitted.
+        if isinstance(host, float) and not isinstance(host, bool):
+            if (dtype.startswith("i") or dtype.startswith("u")) and dtype[1:].isdigit():
+                if not host.is_integer():
+                    raise TypeError(
+                        f"CopyPadParams.{what} integer Numeric host must be a "
+                        f"whole number (got {host!r} on {type(resolved).__name__})"
+                    )
+                host = int(host)
+        if isinstance(host, (bool, int)):
+            if isinstance(host, bool) or dtype in ("i1", "bool"):
+                raise TypeError(
+                    f"CopyPadParams.{what} must not be bool/tla.Bool/i1; "
+                    "use a non-boolean integer (e.g. Int32/Int64)"
+                )
+            if dtype.startswith("u") and dtype[1:].isdigit():
+                width = int(dtype[1:])
+                return _const_i64(int(host) & ((1 << width) - 1), loc=loc)
+            if dtype.startswith("i") and dtype[1:].isdigit():
+                return _const_i64(int(host), loc=loc)
+            raise TypeError(
+                f"CopyPadParams.{what} expected integer Numeric, "
+                f"got {type(resolved).__name__}"
+            )
+        resolved = resolved.ir_value(loc=loc)
+    if isinstance(resolved, mlir_ir.Value):
+        if isinstance(resolved.type, mlir_ir.IndexType):
+            return mlir_ir.Operation.create(
+                "arith.index_cast",
+                operands=[resolved],
+                results=[i64_type],
+                loc=loc,
+            ).results[0]
+        if mlir_ir.IntegerType.isinstance(resolved.type):
+            int_type = mlir_ir.IntegerType(resolved.type)
+            if int_type.width == 1:
+                raise TypeError(
+                    f"CopyPadParams.{what} must not be bool/tla.Bool/i1; "
+                    "use a non-boolean integer (e.g. Int32/Int64)"
+                )
+            if int_type.is_unsigned:
+                # arith.* only accepts signless ints; uiN → iN via
+                # unrealized_conversion_cast (same pattern as debug print).
+                signless_n = mlir_ir.IntegerType.get_signless(int_type.width)
+                as_signless = mlir_ir.Operation.create(
+                    "builtin.unrealized_conversion_cast",
+                    operands=[resolved],
+                    results=[signless_n],
+                    loc=loc,
+                ).results[0]
+                if int_type.width == 64:
+                    return as_signless
+                if int_type.width < 64:
+                    return mlir_ir.Operation.create(
+                        "arith.extui",
+                        operands=[as_signless],
+                        results=[i64_type],
+                        loc=loc,
+                    ).results[0]
+                raise TypeError(
+                    f"CopyPadParams.{what} unsigned width {int_type.width} "
+                    "cannot widen to i64"
+                )
+            if int_type.width == 64:
+                return resolved
+            cast_name = "arith.extsi" if int_type.width < 64 else "arith.trunci"
+            return mlir_ir.Operation.create(
+                cast_name,
+                operands=[resolved],
+                results=[i64_type],
+                loc=loc,
+            ).results[0]
+    if isinstance(resolved, int) and not isinstance(resolved, bool):
+        return _const_i64(resolved, loc=loc)
+    raise TypeError(
+        f"CopyPadParams.{what} expected i64-like integer, got {type(value).__name__}"
+    )
+
+
 def _coerce_inttoptr_address(
     addr_token: str,
     value: int | mlir_ir.Value | Numeric,
@@ -2051,7 +2232,10 @@ def _const_int_value(value: Any) -> int | None:
         return resolved
     if isinstance(resolved, Numeric) and isinstance(resolved.value, (bool, int)):
         dtype = type(resolved).dtype.lower()
-        if dtype.startswith("i"):
+        # Shared helper: signed Int* only. CopyPad unsigned / whole-float hosts
+        # use ``_const_pad_count_value`` so arange and other callers keep their
+        # pre-existing acceptance rules (do not widen this helper for Pad).
+        if dtype.startswith("i") and dtype[1:].isdigit():
             return int(resolved.value)
     if isinstance(resolved, mlir_ir.Value):
         owner = getattr(resolved, "owner", None)
@@ -2062,6 +2246,53 @@ def _const_int_value(value: Any) -> int | None:
                 if isinstance(attr, mlir_ir.IntegerAttr):
                     return int(attr.value)
     return None
+
+
+def _pad_count_host_int(value: Any) -> int | None:
+    """Host integer for CopyPad left/right counts, or None if not static.
+
+    Accepts Python ``int``, signed/unsigned integer ``Numeric`` with an ``int``
+    host, and integer ``Numeric`` whose host is a whole-number ``float``
+    (``Int32(9.0)`` → ``9``). Fractional floats raise ``TypeError``. Bool /
+    ``tla.Bool`` return ``None`` (caller rejects separately).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    resolved = _resolve_bound_value(value)
+    if isinstance(resolved, bool):
+        return None
+    if isinstance(resolved, int):
+        return resolved
+    if isinstance(resolved, Numeric):
+        dtype = type(resolved).dtype.lower()
+        if not (
+            (dtype.startswith("i") or dtype.startswith("u")) and dtype[1:].isdigit()
+        ):
+            return None
+        host = resolved.value
+        if isinstance(host, bool):
+            return None
+        if isinstance(host, float):
+            if not host.is_integer():
+                raise TypeError(
+                    f"CopyPadParams pad count Numeric host must be a whole number "
+                    f"(got {host!r} on {type(resolved).__name__})"
+                )
+            host = int(host)
+        if not isinstance(host, int):
+            return None
+        if dtype.startswith("u"):
+            width = int(dtype[1:])
+            return int(host) & ((1 << width) - 1)
+        return int(host)
+    return None
+
+
+def _const_pad_count_value(value: Any) -> int | None:
+    """Static pad-count extraction for CopyPad capacity / 32B checks only."""
+    return _pad_count_host_int(value)
 
 
 def _vector_ssa_type_for_mlir_value(
@@ -2178,20 +2409,32 @@ def _require_mask_matches_vector(
     _require_mask_matches_element_type(op_name, mask_value, vector_desc.element_type)
 
 
+def _static_lane_count_or_none(tree: Any) -> int | None:
+    lanes = 1
+    for dim in _flatten_tla_tuple(tree):
+        if dim is None:
+            return None
+        if isinstance(dim, bool) or not isinstance(dim, int):
+            raise TlaLoweringError(
+                "VectorSSA load requires static integer or dynamic shape leaves"
+            )
+        lanes *= dim
+    return lanes
+
+
 def _vector_ssa_type_from_tensor_descriptor(
     tensor_type: TlaTensorTypeDescriptor,
 ) -> TlaVectorSSATypeDescriptor:
-    valid_lanes = 1
-    for dim in _flatten_tla_tuple(tensor_type.origin_shape):
-        if dim is None:
-            valid_lanes = None
-            break
-        if isinstance(dim, bool) or not isinstance(dim, int):
-            raise TlaLoweringError(
-                "VectorSSA load requires static integer or dynamic origin_shape leaves"
-            )
-        valid_lanes *= dim
-    return TlaVectorSSATypeDescriptor(valid_lanes, tensor_type.element_type)
+    # The register width comes from the statically folded origin window. A tile_view
+    # whose origin is dynamic keeps the width dynamic: a plain dynamic view does not
+    # know how many lanes are valid, so the mask on ``load`` carries that information
+    # and inferring the width from the physical shape would read past the view. Fixed
+    # width slices into a static parent get a static origin from
+    # :func:`_crop_origin_shape_type_tree` instead.
+    return TlaVectorSSATypeDescriptor(
+        _static_lane_count_or_none(tensor_type.origin_shape),
+        tensor_type.element_type,
+    )
 
 
 def _register_tla_tensor_type(
@@ -2359,7 +2602,9 @@ def _materialize_dynamic_gm_root_tensor_descriptor(
     if not valid_linear_metadata and not valid_nz_family_metadata:
         raise TlaLoweringError(
             "dynamic GM prologue supports rank-1/rank-2 linear metadata or "
-            "four-leaf NZFamily shape/stride with two-leaf origin/coord; "
+            "four-leaf NZFamily shape/stride with two-leaf origin/coord "
+            "(schema v4 packs at most 4 physical leaves + 2 origin into "
+            "13 launch slots); "
             f"got layout={layout_tag}, ranks shape={rank}, "
             f"stride={len(stride_leaves)}, origin={len(origin_leaves)}, "
             f"coord={len(coord_leaves)}"
@@ -3375,6 +3620,26 @@ def _remap_tensor_like_prefix_fields_for_layout_trees(
     return None
 
 
+_RANK1_MISS = object()
+
+
+def _flat_rank1_leaf_from_tree(tree: Any) -> Any:
+    """Return a rank-1 tree's single ``int``/``None`` leaf, else ``_RANK1_MISS``.
+
+    ``tla.tile_view`` on a rank-1 ``VectorLayout`` tensor keeps a one-leaf tree
+    (``shape=(N,)``, ``coord=(offset,)``), which :func:`_flat_dim_pair_from_tree`
+    correctly reports as unusable. Callers that only do leaf-wise arithmetic on
+    rank-1 trees use this helper instead; the miss stays distinct from a dynamic
+    leaf (``None``) so a dynamic one-d leaf is never mistaken for a rank mismatch.
+    """
+    if not isinstance(tree, tuple) or len(tree) != 1:
+        return _RANK1_MISS
+    leaf = tree[0]
+    if leaf is None or isinstance(leaf, int):
+        return leaf
+    return _RANK1_MISS
+
+
 def _flat_dim_pair_from_tree(tree: Any) -> tuple[int | None, int | None]:
     if not isinstance(tree, tuple) or len(tree) != 2:
         return (None, None)
@@ -3399,7 +3664,11 @@ def _remap_tensor_like_trees_for_layout(
     )
 
 
-def _flat_pair_sum_type_tree(a: Any, b: Any) -> tuple[int | None, int | None] | None:
+def _flat_pair_sum_type_tree(a: Any, b: Any) -> Any | None:
+    a_leaf = _flat_rank1_leaf_from_tree(a)
+    b_leaf = _flat_rank1_leaf_from_tree(b)
+    if a_leaf is not _RANK1_MISS and b_leaf is not _RANK1_MISS:
+        return (None if a_leaf is None or b_leaf is None else a_leaf + b_leaf,)
     a_pair = _flat_dim_pair_from_tree(a)
     b_pair = _flat_dim_pair_from_tree(b)
     if a_pair == (None, None) and a != (None, None):
@@ -3418,9 +3687,52 @@ def _tree_contains_dynamic(tree: Any) -> bool:
     return tree is None
 
 
+def _crop_origin_shape_leaf(
+    dim: int, origin: int | None, shape: int | None, coord: int | None
+) -> int | None:
+    if origin is None or shape is None or coord is None:
+        return None
+    if coord < 0:
+        raise TlaLoweringError(
+            f"tile_view: element offset along dimension {dim} is negative ({coord}); "
+            "parent origin_shape requires non-negative offsets"
+        )
+    if coord >= origin:
+        raise TlaLoweringError(
+            f"tile_view: element offset along dimension {dim} ({coord}) is out of range "
+            "for parent origin_shape; each offset must be strictly less than the "
+            "corresponding logical extent"
+        )
+    return shape if origin - coord >= shape else origin - coord
+
+
 def _crop_origin_shape_type_tree(
     parent_origin: Any, tile_shape: Any, tile_coord: Any
 ) -> Any | None:
+    origin_leaf = _flat_rank1_leaf_from_tree(parent_origin)
+    shape_leaf = _flat_rank1_leaf_from_tree(tile_shape)
+    coord_leaf = _flat_rank1_leaf_from_tree(tile_coord)
+    if (
+        origin_leaf is not _RANK1_MISS
+        and shape_leaf is not _RANK1_MISS
+        and coord_leaf is not _RANK1_MISS
+    ):
+        if coord_leaf is None and origin_leaf is not None and shape_leaf is not None:
+            # A slice whose offset is a loop induction variable: ``min(shape, origin -
+            # coord)`` cannot be folded without the offset. Only keep the tile width
+            # static when every legal offset still yields a full tile -- the parent
+            # extent is a whole multiple of the tile width, so a tail block never
+            # exists. Otherwise the valid length is unknown and must stay dynamic;
+            # pinning it to ``shape`` over-reports a short tail block (a 160-element
+            # run sliced by 128 would claim 128 valid lanes where only 32 remain).
+            if (
+                shape_leaf > 0
+                and origin_leaf >= shape_leaf
+                and origin_leaf % shape_leaf == 0
+            ):
+                return (shape_leaf,)
+            return (None,)
+        return (_crop_origin_shape_leaf(1, origin_leaf, shape_leaf, coord_leaf),)
     origin_pair = _flat_dim_pair_from_tree(parent_origin)
     shape_pair = _flat_dim_pair_from_tree(tile_shape)
     coord_pair = _flat_dim_pair_from_tree(tile_coord)
@@ -3434,21 +3746,7 @@ def _crop_origin_shape_type_tree(
     for dim, (origin, shape, coord) in enumerate(
         zip(origin_pair, shape_pair, coord_pair, strict=True), start=1
     ):
-        if origin is None or shape is None or coord is None:
-            out.append(None)
-        else:
-            if coord < 0:
-                raise TlaLoweringError(
-                    f"tile_view: element offset along dimension {dim} is negative ({coord}); "
-                    "parent origin_shape requires non-negative offsets"
-                )
-            if coord >= origin:
-                raise TlaLoweringError(
-                    f"tile_view: element offset along dimension {dim} ({coord}) is out of range "
-                    "for parent origin_shape; each offset must be strictly less than the "
-                    "corresponding logical extent"
-                )
-            out.append(shape if origin - coord >= shape else origin - coord)
+        out.append(_crop_origin_shape_leaf(dim, origin, shape, coord))
     return (out[0], out[1])
 
 
@@ -5615,9 +5913,10 @@ def make_tensor(
         Constraints:
         - Kernel path: must be inside `@tla.kernel`; pointer, layout, and coord
           must match the target address space and dtype.
-        - Host path: no frontend; Host ``make_ptr`` / ``make_layout`` only;
-          trusts layout metadata (prefer ``from_dlpack`` when you need those
-          checks). ``loc`` is ignored.
+        - Host path: no frontend; Host ``make_ptr`` / ``make_layout`` only.
+          Nested NZFamily 2x2 trees must satisfy layout traits and have a flat
+          logical origin `(M, N)`. Trait-valid partial views are allowed. For a
+          full-tile remap and buffer validation, use ``from_dlpack``. ``loc`` is ignored.
         - `coord` defaults to a zero coord matching the layout's rank (rank-2 ->
           `make_coord(0, 0)`, rank-1 -> `make_coord(0)`). Element type and address
           space come from `ptr`; layout tag, shape, stride, and origin
@@ -5630,9 +5929,9 @@ def make_tensor(
         - Kernel-local batched views prepend a scalar batch mode to the physical
           shape and stride, with flat `(B, M, N)` origin and coordinates.
           The batch stride is in elements and may describe disjoint interleaved
-          NZ matrices. Batched views currently support GM-to-L1 `copy` and
-          `get_tile`; host argument binding and other tensor operations retain
-          their existing rank limits.
+          NZ matrices. In the kernel, batched views support GM-to-L1 `copy` and
+          `get_tile`. For Host `from_dlpack` bindings of NZ layouts, the logical
+          origin is two-dimensional `(M, N)`.
         - A full Kernel compile requires `ptr` to carry backing storage; an on-chip
           pointer from `allocate` (optionally via `recast_ptr`) is the supported
           form for runnable kernels.
@@ -5939,7 +6238,10 @@ def make_tensor_like(
     # Infer layout if not provided
     if layoutTag is None:
         if addr == "l0a":
-            layout = "zN"
+            # A flat VectorLayout source (the gemv A row) keeps that form on
+            # L0A, matching the l1 inference above; every other source is the
+            # fractal zN operand mmad reads.
+            layout = "VectorLayout" if like_type.layout_tag == "VectorLayout" else "zN"
         elif addr == "l0b":
             layout = "nZ"
         elif addr == "l0c":
@@ -6100,6 +6402,7 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
         "i8",
         # AscendC bool is b8; TileCopyTla accepts bool (SizeOfBits==8).
         "i1",
+        "hif8",
         "i16",
         "i32",
         "u8",
@@ -6107,7 +6410,6 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
         "u32",
         "f8e4m3fn",
         "f8e5m2",
-        "hif8",
         "f4e2m1",
         "f4e1m2",
     ),
@@ -6117,6 +6419,7 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
         "bf16",
         "i8",
         "i1",
+        "hif8",
         "i16",
         "i32",
         "u8",
@@ -6124,7 +6427,6 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
         "u32",
         "f8e4m3fn",
         "f8e5m2",
-        "hif8",
         "f4e2m1",
         "f4e1m2",
     ),
@@ -6142,6 +6444,8 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
         "u8",
         "u16",
         "u32",
+        "i1",
+        "hif8",
         "f8e4m3fn",
         "f8e5m2",
         "f4e2m1",
@@ -6159,6 +6463,8 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
         "u8",
         "u16",
         "u32",
+        "i1",
+        "hif8",
         "f8e4m3fn",
         "f8e5m2",
         "f4e2m1",
@@ -6187,12 +6493,17 @@ _SUPPORTED_CUBE_COPY_ROUTES = {
         "u32",
         "u64",
         "f64",
+        "f8e4m3fn",
+        "f8e5m2",
+        "hif8",
     ),
     ("l1", "VectorLayout", "biasbuf", "VectorLayout"): ("f32", "i32"),
 
     # L1->L0 — AscendC LoadData 2dv2 accepts u32 but not u16 on dav-3510.
     ("l1", "zN", "l0a", "zN"): ("f32", "f16", "bf16", "i8", "u32", "f8e4m3fn", "f8e5m2", "hif8"),
     ("l1", "nZ", "l0a", "zN"): ("f32", "f16", "bf16", "i8", "u32", "f8e4m3fn", "f8e5m2", "hif8"),
+    # gemv A operand: a flat L1 row moved into a flat L0A row.
+    ("l1", "VectorLayout", "l0a", "VectorLayout"): ("f32", "f16", "bf16", "i8", "f8e4m3fn", "f8e5m2", "hif8"),
     ("l1", "zN", "l0b", "nZ"): ("f32", "f16", "bf16", "i8", "u32", "f8e4m3fn", "f8e5m2", "hif8"),
     ("l1", "nZ", "l0b", "nZ"): ("f32", "f16", "bf16", "i8", "u32", "f8e4m3fn", "f8e5m2", "hif8"),
 }
@@ -6233,7 +6544,22 @@ _SUPPORTED_VECTOR_COPY_ROUTES = {
         "f4e2m1x2",
         "f4e1m2x2",
     ),
-    ("gm", "VectorLayout", "ub", "VectorLayout"): ("i64", "u64", "f64"),
+    # Flat VectorLayout GM→UB: b64 + bool (two-arg) + ExtParams-safe scalars.
+    ("gm", "VectorLayout", "ub", "VectorLayout"): (
+        "i64",
+        "u64",
+        "f64",
+        "i1",
+        "f32",
+        "f16",
+        "bf16",
+        "i32",
+        "i16",
+        "i8",
+        "u32",
+        "u16",
+        "u8",
+    ),
     ("ub", "RowMajor", "gm", "RowMajor"): (
         "i64",
         "u64",
@@ -6354,23 +6680,76 @@ _SUPPORTED_CUBE_FIXPIPE_ROUTES = {
     ("ub", "RowMajor", "nosplit", "NO_QUANT", True): {"f32": ("f32", "f16", "bf16"), "i32": ("i32",)},
     ("ub", "ColumnMajor", "nosplit", "NO_QUANT", True): {"f32": ("f32", "f16", "bf16"), "i32": ("i32",)},
 
-    ("gm", "RowMajor", "-", "PER_TENSOR", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
-    ("gm", "RowMajor", "-", "PER_TENSOR", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
-    ("gm", "ColumnMajor", "-", "PER_TENSOR", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
-    ("gm", "ColumnMajor", "-", "PER_TENSOR", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
-    ("ub", "RowMajor", "nosplit", "PER_TENSOR", False): {"f32": ("f32", "f16", "bf16"), "i32": ("f16", "bf16")},
-    ("ub", "RowMajor", "nosplit", "PER_TENSOR", True): {"f32": ("f32", "f16", "bf16"), "i32": ("f16", "bf16")},
-    ("ub", "ColumnMajor", "nosplit", "PER_TENSOR", False): {"f32": ("f32", "f16", "bf16"), "i32": ("f16", "bf16")},
-    ("ub", "ColumnMajor", "nosplit", "PER_TENSOR", True): {"f32": ("f32", "f16", "bf16"), "i32": ("f16", "bf16")},
+    ("gm", "RowMajor", "-", "PER_TENSOR", False): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("gm", "RowMajor", "-", "PER_TENSOR", True): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("gm", "ColumnMajor", "-", "PER_TENSOR", False): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("gm", "ColumnMajor", "-", "PER_TENSOR", True): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("ub", "RowMajor", "nosplit", "PER_TENSOR", False): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("ub", "RowMajor", "nosplit", "PER_TENSOR", True): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("ub", "ColumnMajor", "nosplit", "PER_TENSOR", False): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("ub", "ColumnMajor", "nosplit", "PER_TENSOR", True): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
 
-    ("gm", "RowMajor", "-", "PER_CHANNEL", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
-    ("gm", "RowMajor", "-", "PER_CHANNEL", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
-    ("gm", "ColumnMajor", "-", "PER_CHANNEL", False): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
-    ("gm", "ColumnMajor", "-", "PER_CHANNEL", True): {"f32": ("f32", "f16", "bf16", "i8", "u8"), "i32": ("f16", "bf16", "i8", "u8")},
-    ("ub", "RowMajor", "nosplit", "PER_CHANNEL", False): {"f32": ("f32", "f16", "bf16"), "i32": ("f16", "bf16")},
-    ("ub", "RowMajor", "nosplit", "PER_CHANNEL", True): {"f32": ("f32", "f16", "bf16"), "i32": ("f16", "bf16")},
-    ("ub", "ColumnMajor", "nosplit", "PER_CHANNEL", False): {"f32": ("f32", "f16", "bf16"), "i32": ("f16", "bf16")},
-    ("ub", "ColumnMajor", "nosplit", "PER_CHANNEL", True): {"f32": ("f32", "f16", "bf16"), "i32": ("f16", "bf16")},
+    ("gm", "RowMajor", "-", "PER_CHANNEL", False): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("gm", "RowMajor", "-", "PER_CHANNEL", True): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("gm", "ColumnMajor", "-", "PER_CHANNEL", False): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("gm", "ColumnMajor", "-", "PER_CHANNEL", True): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("ub", "RowMajor", "nosplit", "PER_CHANNEL", False): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("ub", "RowMajor", "nosplit", "PER_CHANNEL", True): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("ub", "ColumnMajor", "nosplit", "PER_CHANNEL", False): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+    ("ub", "ColumnMajor", "nosplit", "PER_CHANNEL", True): {
+        "f32": ("f32", "f16", "bf16", "i8", "u8", "f8e4m3fn", "hif8"),
+        "i32": ("f16", "bf16", "i8", "u8"),
+    },
+
+    ("l1", "zN", "-", "PER_TENSOR", False): {"f32": ("f16", "bf16", "i8"), "i32": ("f16", "bf16", "i8")},
+    ("l1", "zN", "-", "PER_TENSOR", True): {"f32": ("f16", "bf16", "i8"), "i32": ("f16", "bf16", "i8")},
+    ("l1", "zN", "-", "PER_CHANNEL", False): {"f32": ("f16", "bf16", "i8"), "i32": ("f16", "bf16", "i8")},
+    ("l1", "zN", "-", "PER_CHANNEL", True): {"f32": ("f16", "bf16", "i8"), "i32": ("f16", "bf16", "i8")},
 }
 # fmt: on
 
@@ -6396,6 +6775,84 @@ def _validate_supported_copy(
         elif key in _SUPPORTED_VECTOR_COPY_ROUTES:
             return dtype in _SUPPORTED_VECTOR_COPY_ROUTES[key]
     return False
+
+
+# L0C→UB Fixpipe 1-byte destinations: Fixpipe RoundUp's the UB write extent
+# (RowMajor N / ColumnMajor M) to a 32-element block regardless of unitFlag.
+# That write needs a matching UB pitch, or pad spills into the next row / OOB.
+# With unitFlag!=0, mmad still counts fractals by 16, so an unaligned extent
+# can also hang. Static extents/pitches are checked here; dynamic values stay
+# a caller contract.
+_FIXPIPE_UB_1BYTE_DTYPES = frozenset({"i8", "u8", "f8e4m3fn", "hif8"})
+_FIXPIPE_UB_1BYTE_ALIGN = 32
+
+
+def _round_up_pos_int(value: int, align: int) -> int:
+    return ((value + align - 1) // align) * align
+
+
+def _check_fixpipe_ub_1byte_align(
+    dst_addr: str,
+    dst_layout: str,
+    dst_dtype: str,
+    params: CopyL0C2DstParams,
+    dst_desc,
+) -> None:
+    """Reject unsafe L0C→UB 1-byte static extents / pitches for Fixpipe RoundUp."""
+    if dst_addr != "ub" or dst_dtype not in _FIXPIPE_UB_1BYTE_DTYPES:
+        return
+    dst_m, dst_n = _flat_dim_pair_from_tree(dst_desc.origin_shape)
+    dst_s0, dst_s1 = _flat_dim_pair_from_tree(dst_desc.stride)
+
+    # Pitch must cover RoundUp(write-axis, 32) for every unit_flag: Fixpipe
+    # always writes that many elements along the axis.
+    if dst_layout == "RowMajor":
+        if dst_n is not None and dst_s0 is not None:
+            need = _round_up_pos_int(dst_n, _FIXPIPE_UB_1BYTE_ALIGN)
+            if dst_s0 < need:
+                _op_error(
+                    "copy",
+                    "L0C→UB 1-byte RowMajor destination pitch (stride0) must be "
+                    f">= RoundUp(N, {_FIXPIPE_UB_1BYTE_ALIGN})={need} "
+                    f"(got N={dst_n}, pitch={dst_s0}, dtype={dst_dtype}); "
+                    "pad the UB row stride or align N to 32",
+                )
+    elif dst_layout == "ColumnMajor":
+        if dst_m is not None and dst_s1 is not None:
+            need = _round_up_pos_int(dst_m, _FIXPIPE_UB_1BYTE_ALIGN)
+            if dst_s1 < need:
+                _op_error(
+                    "copy",
+                    "L0C→UB 1-byte ColumnMajor destination pitch (stride1) must be "
+                    f">= RoundUp(M, {_FIXPIPE_UB_1BYTE_ALIGN})={need} "
+                    f"(got M={dst_m}, pitch={dst_s1}, dtype={dst_dtype}); "
+                    "pad the UB column stride or align M to 32",
+                )
+
+    # unit_flag!=0 also needs the write-axis extent itself 32-aligned, else
+    # Fixpipe waits for mmad fractals that were never produced.
+    if params.unit_flag == 0:
+        return
+    if dst_layout == "RowMajor":
+        if dst_n is not None and dst_n % _FIXPIPE_UB_1BYTE_ALIGN != 0:
+            _op_error(
+                "copy",
+                "L0C→UB 1-byte destination with unit_flag!=0 requires "
+                f"RowMajor N % {_FIXPIPE_UB_1BYTE_ALIGN} == 0 "
+                f"(got N={dst_n}, dtype={dst_dtype}); align N to 32, or use "
+                "unit_flag=0 only when UB pitch >= RoundUp(N, 32) and mmad "
+                "uses flag sync",
+            )
+    elif dst_layout == "ColumnMajor":
+        if dst_m is not None and dst_m % _FIXPIPE_UB_1BYTE_ALIGN != 0:
+            _op_error(
+                "copy",
+                "L0C→UB 1-byte destination with unit_flag!=0 requires "
+                f"ColumnMajor M % {_FIXPIPE_UB_1BYTE_ALIGN} == 0 "
+                f"(got M={dst_m}, dtype={dst_dtype}); align M to 32, or use "
+                "unit_flag=0 only when UB pitch >= RoundUp(M, 32) and mmad "
+                "uses flag sync",
+            )
 
 
 def _validate_supported_fixpipe(
@@ -6496,7 +6953,20 @@ def _modify_doc_copy(fn: Callable[..., Any]) -> None:
         "- `NO_QUANT` mode includes pure data cast, `f32`->`f16`, `f32`->`bf16`",
         "- If the dst is ub, there's an extra `split_mode`, support nosplit(`NO_SPLIT_VEC_0`, `NO_SPLIT_VEC_1`), and split(`SPLIT_M`, `SPLIT_N`)",
         "- If dst is (ub, ColumnMajor), only support `nosplit` mode",
-        "- In to ub is `split` mode, any quant_mode/relu is disabled, neither pure cast, so only `f32`->`f32` and `i32`->`i32` is enabled\n",
+        "- In to ub is `split` mode, any quant_mode/relu is disabled, neither pure cast, so only `f32`->`f32` and `i32`->`i32` is enabled",
+        "- A quantized copy to l1 supports only the `zN` layout",
+        "- L0C→UB 1-byte destinations (`i8`/`u8`/`f8e4m3fn`/`hif8`): Fixpipe "
+        "always RoundUp's the write axis (RowMajor `N` / ColumnMajor `M`) to "
+        "a 32-element block, independent of `unit_flag`. Static UB pitch must "
+        "be `>= RoundUp(extent, 32)` (RowMajor `stride0`, ColumnMajor "
+        "`stride1`), or pad overwrites the next row / goes OOB. Prefer "
+        "aligning the write-axis extent to 32. With `unit_flag != 0`, mmad "
+        "counts fractals by 16, so a static unaligned extent also hangs; the "
+        "frontend then requires `N % 32 == 0` (RowMajor) or `M % 32 == 0` "
+        "(ColumnMajor). `unit_flag=0` only removes the hang — pitch must "
+        "still cover the RoundUp write (and mmad must use flag sync). "
+        "Dynamic extents/pitches skip these checks (caller contract). GM "
+        "1-byte destinations are not under this rule.\n",
         "|`dst`|`dst_layout`|`split_mode`|`quant_mode`|`relu`|`src_dtype`:`dst_dtype`|",
         "|-----|------------|------------|------------|------|-----------------------|",
     ]
@@ -6874,6 +7344,293 @@ def _validate_ubub_transpose_shape(src_desc, dst_desc, src_dtype) -> None:
         )
 
 
+# ExtParams-safe GM→UB pad dtypes (must stay aligned with Vector/dma.cpp).
+# 8B: static zero padding_value enforced in CopyPadParams._validate; runtime
+# padding_value is not value-gated (BC always zero-fills 8B pads).
+_COPY_PAD_SAFE_DTYPES = frozenset(
+    {
+        "f32",
+        "f16",
+        "bf16",
+        "i32",
+        "u32",
+        "i16",
+        "u16",
+        "i8",
+        "u8",
+        "i1",
+        "i64",
+        "u64",
+        "f64",
+    }
+)
+_COPY_PAD_FLOAT_DTYPES = frozenset({"f32", "f16", "bf16", "f64"})
+_COPY_PAD_INT_DTYPES = frozenset({"i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64"})
+
+
+_COPY_PAD_FLOAT_HOST_BITS = {
+    "f16": (Float16, 0x7C00),
+    "bf16": (BFloat16, 0x7F80),
+    "f32": (Float32, 0x7F800000),
+}
+
+
+def _normalize_copy_pad_dtype_token(dtype: str) -> str:
+    """Map ``bool`` → ``i1``; otherwise lower-case dtype token."""
+    token = dtype.lower()
+    return "i1" if token == "bool" else token
+
+
+def _padding_value_float_scalar(value: Any, dtype: str) -> float:
+    """Host float for encoding ``padding_value`` on a float tile dtype."""
+    if isinstance(value, Numeric):
+        host = value.value
+        if isinstance(host, bool):
+            raise TypeError(
+                f"padding_value for dtype {dtype} must match element type "
+                f"(got bool host on {type(value).__name__})"
+            )
+        if not isinstance(host, (int, float)):
+            raise TypeError(
+                f"padding_value Numeric host must be int/float "
+                f"(got {type(host).__name__})"
+            )
+        return float(host)
+    if isinstance(value, bool):
+        raise TypeError(
+            f"padding_value for dtype {dtype} must be float or matching "
+            f"Numeric (got bool)"
+        )
+    if isinstance(value, float):
+        return value
+    raise TypeError(
+        f"padding_value for dtype {dtype} must be float or matching Numeric "
+        f"(got {type(value).__name__})"
+    )
+
+
+def _encode_float_padding_bits(scalar: float, dtype: str, mask: int) -> int:
+    """Pack a Python float into ``paddingValueBits`` for ``dtype``."""
+    host = _COPY_PAD_FLOAT_HOST_BITS.get(dtype)
+    try:
+        if host is not None:
+            dtype_cls, exponent_mask = host
+            with np.errstate(over="ignore", invalid="ignore"):
+                bits = int(dtype_cls._host_bits(scalar)) & mask
+            if math.isfinite(scalar) and (bits & exponent_mask) == exponent_mask:
+                raise ValueError(
+                    f"padding_value {scalar!r} overflows finite range of {dtype}"
+                )
+            return bits
+        if dtype == "f64":
+            return struct.unpack("<Q", struct.pack("<d", scalar))[0]
+    except (OverflowError, struct.error, ValueError) as exc:
+        raise ValueError(
+            f"padding_value {scalar!r} cannot be encoded for dtype {dtype}: {exc}"
+        ) from exc
+    raise TypeError(f"cannot encode padding_value for dtype {dtype}")
+
+
+def _padding_value_to_i64_bits(value: Any, dtype: str, elem_nbytes: int) -> int:
+    """Pack ``CopyPadParams.padding_value`` into ABI ``paddingValueBits``.
+
+    Static values must **match** the tile element dtype:
+    - ``i1``: Python ``bool`` / ``tla.Bool`` only (encoded as 0/1 bits).
+    - integer tiles: bare ``int`` or Numeric whose ``dtype`` equals the tile.
+    - float tiles: bare ``float`` or Numeric whose ``dtype`` equals the tile.
+    Cross-width / cross-family Numerics and bare ``int`` on float tiles are
+    rejected.
+    """
+    dtype = _normalize_copy_pad_dtype_token(dtype)
+    if elem_nbytes <= 0 or elem_nbytes > 8:
+        raise ValueError(f"unsupported pad element width {elem_nbytes}B for {dtype}")
+    bit_width = elem_nbytes * 8
+    mask = (1 << bit_width) - 1
+
+    # --- i1 / bool tile: fill must be bool-typed (bare int 0 = default zero) ---
+    if dtype == "i1":
+        if isinstance(value, bool):
+            return 1 if value else 0
+        # Dataclass default ``padding_value=0``: accept as False / zero-fill only.
+        if isinstance(value, int) and not isinstance(value, bool) and value == 0:
+            return 0
+        if isinstance(value, Numeric):
+            nd = _normalize_copy_pad_dtype_token(type(value).dtype)
+            if nd != "i1":
+                raise TypeError(
+                    f"padding_value dtype {nd} does not match element dtype i1"
+                )
+            host = value.value
+            if isinstance(host, bool):
+                return 1 if host else 0
+            if isinstance(host, int) and not isinstance(host, bool):
+                return 1 if host != 0 else 0
+            raise TypeError(
+                f"padding_value for i1 must be bool/tla.Bool "
+                f"(got host {type(host).__name__})"
+            )
+        raise TypeError(
+            f"padding_value for i1 must be bool/tla.Bool "
+            f"(got {type(value).__name__}; non-zero bare int is rejected)"
+        )
+
+    # --- Typed Numeric: dtype token must equal the tile ---
+    if isinstance(value, Numeric):
+        nd = _normalize_copy_pad_dtype_token(type(value).dtype)
+        if nd != dtype:
+            raise TypeError(
+                f"padding_value dtype {nd} does not match element dtype {dtype}"
+            )
+        if dtype in _COPY_PAD_INT_DTYPES:
+            host = value.value
+            if isinstance(host, bool):
+                raise TypeError(
+                    f"padding_value for integer dtype {dtype} must be an int (got bool)"
+                )
+            if isinstance(host, float):
+                if not host.is_integer():
+                    raise TypeError(
+                        f"padding_value for integer dtype {dtype} must be an int "
+                        f"(got float {host!r})"
+                    )
+                host = int(host)
+            if not isinstance(host, int):
+                raise TypeError(
+                    f"padding_value for integer dtype {dtype} must be an int "
+                    f"(got {type(host).__name__})"
+                )
+            return int(host) & mask
+        if dtype in _COPY_PAD_FLOAT_DTYPES:
+            try:
+                scalar = _padding_value_float_scalar(value, dtype)
+            except TypeError as exc:
+                raise TypeError(str(exc)) from exc
+            return _encode_float_padding_bits(scalar, dtype, mask)
+        raise TypeError(f"cannot encode padding_value for dtype {dtype}")
+
+    # --- Untyped Python literals ---
+    if isinstance(value, bool):
+        raise TypeError(
+            f"padding_value for dtype {dtype} must not be bool "
+            f"(bool fill is only valid for i1 tiles)"
+        )
+    if isinstance(value, int):
+        # Dataclass default is ``0``. Accept bare int 0 as universal zero-fill
+        # (0 bits / False / +0.0). Non-zero bare int remains integer-tile only.
+        if value == 0:
+            return 0
+        if dtype not in _COPY_PAD_INT_DTYPES:
+            raise TypeError(
+                f"padding_value for dtype {dtype} must be float or a Numeric "
+                f"whose dtype matches {dtype} (got bare int {value!r})"
+            )
+        return int(value) & mask
+    if isinstance(value, float):
+        if dtype not in _COPY_PAD_FLOAT_DTYPES:
+            raise TypeError(
+                f"padding_value for integer dtype {dtype} must be an int "
+                f"(got float {value!r})"
+            )
+        return _encode_float_padding_bits(value, dtype, mask)
+    raise TypeError(
+        f"padding_value must be bool/int/float/Numeric (got {type(value).__name__})"
+    )
+
+
+def _padding_value_as_i64_ssa(
+    value: Any,
+    dtype: str,
+    elem_nbytes: int,
+    *,
+    loc: mlir_ir.Location | None = None,
+) -> mlir_ir.Value:
+    """Encode ``padding_value`` as the BC ``paddingValueBits`` ``i64`` SSA.
+
+    Compile-time Python / Numeric constants use ``_padding_value_to_i64_bits``
+    with strict dtype matching. For ``i1`` tiles, static ``bool`` / ``tla.Bool``
+    encode as 0/1. Runtime non-i1 values must already be an integer/index bit
+    pattern (``_as_i64_copy_pad_operand``); runtime i1 SSA is rejected (use a
+    static bool fill).
+    """
+    dtype = _normalize_copy_pad_dtype_token(dtype)
+    # i1: bool/tla.Bool, or bare int 0 (dataclass default zero-fill).
+    if dtype == "i1":
+        if (
+            _is_bool_like_pad_operand(value)
+            or (isinstance(value, int) and not isinstance(value, bool) and value == 0)
+            or (
+                isinstance(value, Numeric)
+                and _normalize_copy_pad_dtype_token(type(value).dtype) == "i1"
+                and isinstance(value.value, (bool, int))
+            )
+        ):
+            # Runtime i1 SSA cannot be widened via the integer pad helper.
+            resolved = _resolve_bound_value(value)
+            if isinstance(resolved, mlir_ir.Value):
+                raise TypeError(
+                    "CopyPadParams.padding_value for i1 tiles must be a static "
+                    "bool/tla.Bool (runtime i1 SSA is not supported)"
+                )
+            bits = _padding_value_to_i64_bits(value, dtype, elem_nbytes)
+            return _const_i64(bits, loc=loc)
+        raise TypeError(
+            "CopyPadParams.padding_value for i1 tiles must be bool/tla.Bool "
+            f"(got {type(value).__name__}; non-zero bare int is rejected)"
+        )
+    if _is_bool_like_pad_operand(value):
+        raise TypeError(
+            "CopyPadParams.padding_value must not be bool/tla.Bool/i1 unless "
+            "the element dtype is i1"
+        )
+    # Prefer static encoding so dtype checks see Float32 vs Int32 wrappers.
+    if isinstance(value, (int, float)) or (
+        isinstance(value, Numeric) and isinstance(value.value, (bool, int, float))
+    ):
+        bits = _padding_value_to_i64_bits(value, dtype, elem_nbytes)
+        return _const_i64(bits, loc=loc)
+    # Runtime SSA / dynamic Numeric: treat as bit pattern (non-i1 only).
+    return _as_i64_copy_pad_operand(value, what="padding_value", loc=loc)
+
+
+def _copy_pad_innermost_extent(desc) -> int | None:
+    """Return static innermost origin extent, or None if dynamic/unavailable."""
+    try:
+        origin = desc.origin_shape
+        if not origin:
+            return None
+        return _const_int_value(origin[-1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+
+
+def _copy_pad_static_rows(desc) -> int | None:
+    """Return static row count (origin_shape[0]) for Rank-2 tiles."""
+    try:
+        origin = desc.origin_shape
+        if not origin or len(origin) < 2:
+            return None
+        return _const_int_value(origin[0])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+
+
+def _copy_pad_static_row_stride(desc) -> int | None:
+    """Return static RowMajor row stride (stride[0]), or None if dynamic."""
+    try:
+        stride = desc.stride
+        if not stride:
+            return None
+        return _const_int_value(stride[0])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+
+
+def _copy_pad_align_up(value: int, align: int) -> int:
+    if align <= 0:
+        return value
+    return ((value + align - 1) // align) * align
+
+
 @dsl_user_op
 def copy(
     dst: Tensor,
@@ -6893,7 +7650,15 @@ def copy(
         - `dst` (`Tensor`): Destination tile. Required.
         - `src` (`Tensor`): Source tile. Required.
         - `params` (`CopyParams | None`): Path-specific params:
-          `CopyL0C2DstParams`, `CopyUbToGmParams`. Default `None`.
+          `CopyL0C2DstParams`, `CopyUbToGmParams`, or `CopyPadParams`.
+          Default `None`.
+          - `CopyPadParams`: enables GM→UB DataCopyPad (`isPad=true`). See
+            Constraints for supported routes/dtypes and fill rules.
+          - `left_padding` / `right_padding`: elements padded on each side of
+            the innermost axis (compile-time int or runtime integer/index SSA).
+          - `padding_value`: fill value for padded elements (compile-time
+            literal/Numeric, or runtime integer bit pattern). Default `0`
+            means zero-fill.
         - `scale` (`Tensor | None`): L1 OCP `e8m0` shared-exponent tile for
           L1→L0A/L0B MX load. Stored as `i8`/`u8`; destination tag is
           `tla.arch.zZMxScale` (L0A) or `tla.arch.nNMxScale` (L0B).
@@ -6909,6 +7674,28 @@ def copy(
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.cube()` or `tla.vector()`.
         - Copy size follows each tile's `origin_shape`.
+        - UB-to-GM and L0C-to-GM copies accept
+          `params.atomic_mode`. Use `AtomicMode.ADD`, `MAX`, or `MIN` to combine
+          this write with the old GM value. The default, `NONE`, overwrites it.
+          The GM element type must be i8, i16, i32, f16, bf16, or f32 for atomic
+          writes. For L0C, conversion, quantization, and ReLU take effect before
+          the atomic operation.
+          For UB-to-GM, supply `CopyUbToGmParams` or omit `params`. Within
+          that parameter object, `atomic_mode` must be an `AtomicMode` member
+          and defaults to `AtomicMode.NONE`.
+        - When `params` is `CopyPadParams`: GM→UB only, layouts
+          RowMajor→RowMajor or VectorLayout→VectorLayout; element dtypes
+          f32/f16/bf16/i32/u32/i16/u16/i8/u8/i1/i64/u64/f64 (not
+          fp8/hif8/fp4). Side counts must not be bool/tla.Bool/i1; a static
+          side count must satisfy pad bytes ≤ 32B; with static extents, dst
+          innermost ≥ src + left + right.
+        - `CopyPadParams.padding_value` must match the source element dtype
+          (i1: bool/tla.Bool; integer: bare int or same-dtype Numeric; float:
+          bare float or matching float Numeric; bare int 0 is the dataclass
+          default zero-fill). Runtime non-i1 is an i64 bit pattern; runtime
+          i1 SSA is unsupported. For 8B (`i64`/`u64`/`f64`), only a static
+          zero fill is guaranteed; runtime is not value-checked and the BC
+          always zero-fills.
         - On Ascend 950, two logical rank-3 views `(B, M, N)` select batched
           GM-to-L1 layout conversion. FP8 supports RowMajor→zN and
           ColumnMajor→nZ; E8M0 supports the four GM MX-scale routes below.
@@ -6954,6 +7741,18 @@ def copy(
           exactly one element per channel of the destination tile, ``originShape[1]``
           after `tile_view` cropping. When both lengths are static, a mismatch
           fails compilation.
+        - L0C→UB 1-byte destinations (`i8`/`u8`/`f8e4m3fn`/`hif8`): Fixpipe
+          always RoundUp's the write axis (RowMajor `N` / ColumnMajor `M`)
+          to a 32-element block, independent of `unit_flag`. Static UB pitch
+          must be `>= RoundUp(extent, 32)` (RowMajor `stride0`, ColumnMajor
+          `stride1`), or pad overwrites the next row / goes OOB. Prefer
+          aligning the write-axis extent to 32. With `unit_flag != 0`, mmad
+          counts fractals by 16, so a static unaligned extent also hangs;
+          the frontend then requires `N % 32 == 0` (RowMajor) or
+          `M % 32 == 0` (ColumnMajor). `unit_flag=0` only removes the hang —
+          pitch must still cover the RoundUp write (and mmad must use flag
+          sync). Dynamic extents/pitches skip these checks (caller
+          contract). GM 1-byte destinations are not under this rule.
         - **Prepacked `GM` tiles:** a buffer already packed in fractal order is
           tagged `zN` (or `nZ` for the transposed packing) and copied to the
           matching `L1` tile with no re-layout. Only the aligned `zN` / `nZ` are
@@ -7151,6 +7950,9 @@ def copy(
                 f"{_route[0]},{src_layout} -> {_route[1]},{dst_layout} "
                 f"{src_dtype}, params={params}",
             )
+        _check_fixpipe_ub_1byte_align(
+            _route[1], dst_layout, dst_dtype, params, dst_desc
+        )
 
         ctx = loc.context if loc is not None else mlir_ir.Context.current
         quant_mode_attr = mlir_ir.Attribute.parse(
@@ -7341,11 +8143,158 @@ def copy(
                         )
         params_value = None
 
+    if isinstance(params, CopyPadParams):
+        if _route != ("gm", "ub"):
+            _op_error(
+                "copy",
+                "CopyPadParams is only supported on GM→UB routes, "
+                f"got {_route[0]}→{_route[1]}",
+            )
+        _pad_layouts_ok = (src_layout, dst_layout) in {
+            ("RowMajor", "RowMajor"),
+            ("VectorLayout", "VectorLayout"),
+        }
+        if not _pad_layouts_ok:
+            _op_error(
+                "copy",
+                "CopyPadParams currently requires RowMajor→RowMajor or "
+                "VectorLayout→VectorLayout GM→UB "
+                f"(got {src_layout}→{dst_layout})",
+            )
+        if src_dtype not in _COPY_PAD_SAFE_DTYPES:
+            _op_error(
+                "copy",
+                "CopyPadParams is not supported for dtype "
+                f"{src_dtype}; supported: {sorted(_COPY_PAD_SAFE_DTYPES)}",
+            )
+        elem_nbytes = dtype_size_bytes(src_dtype)
+        if elem_nbytes <= 0:
+            _op_error(
+                "copy",
+                f"CopyPadParams cannot size-check unknown dtype {src_dtype}",
+            )
+        try:
+            params._validate(elem_nbytes=elem_nbytes)
+        except (TypeError, ValueError) as exc:
+            _op_error("copy", str(exc))
+
+        # Pad-only static extract (unsigned + whole-float Int*/UInt* hosts).
+        # Do not use shared ``_const_int_value`` here — that would change arange.
+        try:
+            left_static = _const_pad_count_value(params.left_padding)
+            right_static = _const_pad_count_value(params.right_padding)
+        except TypeError as exc:
+            _op_error("copy", str(exc))
+        # Reject Python bool and tla.Bool/i1 for pad counts (bool→0/1 is wrong).
+        if _is_bool_like_pad_operand(params.left_padding) or _is_bool_like_pad_operand(
+            params.right_padding
+        ):
+            _op_error(
+                "copy",
+                "CopyPadParams left/right_padding must not be bool/tla.Bool/i1",
+            )
+        if left_static is not None and left_static < 0:
+            _op_error("copy", "CopyPadParams.left_padding must be >= 0")
+        if right_static is not None and right_static < 0:
+            _op_error("copy", "CopyPadParams.right_padding must be >= 0")
+        if left_static is not None and left_static * elem_nbytes > 32:
+            _op_error(
+                "copy",
+                f"CopyPadParams.left_padding*{elem_nbytes}B exceeds AscendC "
+                f"per-side pad limit of 32B (got {left_static} elements)",
+            )
+        if right_static is not None and right_static * elem_nbytes > 32:
+            _op_error(
+                "copy",
+                f"CopyPadParams.right_padding*{elem_nbytes}B exceeds AscendC "
+                f"per-side pad limit of 32B (got {right_static} elements)",
+            )
+
+        src_inner = _copy_pad_innermost_extent(src_desc)
+        dst_inner = _copy_pad_innermost_extent(dst_desc)
+        ele_per_blk = 32 // elem_nbytes if elem_nbytes > 0 else 0
+        if (
+            src_inner is not None
+            and dst_inner is not None
+            and left_static is not None
+            and right_static is not None
+        ):
+            need = src_inner + left_static + right_static
+            if dst_inner < need:
+                _op_error(
+                    "copy",
+                    "CopyPadParams requires dst innermost origin extent >= "
+                    f"src + left_padding + right_padding "
+                    f"(need {need}, got dst={dst_inner}, src={src_inner})",
+                )
+            # Multi-row: AscendC Normal mode AlignUp(blockLen+pads, 32B) per row,
+            # then adds (dstGapElems / ELE_NUM_PER_BLK) * 32B (integer truncate).
+            # Stride must cover AlignUp(need) and be a multiple of ELE_NUM_PER_BLK
+            # so BC gap truncation cannot skew rows vs the declared layout.
+            rows = _copy_pad_static_rows(dst_desc) or _copy_pad_static_rows(src_desc)
+            dst_row_stride = _copy_pad_static_row_stride(dst_desc)
+            if (
+                rows is not None
+                and rows > 1
+                and dst_row_stride is not None
+                and ele_per_blk > 0
+            ):
+                aligned_need = _copy_pad_align_up(need, ele_per_blk)
+                if dst_row_stride < aligned_need or dst_row_stride % ele_per_blk != 0:
+                    _op_error(
+                        "copy",
+                        "CopyPadParams multi-row dst row stride must be >= "
+                        f"AlignUp(src+left+right, {ele_per_blk}) and a multiple "
+                        f"of {ele_per_blk} "
+                        f"(need {aligned_need}, got stride0={dst_row_stride}, "
+                        f"src={src_inner}, left={left_static}, right={right_static})",
+                    )
+
+        try:
+            pad_left_value = _as_i64_copy_pad_operand(
+                params.left_padding, what="left_padding", loc=loc
+            )
+            pad_right_value = _as_i64_copy_pad_operand(
+                params.right_padding, what="right_padding", loc=loc
+            )
+            pad_value_bits_value = _padding_value_as_i64_ssa(
+                params.padding_value, src_dtype, elem_nbytes, loc=loc
+            )
+        except (TypeError, ValueError, TlaLoweringError) as exc:
+            _op_error("copy", str(exc))
+        pad_ctx = loc.context if loc is not None else mlir_ir.Context.current
+        # Same pattern as CopyL0C2DstParams: typed params SSA, then copy(params=).
+        params_value = _tla_ops_gen.CopyPadParams(
+            _tla_type_bridge.copy_pad_params_type_get(pad_ctx),
+            pad_left_value,
+            pad_right_value,
+            pad_value_bits_value,
+            loc=loc,
+        )
+    elif _route == ("ub", "gm") and params is not None:
+        if not isinstance(params, CopyUbToGmParams):
+            _op_error(
+                "copy",
+                f"UB-to-GM copy expects CopyUbToGmParams, got {type(params).__name__}",
+            )
+        try:
+            params._validate()
+        except ValueError as exc:
+            _op_error("copy", str(exc))
+    elif params is not None and not isinstance(params, CopyL0C2DstParams):
+        # Reject unknown CopyParams subclasses early when they lack atomic_mode.
+        if not hasattr(params, "atomic_mode") and _route[0] != "l0c":
+            _op_error(
+                "copy",
+                f"unsupported params type {type(params).__name__} for route "
+                f"{_route[0]}→{_route[1]}",
+            )
+
     # Check if atomic mode enabled and acquire lowered atomic_mode_attr
     atomic_mode_attr = None
-    atomic_mode = params.atomic_mode if params is not None else None
+    atomic_mode = getattr(params, "atomic_mode", None) if params is not None else None
     if atomic_mode is not None and atomic_mode != AtomicMode.NONE:
-        if atomic_mode != AtomicMode.ADD:
+        if not isinstance(atomic_mode, AtomicMode):
             raise NotImplementedError(
                 f"currently unsupported atomic mode {str(atomic_mode)}"
             )
@@ -7355,9 +8304,9 @@ def copy(
                 f"When atomic operation is enabled, the dst location should only be GM but got {_route[1]}"
             )
 
-        dst_dtype = (
-            str(_tla_tensor_type_for_mlir_value(dst_value).element_type).strip().lower()
-        )
+        if _route[0] not in ("ub", "l0c"):
+            raise TlaLoweringError("atomic writeback requires a UB or L0C source")
+
         if dst_dtype not in ("f32", "f16", "i16", "i32", "i8", "bf16"):
             raise TlaLoweringError(
                 "The supported atomic operation's data type includes f32, f16, i16, i32, i8, bf16, "
@@ -8032,6 +8981,81 @@ def local_mem_bar(
 
 
 @dsl_user_op
+def data_sync_barrier(
+    domain: DsbTarget, *, loc: mlir_ir.Location | None = None
+) -> None:
+    """Directory: Sync Control
+
+    Description:
+        Insert a data synchronization barrier over a storage domain. Blocks
+        subsequent instructions until the memory access instructions of
+        `domain` that were issued earlier have completed.
+
+        Parameters:
+        - `domain` (`DsbTarget`): Storage domain to wait on. Required. `GM_UB`
+          waits for previously issued GM and UB accesses; `GM` for GM only; `UB`
+          for UB only; `SEQ` for sequencer accesses (including the parameter
+          buffer).
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function; the
+          kernel body, `tla.cube()` and `tla.vector()` are all valid.
+        - Must not be called inside `tla.vec.func()`; `dsb` is a scalar-pipeline
+          instruction over whole storage domains, not a per-thread view.
+        - `UB` is rejected inside `tla.cube()`: AIC has no UB and would not
+          issue the barrier, so use `GM`, `GM_UB` or `SEQ` there, or move the
+          call into `tla.vector()`. In a mixed kernel's scalar body the `UB`
+          domain is a no-op on the AIC copy.
+        - `GM_UB` covers GM and UB only: L1 and the L0A/L0B/L0C buffers are not
+          waited on; order those with `tla.pipe_barrier` (`MTE1`/`FIX`/`CUBE`)
+          or `tla.flag` / `set_flag` / `wait_flag`.
+        - The cross-core visibility guarantee applies to GM accesses that
+          bypass the D-cache. Ordinary
+          scalar-pipe GM writes stay invisible to other engines and other
+          cores until kernel end, and V-pipe UB stores are not waited by `UB` /
+          `GM_UB` — order a `vec.func` UB store with a flag pair before draining
+          it to GM.
+        - Does not participate in `auto_sync`; place it outside hot inner loops,
+          each barrier costs a wait on every iteration.
+
+        Example:
+        ```python
+        with tla.vector():
+            # Official cross-core pattern: bypass-write the data, wait the GM
+            # domain out, then bypass-write the sync flag; the consumer spin-
+            # polls the flag with bypass reads. See
+            # tests/end_to_end/data_sync_barrier.py.
+            bypass_write(src.ptr, 1, data)  # user extern: WriteGmBypassDCache
+            tla.data_sync_barrier(tla.params.DsbTarget.GM)
+            bypass_write(src.ptr, 0, flag)  # user extern: WriteGmBypassDCache
+        ```
+    """
+    _require_frontend_state("data_sync_barrier")
+    if not isinstance(domain, DsbTarget):
+        _op_error(
+            "data_sync_barrier",
+            f"invalid argument 'domain': expected tla.params.DsbTarget, got {domain!r}",
+        )
+    if _runtime._has_enclosing_region("vec.func"):
+        _op_error(
+            "data_sync_barrier",
+            "must not be called inside tla.vec.func(); move the barrier outside the region",
+        )
+    if _runtime._has_enclosing_region("cube") and domain == DsbTarget.UB:
+        _op_error(
+            "data_sync_barrier",
+            "DsbTarget.UB is not issued on AIC; use DsbTarget.GM, "
+            "DsbTarget.GM_UB or DsbTarget.SEQ inside tla.cube(), or move the "
+            "call into tla.vector()",
+        )
+    ctx = loc.context if loc is not None else mlir_ir.Context.current
+    domain_attr = mlir_ir.Attribute.parse(
+        f"#tla.dsb_target<{domain.name.lower()}>", context=ctx
+    )
+    return _tla_ops_gen.data_sync_barrier(domain_attr, loc=loc)
+
+
+@dsl_user_op
 def range(
     start: IndexLike,
     end: IndexLike | None = None,
@@ -8371,6 +9395,7 @@ def _validate_mmad_contract(
     is_mx: bool,
     bias: mlir_ir.Value | None = None,
 ) -> None:
+    """Check one matmul's operands; the lhs layout carries the gemv mode."""
     acc_desc = _tla_tensor_type_for_mlir_value(acc)
     lhs_desc = _tla_tensor_type_for_mlir_value(lhs)
     rhs_desc = _tla_tensor_type_for_mlir_value(rhs)
@@ -8399,7 +9424,37 @@ def _validate_mmad_contract(
     lhs_m, lhs_k = _flat_dim_pair_from_tree(lhs_desc.origin_shape)
     rhs_k, rhs_n = _flat_dim_pair_from_tree(rhs_desc.origin_shape)
     acc_m, acc_n = _flat_dim_pair_from_tree(acc_desc.origin_shape)
-    if None not in (lhs_m, lhs_k, rhs_k, rhs_n, acc_m, acc_n) and (
+
+    # GEMV is not a separate op: it is what a 1-D VectorLayout lhs means. The
+    # tile then carries K alone, with the row implied to be one, while rhs and
+    # acc keep their matrix layouts. Read as a rank-2 tree the lhs yields
+    # (None, None), so the matrix-form check below would skip every comparison
+    # and let a mismatched K or N through; the gemv branch spells them out.
+    is_gemv = not is_mx and lhs_desc.layout_tag == "VectorLayout"
+    if is_gemv:
+        lhs_origin = lhs_desc.origin_shape
+        if not isinstance(lhs_origin, tuple) or len(lhs_origin) != 1:
+            raise TlaLoweringError(
+                "unsupported tla.mmad gemv lhs shape; a VectorLayout tile is "
+                f"rank-1, got origin shape {lhs_origin!r}"
+            )
+        (lhs_k,) = lhs_origin
+        if acc_m is not None and acc_m != 1:
+            raise TlaLoweringError(
+                "unsupported tla.mmad gemv shape contract; a VectorLayout lhs "
+                f"puts the row on one M, got acc M = {acc_m}"
+            )
+        if isinstance(lhs_k, int) and isinstance(rhs_k, int) and lhs_k != rhs_k:
+            raise TlaLoweringError(
+                "unsupported tla.mmad gemv shape contract; expected lhs(K), rhs(KxN), "
+                f"acc(1xN), got lhs K = {lhs_k}, rhs K = {rhs_k}"
+            )
+        if isinstance(rhs_n, int) and isinstance(acc_n, int) and rhs_n != acc_n:
+            raise TlaLoweringError(
+                "unsupported tla.mmad gemv shape contract; expected rhs N matching acc "
+                f"N, got rhs N = {rhs_n}, acc N = {acc_n}"
+            )
+    elif None not in (lhs_m, lhs_k, rhs_k, rhs_n, acc_m, acc_n) and (
         lhs_k != rhs_k or lhs_m != acc_m or rhs_n != acc_n
     ):
         raise TlaLoweringError(
@@ -8441,14 +9496,15 @@ def _validate_mmad_contract(
 
     expected_layouts = (
         (acc, "L0Clayout"),
-        (lhs, "zN"),
+        (lhs, "VectorLayout" if is_gemv else "zN"),
         (rhs, "nZ"),
     )
     for operand, expected in expected_layouts:
         layout = _tla_tensor_type_for_mlir_value(operand).layout_tag
         if layout != expected:
             raise TlaLoweringError(
-                "unsupported tla.mmad operand layout; expected acc L0Clayout, lhs zN, rhs nZ"
+                "unsupported tla.mmad operand layout; expected acc L0Clayout, rhs nZ,"
+                "lhs zN (matrix form) or VectorLayout (gemv form)"
             )
 
 
@@ -8471,7 +9527,8 @@ def mmad(
 
         Parameters:
         - `acc` (`Tensor`): Accumulator / output tile. Required.
-        - `lhs` (`Tensor`): Left-hand matrix tile. Required.
+        - `lhs` (`Tensor`): Left-hand matrix tile. Its layout selects the mode:
+          `zN` is the matrix form, a rank-1 `VectorLayout` row the GEMV form. Required.
         - `rhs` (`Tensor`): Right-hand matrix tile. Required.
         - `init_c` (`bool | Bool | None`): Whether to clear the accumulator first;
           defaults to `False` when omitted. Ignored when `bias` is provided, since
@@ -8497,6 +9554,8 @@ def mmad(
         - The `f8e4m3fn` and `f8e5m2` matmul both support non-MxScale matmul and MxScale matmul,
           in the tla.mmad op scale is unsupported.
         - `init_c` accepts only a Python `bool` or an `i1` SSA value.
+        - GEMV form: `lhs` is a 1-D `VectorLayout` tile carrying the K elements of
+          a single row, `rhs` stays `nZ`, and `acc` stays `L0Clayout` with M = 1;
         - When `bias` is set: tile must live in `biasbuf` with rank-1 `VectorLayout`,
           element type matching `acc`, and length `N` matching `acc`'s N; stage it
           with `GM`→`L1`→`biasbuf` `tla.copy` (see `copy`). `init_c` is ignored.
@@ -8509,6 +9568,8 @@ def mmad(
             tla.mmad(l0c, l0a, l0b, init_c=True, unit_flag=0b11)
             # With bias (l0_bias already on biasbuf via copy):
             # tla.mmad(l0c, l0a, l0b, bias=l0_bias)
+            # GEMV form: l0a_row is a 1-D VectorLayout tile of K elements.
+            # tla.mmad(l0c, l0a_row, l0b, init_c=True, unit_flag=0b11)
             # After: l0c accumulates lhs@rhs (cleared first when init_c=True).
         ```
     """
@@ -8539,6 +9600,9 @@ def mmad(
     else:
         bias_value = None
 
+    # The layout of lhs is the mode switch: a rank-1 VectorLayout row means the
+    # gemv form, a zN tile the matrix form. The op does not spell the mode out;
+    # the pass derives disableGemv from the layout at the bc boundary.
     _validate_mmad_contract(
         acc_value, lhs_value, rhs_value, is_mx=False, bias=bias_value
     )
@@ -9019,21 +10083,91 @@ def _as_vector_scalar_numeric(value: Any) -> Numeric | None:
     return None
 
 
-def _numeric_ir_value_for_element_type(
+def _runtime_scalar_as_signless_integer(
     op_name: str,
     scalar: Numeric,
     element_type: mlir_ir.Type,
     *,
     loc: mlir_ir.Location | None = None,
 ) -> mlir_ir.Value:
+    """Convert a runtime integer scalar to the signless carrier of ``element_type``.
+
+    Unsigned vector element types keep their unsigned ``!tla.vector`` type, but
+    the scalar ABI is signless. A signed scalar widening to the element width
+    sign-extends (an ``Int32`` threshold compared with a ``UInt64`` vector
+    becomes ``i64``); an unsigned source zero-extends.
+    """
+    int_ty = mlir_ir.IntegerType(element_type)
+    width = int(int_ty.width)
+    signless_ty = mlir_ir.IntegerType.get_signless(width)
+    value = scalar.ir_value(loc=loc)
+    if value.type == signless_ty:
+        return value
+    if isinstance(value.type, mlir_ir.IndexType):
+        return mlir_ir.Operation.create(
+            "arith.index_cast", operands=[value], results=[signless_ty], loc=loc
+        ).results[0]
+    if not mlir_ir.IntegerType.isinstance(value.type):
+        _op_error(
+            op_name,
+            f"invalid scalar type {value.type} for {element_type}; "
+            "expected an integer scalar",
+        )
+    src_int = mlir_ir.IntegerType(value.type)
+    src_width = int(src_int.width)
+    src_unsigned = bool(src_int.is_unsigned)
+    if not src_int.is_signless:
+        # arith integer casts are signless-only.
+        signless_src = mlir_ir.IntegerType.get_signless(src_width)
+        value = mlir_ir.Operation.create(
+            "builtin.unrealized_conversion_cast",
+            operands=[value],
+            results=[signless_src],
+            loc=loc,
+        ).results[0]
+    if src_width == width:
+        return value
+    op = "arith.trunci"
+    if src_width < width:
+        op = "arith.extui" if src_unsigned else "arith.extsi"
+    return mlir_ir.Operation.create(
+        op, operands=[value], results=[signless_ty], loc=loc
+    ).results[0]
+
+
+def _numeric_ir_value_for_element_type(
+    op_name: str,
+    scalar: Numeric,
+    element_type: mlir_ir.Type,
+    *,
+    normalize_unsigned: bool = False,
+    loc: mlir_ir.Location | None = None,
+) -> mlir_ir.Value:
     """Materialize scalar for vector–scalar ops via ``to`` + ``ir_value``.
 
     Host Python numbers keep literal ``arith.constant`` emission (range / fraction
     checks). Dynamic SSA uses ``Numeric.to`` + ``ir_value``.
+
+    ``normalize_unsigned`` emits an unsigned literal as its same-width signless
+    carrier, keeping the unsigned range check. ``arith.constant`` and the AVE
+    scalar ABI only accept signless integers, while the vector result keeps its
+    unsigned ``!tla.vector`` type.
     """
     if isinstance(scalar.value, (bool, int, float)):
         return _scalar_constant_for_element_type(
-            op_name, scalar.value, element_type, loc=loc
+            op_name,
+            scalar.value,
+            element_type,
+            normalize_unsigned=normalize_unsigned,
+            loc=loc,
+        )
+    if (
+        normalize_unsigned
+        and mlir_ir.IntegerType.isinstance(element_type)
+        and mlir_ir.IntegerType(element_type).is_unsigned
+    ):
+        return _runtime_scalar_as_signless_integer(
+            op_name, scalar, element_type, loc=loc
         )
     dest_cls = Numeric.from_mlir_type(element_type)
     return scalar.to(dest_cls, loc=loc).ir_value(loc=loc)
@@ -9044,6 +10178,7 @@ def _scalar_constant_for_element_type(
     scalar: Any,
     element_type: mlir_ir.Type,
     *,
+    normalize_unsigned: bool = False,
     loc: mlir_ir.Location | None = None,
 ) -> mlir_ir.Value:
     """Emit ``arith.constant`` from a host scalar literal only."""
@@ -9070,13 +10205,13 @@ def _scalar_constant_for_element_type(
                 f"{element_type}, got {resolved!r}",
             )
         int_value = int(resolved)
-        # Range check before IntegerAttr.get (signed bounds for signless integer types).
+        # Check the logical dtype range before emitting the literal.
         if isinstance(element_type, mlir_ir.IndexType):
             lo, hi = -(2**63), 2**63 - 1
         else:
             int_ty = mlir_ir.IntegerType(element_type)
             width = int(int_ty.width)
-            if int_ty.is_unsigned:
+            if int_ty.is_unsigned or width == 1:
                 lo, hi = 0, 2**width - 1
             else:
                 lo, hi = -(2 ** (width - 1)), 2 ** (width - 1) - 1
@@ -9086,12 +10221,9 @@ def _scalar_constant_for_element_type(
                 f"integer scalar {int_value} out of range for {element_type} "
                 f"(valid range [{lo}, {hi}])",
             )
-        return mlir_ir.Operation.create(
-            "arith.constant",
-            results=[element_type],
-            attributes={"value": mlir_ir.IntegerAttr.get(element_type, int_value)},
-            loc=loc,
-        ).results[0]
+        return _emit_integer_literal(
+            element_type, int_value, normalize_unsigned=normalize_unsigned, loc=loc
+        )
     if (
         mlir_ir.F16Type.isinstance(element_type)
         or mlir_ir.F32Type.isinstance(element_type)
@@ -9101,7 +10233,7 @@ def _scalar_constant_for_element_type(
         return mlir_ir.Operation.create(
             "arith.constant",
             results=[element_type],
-            attributes={"value": mlir_ir.FloatAttr.get(element_type, float(resolved))},
+            attributes={"value": _float_literal_attr(element_type, float(resolved))},
             loc=loc,
         ).results[0]
     _op_error(
@@ -9184,11 +10316,15 @@ def _emit_vector_binary_or_scalar(
     _op_error(op_name, "expected vector-vector or vector-scalar operands")
 
 
-_SHIFT_SUPPORTED_DTYPES = frozenset({"i8", "i16", "i32"})
 _SIGNED_SHIFT_ELEMENT_TYPE = {
     "i8": "i8",
     "i16": "i16",
     "i32": "i32",
+    "i64": "i64",
+    "u8": "i8",
+    "u16": "i16",
+    "u32": "i32",
+    "u64": "i64",
 }
 
 
@@ -9226,12 +10362,15 @@ def _emit_vector_shift(
     source_value = _as_value(source)
     source_desc = _vector_ssa_type_for_mlir_value(source_value)
     source_element = str(source_desc.element_type).lower()
-    if source_element not in _SHIFT_SUPPORTED_DTYPES:
+    if source_element not in _SIGNED_SHIFT_ELEMENT_TYPE:
         _op_error(
             op_name,
             f"unsupported source element type {source_desc.element_type}; "
-            f"supported types are {', '.join(sorted(_SHIFT_SUPPORTED_DTYPES))}",
+            f"supported types are {', '.join(sorted(_SIGNED_SHIFT_ELEMENT_TYPE))}",
         )
+
+    if source_element in ("i64", "u64") and source_desc.valid_lanes != 32:
+        _op_error(op_name, "64-bit shifts require a full 256-byte register (32 lanes)")
 
     if mask is None:
         mask_value = _materialize_full_shift_mask(source_desc, loc=loc)
@@ -9667,13 +10806,21 @@ _INTERLEAVE_ELEMENT_TYPES = frozenset(
 )
 
 
-# 64-bit elements are deliberately unsupported: Ascend 950 has no native
-# vpack/vunpack for them, and the hardware-equivalent composition (deinterleave
-# the 32-bit halves against a zero/sign-filled register) is not implemented.
+# 64-bit sources are deliberately unsupported: unpack of an i64/u64 source
+# would need a 128-bit destination. 64-bit *destinations* (i32->i64, u32->u64)
+# are supported: Ascend 950 has no native vunpack for that width, so the AIV
+# stubs reuse AscendC's composition (sign/zero fill + Interleave).
 # Pack produces unsigned elements with half the source bit width.
 # Signed and unsigned source types share the same destination type.
 _VECTOR_PACK_DST_FOR_SRC = {"i16": "u8", "u16": "u8", "i32": "u16", "u32": "u16"}
-_VECTOR_UNPACK_DST_FOR_SRC = {"i8": "i16", "u8": "u16", "i16": "i32", "u16": "u32"}
+_VECTOR_UNPACK_DST_FOR_SRC = {
+    "i8": "i16",
+    "u8": "u16",
+    "i16": "i32",
+    "u16": "u32",
+    "i32": "i64",
+    "u32": "u64",
+}
 
 
 @dsl_user_op
@@ -9784,7 +10931,7 @@ def unpack(
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function and `tla.vec.func(mode="simd")`.
-        - Pairs (destination <- source): `Int16 <- Int8`, `UInt16 <- UInt8`, `Int32 <- Int16`, `UInt32 <- UInt16`. 64-bit destinations (`Int64`/`UInt64`) are not supported.
+        - Pairs (destination <- source): `Int16 <- Int8`, `UInt16 <- UInt8`, `Int32 <- Int16`, `UInt32 <- UInt16`, `Int64 <- Int32`, `UInt64 <- UInt32`. 64-bit sources (`Int64`/`UInt64`) are not supported; 64-bit destinations reuse AscendC's composition (no native vunpack for that width).
         - Source and destination signedness must match. The result has half as many lanes.
         - Inputs must fill one 256Byte register (RegTraitNumOne). RegTraitNumTwo is not representable by `VectorSSA`; CANN permits only LOW for that trait.
         - Supports Ascend 950 (`--npu-arch 3510`) only. `LOW/HIGH` map to CANN `HighLowPart::LOWEST/HIGHEST`.
@@ -9793,6 +10940,7 @@ def unpack(
         ```python
         with tla.vec.func(mode="simd"):
             wide = tla.unpack(src_reg, part=tla.RegPart.HIGH)
+            wide64 = tla.unpack(src32_reg, part=tla.RegPart.LOW)  # Int32 -> Int64, sign extension
         ```
     """
     _require_category("unpack", "src", src, "vector_ssa", 0)
@@ -9810,7 +10958,7 @@ def unpack(
         _op_error(
             "unpack",
             f"unsupported vector element type {src_desc.element_type}; "
-            "expected an 8/16-bit integer source",
+            "expected an 8/16/32-bit integer source",
         )
     if (
         src_desc.valid_lanes
@@ -10013,8 +11161,8 @@ def shift_left(
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.vec.func()`.
-        - Source elements must be signed 8/16/32-bit integers (i8/i16/i32);
-          64-bit and unsigned shifts are not supported.
+        - Source elements may be signed or unsigned 8/16/32/64-bit integers.
+          Each 64-bit vector operand must fill one 256-byte register (32 lanes).
         - Shift amounts must be non-negative.
 
         Example:
@@ -10038,7 +11186,8 @@ def shift_right(
     Description:
         Element-wise right shift of a vector by per-lane or scalar shift amounts.
 
-        Signed source vectors use arithmetic right shift.
+        Signed source vectors use arithmetic right shift. Unsigned source vectors
+        use logical right shift.
 
         Parameters:
         - `source` (`VectorSSA`): Source vector to shift. Required.
@@ -10051,8 +11200,8 @@ def shift_right(
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.vec.func()`.
-        - Source elements must be signed 8/16/32-bit integers (i8/i16/i32);
-          64-bit and unsigned shifts are not supported.
+        - Source elements may be signed or unsigned 8/16/32/64-bit integers.
+          Each 64-bit vector operand must fill one 256-byte register (32 lanes).
         - Shift amounts must be non-negative.
 
         Example:
@@ -10543,11 +11692,7 @@ def _vector_where(
             "where",
             f"y has element type {y_desc.element_type}, expected {x_desc.element_type}",
         )
-    if is_bool_element_type(x_desc.element_type):
-        _op_error(
-            "where",
-            "Bool VectorSSA is move-only (load/store); where/select is not supported",
-        )
+    _check_select_element_type_supported("where", x_desc.element_type)
     _require_mask_matches_vector("where", mask_value, x_value)
     result = _tla_ops_gen.where(
         x_value.type,
@@ -10611,6 +11756,10 @@ def where(mask: Any, x: Any, y: Any, *, loc: mlir_ir.Location | None = None) -> 
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.vec.func()`; SIMD arms must belong to the same category.
         - MaskSSA arms and their selector must have exactly the same type.
+        - VectorSSA arms must use one of Bool, i8/u8, i16/u16, i32/u32, f16/bf16/f32,
+          i64/u64, f8e4m3fn/f8e5m2, hif8, or f4e2m1x2/f4e1m2x2. Bool values
+          select whole b8 storage bytes; the low-precision formats select their
+          byte/pair carriers.
         - Inside a `tla.vec.func(mode="simt")` region a `Bool` mask emits the
           per-thread `tla.simt_where`; outside one, only the `MaskSSA`
           whole-vector form is available.
@@ -10631,6 +11780,7 @@ def squeeze(
     src: VectorSSA,
     mask: MaskSSA,
     *,
+    record_nbytes: bool = False,
     loc: mlir_ir.Location | None = None,
 ) -> VectorSSA:
     """Directory: SIMD Vector Compute / Data Compress
@@ -10640,22 +11790,40 @@ def squeeze(
         Parameters:
         - `src` (`VectorSSA`): Source vector to compress. Required.
         - `mask` (`MaskSSA`): Mask of elements to keep. Required.
+        - `record_nbytes` (`bool`): When `True`, hardware calculates the byte
+          count of the data selected by `mask` and records it in a dedicated
+          internal register. `store` uses this count in
+          `POST_MODE_UPDATE_NBYTES` mode. Defaults to `False`. Keyword-only.
 
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
-        - Must be called inside `tla.vec.func()`.
+        - Must be called inside `tla.vec.func(mode="simd")`.
         - Supported element types: `f32`, `f16`, `i8`, `i16`, `i32`, `u8`, `u16`, `u32`.
+
+        With `record_nbytes=True`, the byte count is the number of kept
+        elements times the size of each element in bytes. Hardware records
+        this count in a dedicated internal register. Before the count is
+        overwritten, the caller must call `store` with
+        `UnalignStoreParams(post_mode=POST_MODE_UPDATE_NBYTES)` to write the
+        intended data to the destination. For an example, see
+        [`Tensor.store`](language/data_movement.md#tlatensorstore).
 
         Example:
         ```python
+        # src_ub is a contiguous Int16 UB window with 128 elements.
         with tla.vec.func(mode="simd"):
-            packed = tla.squeeze(src, m)
+            keep, _ = tla.update_mask(3, dtype=tla.Int16)
+            packed = tla.squeeze(src_ub.load(), keep)
         ```
     """
     _require_category("squeeze", "src", src, "vector_ssa", 0)
     _require_category("squeeze", "mask", mask, "mask_ssa", 1)
+    if not isinstance(record_nbytes, bool):
+        _op_error("squeeze", "record_nbytes must be a bool")
     _require_frontend_state("squeeze")
     _runtime._require_enclosing_region("squeeze", "vec.func")
+    if _runtime._in_simt_vec_func():
+        _op_error("squeeze", "requires tla.vec.func(mode='simd')")
     src_value = _as_value(src)
     mask_value = _as_value(mask)
     _require_mask_matches_vector("squeeze", mask_value, src_value)
@@ -10663,6 +11831,7 @@ def squeeze(
         src_value.type,
         src_value,
         mask_value,
+        store_reg=record_nbytes,
         loc=loc,
     )
     return VectorSSA(result)
@@ -10966,7 +12135,8 @@ def cmp(
         Constraints:
         - Must be called inside a `@tla.kernel`-decorated kernel function.
         - Must be called inside `tla.vec.func()`; `mode` must be a supported compare mnemonic.
-        - Element type must be one of f16/f32/i32/u32/u16/u8.
+        - Element type must be one of f16/bf16/f32, i8/i16/i32/i64, or u8/u16/u32/u64.
+          Vector-vector and vector-scalar compares use the same element-type set.
 
         Example:
         ```python
@@ -10994,14 +12164,22 @@ def cmp(
     _runtime._require_enclosing_region("cmp", "vec.func")
     lhs_value = _as_value(lhs)
     lhs_desc = _vector_ssa_type_for_mlir_value(lhs_value)
+    _check_compare_element_type_supported("cmp", lhs_desc.element_type)
     if rhs_category == "vector_ssa":
         rhs_value = _as_value(rhs)
     else:
         assert rhs_num is not None
+        # Unsigned vectors keep their unsigned TLA type, but the scalar carrier
+        # is a signless integer: arith.constant only accepts signless, and the
+        # AVE scalar ABI is signless too. The compare itself still derives
+        # unsigned semantics from the vector element type.
         rhs_value = _numeric_ir_value_for_element_type(
-            "cmp", rhs_num, lhs_desc.element_mlir_type(lhs_value.type.context), loc=loc
+            "cmp",
+            rhs_num,
+            lhs_desc.element_mlir_type(lhs_value.type.context),
+            normalize_unsigned=True,
+            loc=loc,
         )
-        _check_compare_element_type_supported("cmp", lhs_desc.element_type)
     mask_ty = _mask_ssa_type_for_element_type(lhs_desc.element_type).to_mlir_type(
         lhs_value.type.context
     )
@@ -11637,6 +12815,239 @@ def arch_warp_reduce_sync(
 
 
 @dsl_user_op
+def arch_dcache_prefetch(
+    address: Pointer, byte_offset: int | Int16 | Int64 = 0, *, loc=None
+) -> None:
+    """Directory: System Variable Access / Architecture Helpers
+    Description:
+        Request the data-cache line containing the effective GM address plus
+        `byte_offset` bytes on the issuing Ascend 950 scalar core.
+    Parameters:
+        - `address`: a typed GM pointer.
+        - `byte_offset`: a signed Python integer, Int16 or Int64. Defaults to zero.
+    Constraints:
+        Use inside a scalar vector or cube region. The effective address must be valid.
+        The hint returns no value and provides no synchronization.
+        A tile view exposes its backing pointer. Include the tile displacement in bytes.
+    Example:
+        ```python
+        with tla.vector():
+            view = tla.tile_view(src, tla.make_shape(16), tla.make_coord(2))  # contiguous Int32
+            tla.arch.dcache_prefetch(view.ptr, byte_offset=128)
+        ```
+    """
+    name = "arch.dcache_prefetch"
+    _require_frontend_state(name)
+    if _runtime._has_enclosing_region("vec.func") or not (
+        _runtime._has_enclosing_region("vector")
+        or _runtime._has_enclosing_region("cube")
+    ):
+        _op_error(name, "requires a scalar tla.vector() or tla.cube() region")
+    if (
+        not isinstance(address, _Pointer)
+        or address.value is None
+        or address.memspace != AddressSpace.gm
+    ):
+        _op_error(name, "address must be a typed GM pointer")
+    if isinstance(byte_offset, int) and not isinstance(byte_offset, bool):
+        if not -(1 << 63) <= byte_offset < (1 << 63):
+            _op_error(name, "byte_offset must fit signed i64")
+        byte_offset = Int64(byte_offset)
+    elif isinstance(byte_offset, Int16):
+        byte_offset = byte_offset.to(Int64)
+    elif not isinstance(byte_offset, Int64):
+        _op_error(name, "byte_offset must be a Python integer, Int16 or Int64")
+    _tla_ops_gen.arch_dcache_prefetch(
+        address.value, byte_offset.ir_value(loc=loc), loc=loc
+    )
+
+
+def _require_core_region(op_name: str) -> None:
+    if _runtime._has_enclosing_region("vec.func"):
+        _op_error(
+            op_name,
+            "is a scalar operation and must be placed outside tla.vec.func, "
+            "directly in the tla.cube() or tla.vector() region",
+        )
+    in_cube = _runtime._has_enclosing_region("cube")
+    in_vector = _runtime._has_enclosing_region("vector")
+    if not in_cube and not in_vector:
+        _op_error(
+            op_name,
+            "must be nested inside tla.cube() or tla.vector(), which is what "
+            "says whose dcache is maintained",
+        )
+    if in_cube and in_vector:
+        _op_error(op_name, "mixed cube/vector placement is unsupported")
+
+
+@dsl_user_op
+def arch_dcci_cacheline(
+    address: Pointer, *, loc: mlir_ir.Location | None = None
+) -> None:
+    """Directory: System Variable Access / Architecture Helpers
+    Description:
+        Clean and invalidate the one dcache line that holds `address`.
+
+        The line is written back to global memory and then marked invalid, so a
+        later scalar read of it reloads from memory. Exactly one line is
+        affected -- the line that holds `address` -- and `address` need not be
+        line-aligned. How much of a range a single operation covers is not
+        specified here: to maintain more than one line, issue one call per
+        address or use `tla.arch.dcci_cachelines`.
+
+        This publishes one line. It is not a barrier, and it does not
+        synchronize other cores: whatever flag / wait protocol the consumer
+        needs is still the caller's to issue. To publish a whole domain in one
+        operation use `tla.arch.dcci_cachelines`.
+
+        Parameters:
+        - `address` (`Pointer`): GM pointer to the data whose line is
+          maintained. Required. The line maintained is the one holding this
+          address, whatever produced the pointer.
+
+          A tensor's `ptr` is its backing pointer, so `t.ptr` addresses element
+          0 and `t.ptr + i` addresses element `i`. A view exposes the same
+          backing pointer as the tensor it views rather than its own first
+          element, so include the view's displacement: a `tla.tile_view` at tile
+          index `c` with tile shape `n` starts at `view.ptr + c * n`.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+        - Must be inside `tla.cube()` or `tla.vector()`, and outside
+          `tla.vec.func`.
+        - `address` must be a `Pointer` in the `gm` address space. A UB-addressed
+          line is a different native operation and is not available here.
+        - Ascend 950 (arch 3510).
+
+        Example:
+        ```python
+        with tla.vector():
+            out[0] = tla.Int32(101)
+            tla.arch.dcci_cacheline(out.ptr)
+            # A view's first element, addressed explicitly.
+            tile = tla.tile_view(out, tla.make_shape(8), tla.make_coord(3))
+            tla.arch.dcci_cacheline(tile.ptr + 3 * 8)
+        ```
+    """
+    name = "arch.dcci_cacheline"
+    _require_frontend_state(name)
+    _require_core_region(name)
+    _require_category(name, "address", address, "pointer", 0)
+    ptr = _coerce_pointer_arg(address)
+    if ptr.addrspace is not AddressSpace.gm:
+        _op_error(name, f"expected a gm pointer, got {ptr.addrspace}")
+    byte_address = _tla_ops_gen.ptrtoint(
+        mlir_ir.IntegerType.get_signless(64), ptr.value, loc=loc
+    )
+    _tla_ops_gen.arch_dcci_cacheline(byte_address, loc=loc)
+
+
+@dsl_user_op
+def arch_dcci_cachelines(
+    target: Any = None, *, loc: mlir_ir.Location | None = None
+) -> None:
+    """Directory: System Variable Access / Architecture Helpers
+    Description:
+        Clean and invalidate every valid dcache line of one domain on this core.
+
+        Each line of the selected domain is written back and then marked
+        invalid. There is no address and no line count: "cachelines" is the whole
+        domain, not a range.
+
+        `tla.params.DcciTarget` selects it. `ALL` is this core's whole dcache,
+        `GM_L2` the lines holding GM addresses (native OUT), and `ST_ATOMIC` the
+        lines used by scalar atomic stores, which is the domain the documented
+        atomic saturation transition asks for.
+
+        Like `tla.arch.dcci_cacheline` this is cache maintenance only: it is not
+        a pipe barrier and not cross-core synchronization, and `GM_L2` does not
+        promise a flush of the shared L2.
+
+        Parameters:
+        - `target` (`tla.params.DcciTarget`): Domain to process, positionally or
+          by keyword. Optional, default `DcciTarget.ALL`.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+        - Must be inside `tla.cube()` or `tla.vector()`, and outside
+          `tla.vec.func`.
+        - `target` is compile-time; no address or line count is accepted.
+        - `DcciTarget.UB` is rejected: the native whole-UB form is AIV-only and
+          depends on UB dcache being enabled through CTRL[49], which no TLA
+          operation sets.
+        - Ascend 950 (arch 3510).
+
+        Example:
+        ```python
+        with tla.vector():
+            out[0] = tla.Int32(7)
+            tla.arch.dcci_cachelines(tla.params.DcciTarget.GM_L2)
+        ```
+    """
+    _require_frontend_state("arch.dcci_cachelines")
+    _require_core_region("arch.dcci_cachelines")
+    selected = DcciTarget.ALL if target is None else target
+    if not isinstance(selected, DcciTarget):
+        _op_error(
+            "arch.dcci_cachelines",
+            f"invalid argument 'target' (position 0): expected tla.params.DcciTarget, "
+            f"got {_type_name(target)}",
+        )
+    if selected is DcciTarget.UB:
+        _op_error(
+            "arch.dcci_cachelines",
+            "target DcciTarget.UB is not available: the native whole-UB form is "
+            "AIV-only and requires UB dcache enabled through CTRL[49], which no "
+            "TLA operation sets",
+        )
+    ctx = loc.context if loc is not None else mlir_ir.Context()
+    attr = mlir_ir.Attribute.parse(
+        f"#tla.dcci_target<{selected.mlir_token}>", context=ctx
+    )
+    _tla_ops_gen.arch_dcci_cachelines(attr, loc=loc)
+
+
+@dsl_user_op
+def arch_dci(*, loc: mlir_ir.Location | None = None) -> None:
+    """Directory: System Variable Access / Architecture Helpers
+    Description:
+        Invalidate this core's whole dcache **without** writing it back.
+
+        Every line is marked invalid and its dirty data is discarded, so later
+        accesses reload from global memory.
+
+        This is not a faster publication. Dirty data is lost, including scalar
+        writes the kernel never named, such as compiler spills, so use it only
+        where discarding those values is the intent. To publish instead, use
+        `tla.arch.dcci_cachelines`, which cleans before it invalidates. Nothing
+        here synchronizes peer cores, the icache or the shared L2.
+
+        Parameters:
+        - None.
+
+        Constraints:
+        - Must be called inside a `@tla.kernel`-decorated kernel function.
+        - Must be inside `tla.cube()` or `tla.vector()`, and outside
+          `tla.vec.func`.
+        - Ascend 950 (arch 3510) only; A2 and A3 have no such instruction.
+
+        - Issue a `DSB_ALL` data barrier first to complete preceding memory
+          accesses. TLA has no public API for this barrier.
+
+        Example:
+        ```python
+        # Required sequence in a scalar region:
+        # 1. Issue a DSB_ALL data barrier.
+        # 2. Call tla.arch.dci().
+        ```
+    """
+    _require_frontend_state("arch.dci")
+    _require_core_region("arch.dci")
+    _tla_ops_gen.arch_dci(loc=loc)
+
+
+@dsl_user_op
 def arch_warpsize(*, loc: mlir_ir.Location | None = None) -> Int32:
     """Directory: System Variable Access / Architecture Helpers
     Description:
@@ -11699,6 +13110,38 @@ def arch_lane_idx(*, loc: mlir_ir.Location | None = None) -> Int32:
     _require_arch_warp_region("arch.lane_idx")
     i32 = mlir_ir.IntegerType.get_signless(32)
     return Int32(_tla_ops_gen.arch_lane_idx(i32, loc=loc))
+
+
+@dsl_user_op
+def arch_activemask(*, loc: mlir_ir.Location | None = None) -> UInt32:
+    """Directory: System Variable Access / Architecture Helpers
+    Description:
+        Return the currently active lanes in this SIMT warp as `UInt32`.
+        Bit `j` is set exactly when lane `j` executes this instruction.
+        Unlaunched lanes in a partial warp contribute zero. Divergent branches
+        observe their own active set. Unlike `lanemask_*`, the result depends
+        on activity at the call site.
+        Parameters:
+        - None.
+
+        Returns:
+
+        - `UInt32`: The current active lane mask.
+    Constraints:
+        - Only inside `tla.vec.func(mode="simt")` in a `@tla.kernel`.
+        - Supported on Ascend 950 only; no explicit member mask.
+        - Does not provide cross-warp synchronization. The compiler omits unused queries.
+        - Reports actual instruction activity, not source-predicate membership:
+          the backend may reconverge identical branch bodies. Do not use this
+          snapshot as a synchronization guarantee or a persistent member mask.
+    Example:
+        with tla.vec.func(mode="simt", thread_block_dim=(48, 1, 1)):
+            tid, _, _ = tla.arch.thread_idx()
+            gm_out[tid] = tla.arch.activemask()
+    """
+    _require_arch_warp_region("arch.activemask")
+    i32 = mlir_ir.IntegerType.get_signless(32)
+    return UInt32(_tla_ops_gen.arch_activemask(i32, loc=loc))
 
 
 def _emit_arch_lanemask(op_name: str, mode: str, *, loc=None) -> UInt32:
@@ -11881,6 +13324,14 @@ def arch_sync_threads(*, loc: mlir_ir.Location | None = None) -> None:
     _tla_ops_gen.arch_sync_threads(loc=loc)
 
 
+# --- scalar dcache maintenance --------------------------------------------
+#
+# These three run on the issuing core's own scalar unit, so each is available on
+# AIC and AIV alike. What they share is a placement rule: the core that issues
+# the maintenance is the core whose cache it affects, so the op has to sit in a
+# region that names one. A kernel body outside both regions does not: in a mixed
+# kernel it is duplicated into the AIC and the AIV function, which would mean
+# two cache operations where the source asked for one.
 # A shuffle moves a bit pattern between registers without interpreting it, so
 # every integer and float width the intrinsics cover is supported, signed and
 # unsigned alike: inside a SIMT region a Numeric presents its value as a
@@ -12680,6 +14131,7 @@ _require_generated("arch_block_num")
 _require_generated("arch_thread_block_dim")
 _require_generated("arch_thread_idx")
 _require_generated("arch_lane_idx")
+_require_generated("arch_activemask")
 _require_generated("arch_lanemask")
 _require_generated("arch_warp_reduce")
 _require_generated("simt_add")
@@ -12693,10 +14145,17 @@ _require_generated("simt_pow")
 _require_generated("simt_load")
 _require_generated("simt_store")
 _require_generated("arch_sync_threads")
+_require_generated("arch_dcci_cacheline")
+_require_generated("arch_dcci_cachelines")
+_require_generated("arch_dci")
 _require_generated("inttoptr")
 _require_generated("recast_ptr")
 
 arch = _Namespace()
+arch._set("dcache_prefetch", arch_dcache_prefetch)
+arch._set("dcci_cacheline", arch_dcci_cacheline)
+arch._set("dcci_cachelines", arch_dcci_cachelines)
+arch._set("dci", arch_dci)
 arch._set("block_idx", arch_block_idx)
 arch._set("sub_block_idx", arch_sub_block_idx)
 arch._set("block_num", arch_block_num)
@@ -12705,6 +14164,7 @@ arch._set("thread_idx", arch_thread_idx)
 arch._set("warpsize", arch_warpsize)
 arch._set("lane_idx", arch_lane_idx)
 arch._set("warp_reduce_sync", arch_warp_reduce_sync)
+arch._set("activemask", arch_activemask)
 arch._set("lanemask_eq", arch_lanemask_eq)
 arch._set("lanemask_lt", arch_lanemask_lt)
 arch._set("lanemask_le", arch_lanemask_le)
@@ -12838,8 +14298,9 @@ def create_mask(
         - Must be called inside `tla.vec.func()`; `pattern` is required.
         - Ops that take `mask=` need a `MaskSSA` from `create_mask` /
           `update_mask`, not a raw `tla.mask.*` token.
-        - `VectorSSA[tla.Bool]` is single-VL and move-only (load/store); it
-          cannot be used for arithmetic / cast.
+        - `VectorSSA[tla.Bool]` is single-VL; it supports load/store and
+          `tla.where` select on the b8 carrier. Arithmetic and cast remain
+          unsupported.
 
         Example:
         ```python
@@ -13228,6 +14689,7 @@ __all__ = [
     "prof_end",
     "prof_scope",
     "local_mem_bar",
+    "data_sync_barrier",
     "mutex",
     "mutex_guard",
     "mutex_lock",

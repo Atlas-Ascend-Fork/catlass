@@ -34,7 +34,15 @@ Parameters:
 - `dst` (`Tensor`): Destination tile. Required.
 - `src` (`Tensor`): Source tile. Required.
 - `params` (`CopyParams | None`): Path-specific params:
-  `CopyL0C2DstParams`, `CopyUbToGmParams`. Default `None`.
+  `CopyL0C2DstParams`, `CopyUbToGmParams`, or `CopyPadParams`.
+  Default `None`.
+  - `CopyPadParams`: enables GM→UB DataCopyPad (`isPad=true`). See
+    Constraints for supported routes/dtypes and fill rules.
+  - `left_padding` / `right_padding`: elements padded on each side of
+    the innermost axis (compile-time int or runtime integer/index SSA).
+  - `padding_value`: fill value for padded elements (compile-time
+    literal/Numeric, or runtime integer bit pattern). Default `0`
+    means zero-fill.
 - `scale` (`Tensor | None`): L1 OCP `e8m0` shared-exponent tile for
   L1→L0A/L0B MX load. Stored as `i8`/`u8`; destination tag is
   `tla.arch.zZMxScale` (L0A) or `tla.arch.nNMxScale` (L0B).
@@ -51,6 +59,28 @@ Constraints:
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.cube()` or `tla.vector()`.
 - Copy size follows each tile's `origin_shape`.
+- UB-to-GM and L0C-to-GM copies accept
+  `params.atomic_mode`. Use `AtomicMode.ADD`, `MAX`, or `MIN` to combine
+  this write with the old GM value. The default, `NONE`, overwrites it.
+  The GM element type must be i8, i16, i32, f16, bf16, or f32 for atomic
+  writes. For L0C, conversion, quantization, and ReLU take effect before
+  the atomic operation.
+  For UB-to-GM, supply `CopyUbToGmParams` or omit `params`. Within
+  that parameter object, `atomic_mode` must be an `AtomicMode` member
+  and defaults to `AtomicMode.NONE`.
+- When `params` is `CopyPadParams`: GM→UB only, layouts
+  RowMajor→RowMajor or VectorLayout→VectorLayout; element dtypes
+  f32/f16/bf16/i32/u32/i16/u16/i8/u8/i1/i64/u64/f64 (not
+  fp8/hif8/fp4). Side counts must not be bool/tla.Bool/i1; a static
+  side count must satisfy pad bytes ≤ 32B; with static extents, dst
+  innermost ≥ src + left + right.
+- `CopyPadParams.padding_value` must match the source element dtype
+  (i1: bool/tla.Bool; integer: bare int or same-dtype Numeric; float:
+  bare float or matching float Numeric; bare int 0 is the dataclass
+  default zero-fill). Runtime non-i1 is an i64 bit pattern; runtime
+  i1 SSA is unsupported. For 8B (`i64`/`u64`/`f64`), only a static
+  zero fill is guaranteed; runtime is not value-checked and the BC
+  always zero-fills.
 - On Ascend 950, two logical rank-3 views `(B, M, N)` select batched
   GM-to-L1 layout conversion. FP8 supports RowMajor→zN and
   ColumnMajor→nZ; E8M0 supports the four GM MX-scale routes below.
@@ -96,6 +126,18 @@ Constraints:
   exactly one element per channel of the destination tile, ``originShape[1]``
   after `tile_view` cropping. When both lengths are static, a mismatch
   fails compilation.
+- L0C→UB 1-byte destinations (`i8`/`u8`/`f8e4m3fn`/`hif8`): Fixpipe
+  always RoundUp's the write axis (RowMajor `N` / ColumnMajor `M`)
+  to a 32-element block, independent of `unit_flag`. Static UB pitch
+  must be `>= RoundUp(extent, 32)` (RowMajor `stride0`, ColumnMajor
+  `stride1`), or pad overwrites the next row / goes OOB. Prefer
+  aligning the write-axis extent to 32. With `unit_flag != 0`, mmad
+  counts fractals by 16, so a static unaligned extent also hangs;
+  the frontend then requires `N % 32 == 0` (RowMajor) or
+  `M % 32 == 0` (ColumnMajor). `unit_flag=0` only removes the hang —
+  pitch must still cover the RoundUp write (and mmad must use flag
+  sync). Dynamic extents/pitches skip these checks (caller
+  contract). GM 1-byte destinations are not under this rule.
 - **Prepacked `GM` tiles:** a buffer already packed in fractal order is
   tagged `zN` (or `nZ` for the transposed packing) and copied to the
   matching `L1` tile with no re-layout. Only the aligned `zN` / `nZ` are
@@ -117,19 +159,20 @@ Supported cube copy routes without scale, `tla.copy(dst, src, scale=None)`
 
 |`src_addr`|`src_layout`|`dst_addr`|`dst_layout`|`dtypes`|
 |----------|------------|----------|------------|--------|
-|`gm`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i1`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`,`f4e2m1`,`f4e1m2`|
-|`gm`|`ColumnMajor`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`i1`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`,`f4e2m1`,`f4e1m2`|
-|`gm`|`zN`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
-|`gm`|`nZ`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i1`,`hif8`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`ColumnMajor`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`i1`,`hif8`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`zN`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i16`,`i32`,`u8`,`u16`,`u32`,`i1`,`hif8`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`nZ`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`i16`,`i32`,`u8`,`u16`,`u32`,`i1`,`hif8`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
 |`gm`|`zNUnAlign`|`l1`|`zNUnAlign`|`f32`,`f16`,`bf16`|
 |`gm`|`RowMajorMxScaleA`|`l1`|`zZMxScale`|`f8e8m0`|
 |`gm`|`ColMajorMxScaleA`|`l1`|`zZMxScale`|`f8e8m0`|
 |`gm`|`RowMajorMxScaleB`|`l1`|`nNMxScale`|`f8e8m0`|
 |`gm`|`ColMajorMxScaleB`|`l1`|`nNMxScale`|`f8e8m0`|
-|`gm`|`VectorLayout`|`l1`|`VectorLayout`|`f32`,`f16`,`bf16`,`i8`,`i1`,`i16`,`i32`,`i64`,`u8`,`u16`,`u32`,`u64`,`f64`|
+|`gm`|`VectorLayout`|`l1`|`VectorLayout`|`f32`,`f16`,`bf16`,`i8`,`i1`,`i16`,`i32`,`i64`,`u8`,`u16`,`u32`,`u64`,`f64`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 |`l1`|`VectorLayout`|`biasbuf`|`VectorLayout`|`f32`,`i32`|
 |`l1`|`zN`|`l0a`|`zN`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 |`l1`|`nZ`|`l0a`|`zN`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`|
+|`l1`|`VectorLayout`|`l0a`|`VectorLayout`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 |`l1`|`zN`|`l0b`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 |`l1`|`nZ`|`l0b`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 
@@ -154,6 +197,8 @@ The fixpipe has these rules:
 - If the dst is ub, there's an extra `split_mode`, support nosplit(`NO_SPLIT_VEC_0`, `NO_SPLIT_VEC_1`), and split(`SPLIT_M`, `SPLIT_N`)
 - If dst is (ub, ColumnMajor), only support `nosplit` mode
 - In to ub is `split` mode, any quant_mode/relu is disabled, neither pure cast, so only `f32`->`f32` and `i32`->`i32` is enabled
+- A quantized copy to l1 supports only the `zN` layout
+- L0C→UB 1-byte destinations (`i8`/`u8`/`f8e4m3fn`/`hif8`): Fixpipe always RoundUp's the write axis (RowMajor `N` / ColumnMajor `M`) to a 32-element block, independent of `unit_flag`. Static UB pitch must be `>= RoundUp(extent, 32)` (RowMajor `stride0`, ColumnMajor `stride1`), or pad overwrites the next row / goes OOB. Prefer aligning the write-axis extent to 32. With `unit_flag != 0`, mmad counts fractals by 16, so a static unaligned extent also hangs; the frontend then requires `N % 32 == 0` (RowMajor) or `M % 32 == 0` (ColumnMajor). `unit_flag=0` only removes the hang — pitch must still cover the RoundUp write (and mmad must use flag sync). Dynamic extents/pitches skip these checks (caller contract). GM 1-byte destinations are not under this rule.
 
 |`dst`|`dst_layout`|`split_mode`|`quant_mode`|`relu`|`src_dtype`:`dst_dtype`|
 |-----|------------|------------|------------|------|-----------------------|
@@ -168,22 +213,26 @@ The fixpipe has these rules:
 |`l1`|`zN`|`-`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
 |`ub`|`RowMajor`|`nosplit`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
 |`ub`|`ColumnMajor`|`nosplit`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
-|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`ub`|`RowMajor`|`nosplit`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `f16`,`bf16`|
-|`ub`|`RowMajor`|`nosplit`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `f16`,`bf16`|
-|`ub`|`ColumnMajor`|`nosplit`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `f16`,`bf16`|
-|`ub`|`ColumnMajor`|`nosplit`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `f16`,`bf16`|
-|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`ub`|`RowMajor`|`nosplit`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `f16`,`bf16`|
-|`ub`|`RowMajor`|`nosplit`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `f16`,`bf16`|
-|`ub`|`ColumnMajor`|`nosplit`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `f16`,`bf16`|
-|`ub`|`ColumnMajor`|`nosplit`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `f16`,`bf16`|
+|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`RowMajor`|`nosplit`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`RowMajor`|`nosplit`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`ColumnMajor`|`nosplit`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`ColumnMajor`|`nosplit`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`RowMajor`|`nosplit`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`RowMajor`|`nosplit`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`ColumnMajor`|`nosplit`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`ColumnMajor`|`nosplit`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`l1`|`zN`|`-`|`PER_TENSOR`|`False`|`f32`: `f16`,`bf16`,`i8`<br>`i32`: `f16`,`bf16`,`i8`|
+|`l1`|`zN`|`-`|`PER_TENSOR`|`True`|`f32`: `f16`,`bf16`,`i8`<br>`i32`: `f16`,`bf16`,`i8`|
+|`l1`|`zN`|`-`|`PER_CHANNEL`|`False`|`f32`: `f16`,`bf16`,`i8`<br>`i32`: `f16`,`bf16`,`i8`|
+|`l1`|`zN`|`-`|`PER_CHANNEL`|`True`|`f32`: `f16`,`bf16`,`i8`<br>`i32`: `f16`,`bf16`,`i8`|
 
 
 Supported vector copy routes
@@ -191,7 +240,7 @@ Supported vector copy routes
 |`src_addr`|`src_layout`|`dst_addr`|`dst_layout`|`dtypes`|
 |----------|------------|----------|------------|--------|
 |`gm`|`RowMajor`|`ub`|`RowMajor`|`i64`,`u64`,`f64`,`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`i1`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`,`f8e8m0`,`f4e2m1`,`f4e1m2`,`hif8`,`f4e2m1x2`,`f4e1m2x2`|
-|`gm`|`VectorLayout`|`ub`|`VectorLayout`|`i64`,`u64`,`f64`|
+|`gm`|`VectorLayout`|`ub`|`VectorLayout`|`i64`,`u64`,`f64`,`i1`,`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`u32`,`u16`,`u8`|
 |`ub`|`RowMajor`|`gm`|`RowMajor`|`i64`,`u64`,`f64`,`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`i1`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`,`f8e8m0`,`f4e2m1`,`f4e1m2`,`hif8`,`f4e2m1x2`,`f4e1m2x2`|
 |`ub`|`RowMajor`|`ub`|`RowMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`i1`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`,`f8e8m0`,`f4e2m1`,`f4e1m2`|
 |`ub`|`RowMajor`|`ub`|`ColumnMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`i1`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`|
@@ -310,7 +359,7 @@ Parameters:
       | `DIST_BRC_B32` | Broadcast one b32 element to all lanes |
       | `DIST_DINTLV_B8` | Load 512 bytes; even/odd b8 elements fill two 256-lane vectors |
       | `DIST_DINTLV_B16` | Load 512 bytes; return two 128-lane b16 registers, even positions first and odd positions second |
-      | `DIST_DINTLV_B32` | f32 deinterleave; dual results |
+      | `DIST_DINTLV_B32` | b32 deinterleave (f32/i32/u32); dual results |
       | `DIST_US_B8` / `DIST_US_B16` | 2x up-sample |
       | `DIST_DS_B8` / `DIST_DS_B16` | Load 512 bytes and retain every other b8/b16 element into one full vector |
       | `DIST_BRC_B16` | Broadcast one b16 element |
@@ -354,13 +403,11 @@ Constraints:
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func(mode="simd")`; source tile must be UB.
 - The actual read range must stay within the usable UB address space.
-- Mask load ``DIST_NORM`` requires a 1/2/4-byte scalar UB element type.
-- Distribution modes fix the element width: `DIST_US_B8` needs
-  i8/u8; `DIST_BRC_B16` / `DIST_US_B16` / `DIST_UNPACK_B16` /
-  `DIST_E2B_B16` need 2-byte (f16/bf16/i16/u16); `DIST_E2B_B32`
-  needs 4-byte (f32/i32/u32); `DIST_DINTLV_B16` needs 2-byte
-  (f16/bf16/i16/u16); `DIST_DINTLV_B32` needs f32;
-  `DIST_BLK` works for any element size.
+- Mask load ``DIST_NORM`` requires a b8/b16/b32/b64 scalar UB element type.
+- Each width-suffixed distribution requires the corresponding
+  element storage width. b8 includes Bool and byte encodings.
+  `DIST_BLK` supports b8/b16/b32. For b64, use `DIST_NORM`
+  or a full 32-lane `UnalignLoadParams` load.
 - `DIST_DINTLV_B8` supports i8/u8/f8E4M3FN/f8E5M2/HiFloat8/E8M0 and packed
   Float4E2M1x2/Float4E1M2x2. Each register
   holds 256 one-byte elements; one load reads `2 * 256 = 512` bytes
@@ -373,13 +420,14 @@ Constraints:
   without changing their two nibbles; each result holds 256 packed
   elements (512 FP4 values). E8M0 is transported as raw bytes, including
   the 0xFF NaN encoding, and can be written back with a normal aligned
-  store; arithmetic and register casts are unsupported. Logical FP4
-  and Bool are not supported by this distribution.
+  store; arithmetic and register casts are unsupported. Logical
+  (unpacked) FP4 is not supported. Bool is supported as b8
+  move-only transport (same as i8).
 - `DIST_DINTLV_B16` requires a 32-byte-aligned source address.
 - `DIST_UNPACK4_B8` requires a 1-byte element type and a
   32-byte-aligned source address.
 - `DIST_BRC_B8` / `DIST_DS_B8` / `DIST_UNPACK_B8` support
-  i8/u8/f8E4M3FN/f8E5M2; `DIST_DS_B16` supports
+  Bool/i8/u8/f8E4M3FN/f8E5M2/hif8/f8e8m0/fp4x2; `DIST_DS_B16` supports
   f16/bf16/i16/u16; `DIST_UNPACK_B32` supports f32/i32/u32.
   These modes preserve the source element type and produce full
   256-byte vector registers.
@@ -400,7 +448,9 @@ Constraints:
   ``DIST_US`` → ``VL/16``; ``DIST_DS`` → ``min(32, VL/4)``.
   On VL=256 this is 32B / 16B / 32B.
 - `POST_MODE_UPDATE` requires a rank-1 contiguous tile,
-  `DIST_NORM`, and element type in `{f16, bf16, f32}`. Returns
+  `DIST_NORM`, and element type of width b8/b16/b32/b64
+  (Bool, i/u integers, FP8, HiFloat8, E8M0, FP4x2, f16, bf16,
+  f32 and f64). Returns
   `(vector, next_tile)`. Inside `tla.vec.func`, assign
   `next_tile` back with `tla.range` (`while` is not supported
   nested in `vec.func`). The window must already be an origin
@@ -445,13 +495,15 @@ Store vector or mask SSA into this UB tensor tile (`tile.store`).
 Prototype:
 
 ```python
-tla.Tensor.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mask: MaskSSA | None = None) -> _Tensor | None
+tla.Tensor.store(value: VectorSSA | MaskSSA | tuple[VectorSSA, VectorSSA], params: StoreParams | None = None, *, mask: MaskSSA | None = None) -> _Tensor | None
 ```
 
 Parameters:
 
-- `value` (`VectorSSA | MaskSSA`): `VectorSSA` or `MaskSSA` to store.
-  Required.
+- `value` (`VectorSSA | MaskSSA | tuple[VectorSSA, VectorSSA]`):
+  `VectorSSA` or `MaskSSA` to store. For `DIST_INTLV_B8` /
+  `DIST_INTLV_B16` / `DIST_INTLV_B32`, pass a two-vector tuple
+  `(even, odd)` (same types / full VL). Required.
 - `params` (`StoreParams | None`): Store mode. Optional, default
   `None`.
   - `None` / `NormalStoreParams` / `UnalignStoreParams` /
@@ -464,7 +516,13 @@ Parameters:
       | Value | Meaning |
       |---|---|
       | `DIST_NORM` | Default contiguous store |
+      | `DIST_PACK_B16` | AscendC same-type PK_B16 (b16→b16, or b8→b8 after prior cast) |
+      | `DIST_PACK_B32` | AscendC same-type PK_B32 (b32→b32, or b16→b16 after prior cast) |
+      | `DIST_PACK_B64` | Pack the low 32 bits of i64, u64 or f64 lanes |
       | `DIST_PACK4_B32` | Store register byte slots 0,4,...,252 to UB byte slots 0,1,...,63, subject to the mask |
+      | `DIST_INTLV_B8` | Interleave two b8 registers into consecutive dst elements |
+      | `DIST_INTLV_B16` | Interleave two b16 registers |
+      | `DIST_INTLV_B32` | Interleave two b32 registers |
       | `DIST_FIRST_ELEMENT_B8` | Write only lane 0 (1-byte) |
       | `DIST_FIRST_ELEMENT_B16` | Write only lane 0 (2-byte) |
       | `DIST_FIRST_ELEMENT_B32` | Write only lane 0 (4-byte) |
@@ -475,10 +533,12 @@ Parameters:
       `post_mode=POST_MODE_UPDATE`; `0` advances by `tile_extent`
       (`origin_shape`). Default `0`.
   - `UnalignStoreParams`:
-    - `post_mode` (`str`): `POST_MODE_NORMAL` (default) or
-      `POST_MODE_UPDATE`.
-    - `post_update_stride` (`Any`): `0` (default) advances by
-      `origin_shape`; effective stride must be in `(0, VL]`. Default `0`.
+    - `post_mode` (`str`): `POST_MODE_NORMAL` (default),
+      `POST_MODE_UPDATE`, or `POST_MODE_UPDATE_NBYTES`.
+    - `post_update_stride` (`Any`): With `POST_MODE_UPDATE`,
+      `0` advances by `origin_shape` and the effective stride
+      must be in `(0, VL]`. With `POST_MODE_UPDATE_NBYTES`,
+      use `0`. Default `0`.
   - `BlockStoreParams`:
     - `block_stride` (`int`): Heads apart in 32B DataBlocks.
       Default `0`.
@@ -490,8 +550,8 @@ Parameters:
     - `store_dist` (`str`): `tla.params.MaskStoreDist` token.
       Default `DIST_NORM`.
 - `mask` (`MaskSSA | None`): Optional predicate for vector stores;
-  rejected by `MaskStoreParams` and first-element modes. Default
-  `None`. For `DIST_PACK4_B32`, masks use source lanes:
+  rejected by `UnalignStoreParams`, `MaskStoreParams`, first-element
+  and interleaved modes. Default `None`. For `DIST_PACK4_B32`, masks use source lanes:
   4/2/1 lanes per destination byte for 1/2/4-byte sources.
   An omitted mask follows the destination's valid length;
   an explicit mask is not clipped to that length. Masked-out
@@ -501,24 +561,29 @@ Constraints:
 
 - Must be called inside a `@tla.kernel`-decorated kernel function.
 - Must be called inside `tla.vec.func(mode="simd")`; destination tile must be UB.
-- `DIST_PACK4_B32` requires 1/2/4-byte source elements,
-  1-byte destination elements and a 32-byte-aligned destination address.
-  It stores at most 64 bytes, subject to the mask, without numeric
-  conversion or FP4 nibble packing. For FP32→FP8 results, use
-  `RegSlot.ZERO` to place the values in byte slots 0,4,...,252.
+
+**`POST_MODE_NORMAL` mode**
+
+- `DIST_PACK4_B32` supports matching 4-byte element types.
+  It also supports 1/2/4-byte source elements with a 1-byte
+  destination. It writes at most 64 bytes to a 32-byte-aligned
+  address. For FP32→FP8, use `RegSlot.ZERO` to place the
+  converted values in byte slots 0,4,...,252 before storing.
+- `DIST_PACK_B16` / `DIST_PACK_B32` / `DIST_PACK_B64` require
+  matching source and destination element types. B16 accepts
+  1- or 2-byte elements, B32 accepts 2- or 4-byte elements, and
+  B64 accepts 8-byte elements. Each destination element has room
+  for two active source lanes.
+- `DIST_INTLV_B8` / `DIST_INTLV_B16` / `DIST_INTLV_B32` require a
+  two-vector `value` tuple of identical full-VL registers matching
+  the dest element type (b8: Bool/i8/u8/f8*/hif8/e8m0/fp4x2, b16:
+  f16/bf16/i16/u16; b32: f32/i32/u32). Predicate masks are rejected.
 - First-element modes require the stored value and the dest tile to
   use the suffix-matching element width (b8 → 1-byte, b16 → 2-byte,
   b32 → 4-byte); passing a predicate mask raises an error.
-- `POST_MODE_UPDATE` requires a rank-1 contiguous tile,
-  `DIST_NORM`, and element type in `{f16, bf16, f32}`; returns the
-  next tile. Inside `tla.vec.func`, assign it back with
-  `tla.range`. Same origin window (`coord=0`) contract as UPDATE
-  `load`. `NormalStoreParams`: default `post_update_stride=0`
-  advances by `tile_extent` (`origin_shape`); an explicit stride is
-  decoupled. `UnalignStoreParams`: default `0`→`tile_extent`;
-  effective stride must be in `(0, VL]`; clean for hoists Pre/Post.
-
-Example:
+- `UnalignStoreParams` in NORMAL mode writes up to one vector of
+  elements using the destination's valid length. In UPDATE mode,
+  the effective stride sets both the write length and pointer advance.
 
 ```python
 with tla.vec.func(mode="simd"):
@@ -534,6 +599,89 @@ with tla.vec.func(mode="simd"):
         reg_slot=tla.params.RegSlot.ZERO))
     fp8_ub.store(fp8_reg, tla.params.NormalStoreParams(
         store_dist=tla.params.StoreDist.DIST_PACK4_B32))
+```
+
+- `POST_MODE_UPDATE` requires a rank-1 contiguous tile, `DIST_NORM`
+  and matching source and destination element types of width
+  b8/b16/b32/b64. It returns the next tile. Inside `tla.vec.func`, assign it back with
+  `tla.range`. Same origin window (`coord=0`) contract as UPDATE
+  `load`. `NormalStoreParams`: default `post_update_stride=0`
+  advances by `tile_extent` (`origin_shape`); an explicit stride is
+  decoupled. `UnalignStoreParams`: default `0`→`tile_extent`;
+  effective stride must be in `(0, VL]`; clean for hoists Pre/Post.
+
+**`POST_MODE_UPDATE_NBYTES` mode**
+
+This mode appends data using the byte count recorded by `squeeze`.
+Before each append, call `squeeze(..., record_nbytes=True)` in the
+same SIMD region so hardware calculates and records the byte count.
+Before that count is overwritten, call `store` with
+`UnalignStoreParams(post_mode=POST_MODE_UPDATE_NBYTES)`.
+`store` takes that many bytes from the start of the source vector
+and writes them at the supplied window's base address plus the
+current write offset. It advances the offset and returns the
+supplied window.
+
+**Usage restrictions**
+
+- Use a contiguous one-dimensional UB window at `coord=0`. The
+  source and destination element types must match. Supported types
+  are `Float16`, `Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`,
+  `Int32`, and `UInt32`. Keep `post_update_stride` at the
+  compile-time constant `0` and omit `mask` from `store`.
+- Appends in the same SIMD region share the write offset and
+  pending tail. Tail writeback uses the destination base address
+  of the last `store` executed with `POST_MODE_UPDATE_NBYTES`.
+- Reserve space for appends and tail writeback. From the first
+  append through SIMD exit and synchronization, keep other reads
+  and writes outside the compressed output byte range.
+- External calls must preserve the write offset and pending tail
+  from initialization through tail writeback, and the byte count
+  from when `squeeze` records it until the corresponding `store`
+  uses it.
+
+**Example using `POST_MODE_UPDATE_NBYTES`**
+
+The loop appends `[7, 9, 12]` from `src_ub[0:3]` and `[20, 24]`
+from `src_ub[128:130]` to the same destination, `dst_ub`. In
+this example, the start address of `dst_ub` is 32-byte aligned.
+
+1. **Initialize.** On entry to the SIMD region, the compiler sets
+   up a zero write offset and an empty buffer for pending bytes.
+2. **Compress and append.** In the first iteration,
+   `squeeze(..., record_nbytes=True)` packs three Int16 elements
+   and hardware records 6 bytes. The `store` leaves those bytes
+   in the hardware buffer and advances the write offset to 6 bytes.
+   In the second iteration, hardware records 4 bytes for two kept
+   elements, and `store` adds them after the first 6. The 10
+   bytes fall short of a 32-byte block, so they stay in the buffer
+   as the pending tail. See the
+   [`tla.squeeze` reference](../language/simd/compress.md#tlasqueeze).
+3. **Write back the tail.** After the loop, the compiler inserts
+   a writeback of the 10 buffered bytes to `dst_ub[0:5]`. After
+   leaving the SIMD region and synchronizing, the first five
+   elements of `dst_ub` are `[7, 9, 12, 20, 24]`.
+
+Example:
+
+```python
+# src_ub and dst_ub are separate contiguous Int16 UB windows at coord=0.
+# src_ub contains 256 elements, and dst_ub contains 128.
+with tla.vec.func(mode="simd"):
+    # Use the hardware-recorded byte count for each append.
+    update = tla.params.UnalignStoreParams(
+        post_mode=tla.params.PostMode.POST_MODE_UPDATE_NBYTES,
+    )
+    block = tla.make_shape(128)
+    for i in tla.range(2):
+        # Select source indices 0 through 127, then 128 through 255.
+        src_tile = tla.tile_view(src_ub, block, tla.make_coord(i))
+        # Keep the first 3 elements of the first tile and the first 2 of the second.
+        keep, _ = tla.update_mask(3 - i, dtype=tla.Int16)
+        # Pack the kept elements. At 2 bytes per Int16, hardware records 6, then 4 bytes.
+        packed = tla.squeeze(src_tile.load(), keep, record_nbytes=True)
+        # Pass dst_ub each time. Hardware advances the write offset.
+        dst_ub.store(packed, update)
 ```
 
 ---

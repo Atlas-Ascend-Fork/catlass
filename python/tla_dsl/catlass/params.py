@@ -48,6 +48,8 @@ class AtomicMode(enum.Enum):
 
     NONE = "none"  # No atomic operation
     ADD = "add"  # Set atomic add
+    MAX = "max"
+    MIN = "min"
 
     def __str__(self) -> str:
         return self.value
@@ -72,6 +74,42 @@ class CachePolicy(enum.Enum):
         return {
             CachePolicy.DISABLE: 0,
             CachePolicy.NORMAL: 1,
+        }[self]
+
+
+class DcciTarget(enum.IntEnum):
+    """Dcache domain for ``tla.arch.dcci_cachelines``.
+
+    The values are the native ``dcci_dst_t`` selector codes, so no translation
+    happens on the way down: ``CACHELINE_ALL``, ``CACHELINE_UB``,
+    ``CACHELINE_OUT``, ``CACHELINE_ATOMIC``.
+
+    ``GM_L2`` is the public spelling of native OUT. What OUT invalidates is the
+    GM-addressed lines of this core's dcache; the name does not promise a flush
+    of the shared L2 as well.
+
+    ``UB`` is defined because it is the domain the hardware names, but
+    ``tla.arch.dcci_cachelines`` rejects it: the native whole-UB form is
+    AIV-only and depends on UB dcache being enabled through CTRL[49], which no
+    TLA operation sets.
+    """
+
+    ALL = 0
+    UB = 1
+    GM_L2 = 2
+    ST_ATOMIC = 3
+
+    def __str__(self) -> str:
+        return self.name  # "ALL"/"UB"/"GM_L2"/"ST_ATOMIC"
+
+    @property
+    def mlir_token(self) -> str:
+        """Keyword of the matching ``tla.dcci_target`` attribute case."""
+        return {
+            DcciTarget.ALL: "all",
+            DcciTarget.UB: "ub",
+            DcciTarget.GM_L2: "gm_l2",
+            DcciTarget.ST_ATOMIC: "st_atomic",
         }[self]
 
 
@@ -113,6 +151,7 @@ class CopyParams:
 class PostMode:
     POST_MODE_NORMAL = "norm"
     POST_MODE_UPDATE = "update"
+    POST_MODE_UPDATE_NBYTES = "update_nbytes"
 
 
 class LoadDist:
@@ -157,9 +196,13 @@ class StoreDist:
     DIST_PACK_B32 = "pack_b32"
     DIST_PACK_B16 = "pack_b16"
     DIST_PACK4_B32 = "pack4_b32"
+    DIST_PACK_B64 = "pack_b64"
     DIST_FIRST_ELEMENT_B8 = "first_element_b8"
     DIST_FIRST_ELEMENT_B16 = "first_element_b16"
     DIST_FIRST_ELEMENT_B32 = "first_element_b32"
+    DIST_INTLV_B8 = "intlv_b8"
+    DIST_INTLV_B16 = "intlv_b16"
+    DIST_INTLV_B32 = "intlv_b32"
 
 
 class MaskStoreDist:
@@ -192,12 +235,23 @@ class NormalStoreParams(StoreParams):
 class UnalignStoreParams(StoreParams):
     """Unaligned UB vector store (lowers with ``unaligned_ub_access``).
 
+    Predicate masks are unsupported. In NORMAL mode, the destination's valid
+    length selects the number of elements to write, up to one vector.
+
     With ``post_mode=update``, ``post_update_stride=0`` (default) advances by
     ``tile_extent`` (``origin_shape``). The effective stride (default or
-    explicit) is used as HIVM ``$eleSize`` / pointer advance and must be in
+    explicit) selects the write length and pointer advance and must be in
     ``(0, VL]`` (element count for the dtype); overlapping / dirty writes are
     the caller's responsibility.
     Returns the next-window tile (from the HW post-update pointer).
+
+    Before each append, call ``squeeze(..., record_nbytes=True)`` so hardware
+    calculates and records the byte count. Call ``store`` with
+    ``POST_MODE_UPDATE_NBYTES`` before that count is overwritten. Leave
+    ``post_update_stride`` at ``0`` and allocate space for all appended data.
+    Compressed ``store`` calls return the supplied window and share the write
+    offset and pending tail. The compiler writes the tail using the most
+    recently used base address.
     """
 
     post_mode: str = PostMode.POST_MODE_NORMAL
@@ -289,7 +343,7 @@ class BlockLoadParams(LoadParams):
 class MaskLoadParams(LoadParams):
     """Continuous-aligned MaskSSA load via ``tile.load``.
 
-    - ``DIST_NORM``: UB element is a 1/2/4-byte scalar; predicate width
+    - ``DIST_NORM``: UB element is a 1/2/4/8-byte scalar; predicate width
       ``!tla.mask<N>`` is ``N = 256 / sizeof(T)`` (same rule as
       ``create_mask``).
     - ``DIST_US`` / ``DIST_DS``: UB element type may be any b8/b16/b32/b64
@@ -317,12 +371,106 @@ class CopyUbToGmParams(CopyParams):
     atomic_mode: AtomicMode = AtomicMode.NONE
 
     def _validate(self):
-        VALID_ATOMIC_MODE = (AtomicMode.NONE, AtomicMode.ADD)
         cls_name = type(self).__name__
-        if self.atomic_mode not in VALID_ATOMIC_MODE:
+        if not isinstance(self.atomic_mode, AtomicMode):
             raise ValueError(
-                f"{cls_name}.atomic_mode must be one of {VALID_ATOMIC_MODE}"
+                f"{cls_name}.atomic_mode must be one of {tuple(AtomicMode)}"
             )
+
+
+def _copy_pad_static_nonzero_padding_value(value: Any) -> bool:
+    """True when ``padding_value`` is a known static non-zero fill.
+
+    Runtime MLIR / index SSA values are not inspected (no runtime value gate).
+    """
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return value != 0
+    # Lazy import: avoid pulling Numeric into params module import graph.
+    from .base_dsl.typing import Numeric
+
+    if isinstance(value, Numeric):
+        host = value.value
+        if isinstance(host, bool):
+            return True
+        if isinstance(host, (int, float)):
+            return host != 0
+    return False
+
+
+@dataclass
+class CopyPadParams(CopyParams):
+    """AscendC DataCopyPadExtParams fields for ``tla.copy``.
+
+    Presence of this bag means pad is enabled (BC sets ``isPad=true``).
+    Exact-byte copy remains ``params=None``. There is no public ``is_pad``.
+
+    Route / dtype (enforced by ``tla.copy``):
+    - GM→UB only, layouts ``RowMajor→RowMajor`` or ``VectorLayout→VectorLayout``.
+    - Element dtypes: ``f32``/``f16``/``bf16``/``i32``/``u32``/``i16``/``u16``/
+      ``i8``/``u8``/``i1``/``i64``/``u64``/``f64`` (not fp8/hif8/fp4).
+
+    Parameters:
+    - ``left_padding`` / ``right_padding``: elements padded on each side of the
+      innermost axis. Static non-negative ``int`` (or integer ``Numeric`` /
+      runtime integer/index SSA). **Must not** be ``bool``/``tla.Bool``/``i1``.
+      When a side count is a static int, ``count * sizeof(T)`` must be ≤ 32B;
+      when extents are also static, dst innermost ≥ src + left + right.
+    - ``padding_value``: fill value written into padded elements. Type must
+      **match** the source element dtype:
+      - ``i1`` tiles: Python ``bool`` or ``tla.Bool`` (preferred). Bare ``int``
+        ``0`` is accepted as the dataclass default zero-fill; non-zero bare
+        ``int`` is rejected.
+      - integer tiles: bare ``int`` or a ``Numeric`` whose ``dtype`` equals the
+        tile (e.g. ``tla.Int32(1)`` on ``i32``); cross-width Numerics rejected.
+      - float tiles: bare ``float`` or a matching float ``Numeric`` (e.g.
+        ``tla.Float32(1.0)`` on ``f32``); non-zero bare ``int`` and cross-dtype
+        Numerics rejected. Bare ``int`` ``0`` is accepted as zero-fill
+        (dataclass default). Constants encode as IEEE bits for the tile width.
+      Runtime non-``i1`` ``padding_value`` is an ``i64`` bit pattern (integer
+      SSA); runtime ``i1`` SSA is not supported (use a static bool).
+
+    For 8B element types (``i64`` / ``u64`` / ``f64``): only a **static** zero
+    ``padding_value`` is guaranteed. The frontend rejects static non-zero
+    values (plain ``int``/``float`` and foldable ``Numeric`` hosts). Runtime
+    ``padding_value`` is **not** value-checked; the BC pad path always fills
+    8B pads with zero and ignores non-zero bits, so callers must not rely on a
+    non-zero runtime fill.
+    """
+
+    padding_value: Any = 0
+    left_padding: Any = 0
+    right_padding: Any = 0
+
+    def _validate(self, *, elem_nbytes: int | None = None):
+        cls_name = type(self).__name__
+        for name, value in (
+            ("left_padding", self.left_padding),
+            ("right_padding", self.right_padding),
+        ):
+            if isinstance(value, bool):
+                raise ValueError(f"{cls_name}.{name} must not be bool")
+            if isinstance(value, int) and value < 0:
+                raise ValueError(f"{cls_name}.{name} must be >= 0")
+        if elem_nbytes is not None:
+            if elem_nbytes <= 0:
+                raise ValueError(f"{cls_name}: invalid elem_nbytes={elem_nbytes}")
+            for name, value in (
+                ("left_padding", self.left_padding),
+                ("right_padding", self.right_padding),
+            ):
+                if isinstance(value, int) and not isinstance(value, bool):
+                    if value * elem_nbytes > 32:
+                        raise ValueError(
+                            f"{cls_name}.{name}*{elem_nbytes}B exceeds AscendC "
+                            f"per-side pad limit of 32B (got {value} elements)"
+                        )
+            if elem_nbytes == 8:
+                if _copy_pad_static_nonzero_padding_value(self.padding_value):
+                    raise ValueError(
+                        f"{cls_name}.padding_value must be 0 when element width is 8B"
+                    )
 
 
 @dataclass
@@ -341,7 +489,6 @@ class CopyL0C2DstParams(CopyParams):
         from .execution_lowering import TlaLoweringError
 
         VALID_UNIT_FLAG = (0b00, 0b11)
-        VALID_ATOMIC_MODE = (AtomicMode.NONE, AtomicMode.ADD)
         cls_name = type(self).__name__
         if not isinstance(self.unit_flag, int):
             raise TlaLoweringError(f"{cls_name}.unit_flag must be a compile-time int")
@@ -380,9 +527,9 @@ class CopyL0C2DstParams(CopyParams):
                 raise TlaLoweringError(
                     f"{cls_name}.quant_tensor must be a tensor, got {type(self.quant_tensor).__name__}"
                 )
-        if self.atomic_mode not in VALID_ATOMIC_MODE:
+        if not isinstance(self.atomic_mode, AtomicMode):
             raise ValueError(
-                f"{cls_name}.atomic_mode must be one of {VALID_ATOMIC_MODE}"
+                f"{cls_name}.atomic_mode must be one of {tuple(AtomicMode)}"
             )
 
 
@@ -437,7 +584,7 @@ class SatMode(enum.Enum):
 class RoundMode(enum.Enum):
     """Rounding applied on precision loss (AVE ``tla.cast`` / ``VectorSSA.to``).
 
-    ``CAST_NONE`` matches AscendC: it must be passed explicitly. Lossless casts
+    ``CAST_NONE`` is the default for ``CastParams``. Lossless casts
     drop the round operand; lossy casts lower as ``CAST_RINT``. ``CAST_HYBRID``
     selects native hybrid rounding for Float32 -> HiFloat8 only.
     """
@@ -509,7 +656,7 @@ class CastParams:
 
     reg_slot: RegSlot = RegSlot.ZERO
     sat_mode: SatMode = SatMode.NOSAT
-    round_mode: RoundMode = RoundMode.CAST_ROUND
+    round_mode: RoundMode = RoundMode.CAST_NONE
 
     def codes(self) -> list[int]:
         """The three enum codes for the tla.cast DenseI32ArrayAttr, in order."""
@@ -576,3 +723,24 @@ class MemType(enum.IntEnum):
     SCALAR_LOAD = 3
     VEC_ALL = 4
     SCALAR_ALL = 5
+
+
+class DsbTarget(enum.IntEnum):
+    """Storage domain of :func:`tla.data_sync_barrier`.
+
+    The integer values are frozen ABI: each one is the storage-domain
+    immediate the barrier instruction takes.
+
+    - ``GM_UB`` (0): wait for previously issued GM and UB access instructions.
+      L1 and L0A/L0B/L0C buffers are NOT covered.
+    - ``GM`` (1): wait for previously issued GM access instructions.
+    - ``UB`` (2): wait for previously issued UB access instructions; not
+      issued on AIC (rejected inside ``tla.cube()``).
+    - ``SEQ`` (3): wait for previously issued sequencer accesses (including
+      the parameter buffer).
+    """
+
+    GM_UB = 0
+    GM = 1
+    UB = 2
+    SEQ = 3

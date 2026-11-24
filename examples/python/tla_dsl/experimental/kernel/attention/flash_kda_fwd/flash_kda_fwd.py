@@ -8,15 +8,25 @@
 
 """Ascend 950 Flash KDA forward device kernels.
 
-Adapted from cann/cannbot-dsl fc438d3ef03129929eb8faae3906365b3162f163,
-samples/attention/flash_kda_fwd/. See NOTICE and README.md.
-
 Sections: shared address/Vector/Cube/state helpers; preprocessing and scores;
 staged producer, recurrence and kernel; persistent math, pipeline and kernel.
-Host-only ABI4 scheduling is implemented in __init__.py.
+Host-only ABI4 scheduling is implemented in the host section at the end of this file.
 """
 
+import math
+from collections.abc import Sequence
+from threading import Lock
+from types import SimpleNamespace
+
+import torch
+from torch import Tensor
 from catlass import tla
+
+
+@tla.jit
+def mutex_event(mutex, pipe):
+    mutex.lock(pipe=pipe)
+    mutex.unlock(pipe=pipe)
 
 
 # Shared address and layout helpers.
@@ -722,6 +732,8 @@ def issue_cached_score_mmads(
     cache, left_ptr, right_ptr, ck_ptr, cq_ptr, loaded, left_free
 ):
     """Source 856–875: cache six RHS in L0B; each of eight LHS loads once."""
+    _mutex_left_free = tla.mutex("issue_cached_score_mmads_731_left_free", id=0)
+    _mutex_loaded = tla.mutex("issue_cached_score_mmads_731_loaded", id=1)
     for index in tla.range_constexpr(6):
         source = shared_right_transpose(cache.ptr, index)
         right = tla.make_tensor_like(
@@ -737,10 +749,10 @@ def issue_cached_score_mmads(
                 left_ptr + kind * 2048, row_major(left_ptr, 16, 128), tla.arch.zN
             )
             if tla.const_expr(row != 0):
-                tla.wait_flag(left_free)
+                mutex_event(_mutex_left_free, tla.arch.MTE1)
             tla.copy(left, source)
-            tla.set_flag(loaded)
-            tla.wait_flag(loaded)
+            mutex_event(_mutex_loaded, tla.arch.MTE1)
+            mutex_event(_mutex_loaded, tla.arch.CUBE)
             for col in tla.range_constexpr(row + 1):
                 index = col
                 if tla.const_expr(row >= 2):
@@ -760,7 +772,7 @@ def issue_cached_score_mmads(
                 )
                 tla.mmad(result, left, right, init_c=True)
             if tla.const_expr(row != 3):
-                tla.set_flag(left_free)
+                mutex_event(_mutex_left_free, tla.arch.CUBE)
 
 
 @tla.jit
@@ -771,7 +783,9 @@ def matrix64(ptr, layout):
 @tla.jit
 def load_inverse_operands(left, right, a, b, zero, ready, free, diagonal_only, clear):
     """Reference full64 double-buffer load, optionally replace diagonal fractals."""
-    tla.wait_flag(free)
+    _mutex_free = tla.mutex("load_inverse_operands_782_free", id=0)
+    _mutex_ready = tla.mutex("load_inverse_operands_782_ready", id=1)
+    mutex_event(_mutex_free, tla.arch.MTE1)
     if tla.const_expr(diagonal_only):
         if tla.const_expr(clear):
             tla.copy(a, zero)
@@ -789,23 +803,27 @@ def load_inverse_operands(left, right, a, b, zero, ready, free, diagonal_only, c
     else:
         tla.copy(a, left)
         tla.copy(b, right)
-    tla.set_flag(ready)
+    mutex_event(_mutex_ready, tla.arch.MTE1)
 
 
 @tla.jit
 def inverse_mmad(c, a, b, ready, free, initialize, unit):
-    tla.wait_flag(ready)
+    _mutex_ready = tla.mutex("inverse_mmad_806_ready", id=0)
+    _mutex_free = tla.mutex("inverse_mmad_806_free", id=1)
+    mutex_event(_mutex_ready, tla.arch.CUBE)
     tla.mmad(c, a, b, init_c=initialize, unit_flag=unit)
-    tla.set_flag(free)
+    mutex_event(_mutex_free, tla.arch.CUBE)
 
 
 @tla.jit
 def inverse_fix(destination, c, fix_ready, accumulator_free):
+    _mutex_fix_ready = tla.mutex("inverse_fix_813_fix_ready", id=0)
+    _mutex_accumulator_free = tla.mutex("inverse_fix_813_accumulator_free", id=1)
     tla.copy(destination, c, tla.params.CopyL0C2DstParams(unit_flag=3))
-    tla.set_flag(fix_ready)
-    tla.wait_flag(fix_ready)
-    tla.set_flag(accumulator_free)
-    tla.wait_flag(accumulator_free)
+    mutex_event(_mutex_fix_ready, tla.arch.FIX)
+    mutex_event(_mutex_fix_ready, tla.arch.MTE1)
+    mutex_event(_mutex_accumulator_free, tla.arch.FIX)
+    mutex_event(_mutex_accumulator_free, tla.arch.CUBE)
 
 
 @tla.jit
@@ -893,12 +911,14 @@ def copy_selected_fractals(destination, source, mode):
 
 @tla.jit
 def load_selected_pair(left, right, a, b, zero, ready, free, left_mode, right_mode):
-    tla.wait_flag(free)
+    _mutex_free = tla.mutex("load_selected_pair_905_free", id=0)
+    _mutex_ready = tla.mutex("load_selected_pair_905_ready", id=1)
+    mutex_event(_mutex_free, tla.arch.MTE1)
     tla.copy(a, zero)
     tla.copy(b, zero)
     copy_selected_fractals(a, left, left_mode)
     copy_selected_fractals(b, right, right_mode)
-    tla.set_flag(ready)
+    mutex_event(_mutex_ready, tla.arch.MTE1)
 
 
 @tla.jit
@@ -921,6 +941,8 @@ def compose_packed64_inverse(
     accumulator_free,
 ):
     """Source 594–669: two packed16 merges then one packed32 merge."""
+    _mutex_free0 = tla.mutex("compose_packed64_inverse_915_free0", id=0)
+    _mutex_ready0 = tla.mutex("compose_packed64_inverse_915_ready0", id=1)
     load_selected_pair(scratch, inverse, a1, b1, zero, ready1, free1, 3, 1)
     inverse_mmad(c_power, a1, b1, ready1, free1, True, 3)
     inverse_fix(temporary, c_power, fix_ready, accumulator_free)
@@ -930,14 +952,14 @@ def compose_packed64_inverse(
     load_selected_pair(scratch, inverse, a1, b1, zero, ready1, free1, 0, 4)
     # Preserve source overlap: prepare the second pair's independent LHS before
     # the first MMAD and FIX produce its RHS.
-    tla.wait_flag(free0)
+    mutex_event(_mutex_free0, tla.arch.MTE1)
     tla.copy(a0, zero)
     tla.copy(b0, zero)
     tla.copy(a0, inverse)
     inverse_mmad(c_power, a1, b1, ready1, free1, True, 3)
     inverse_fix(temporary, c_power, fix_ready, accumulator_free)
     copy_selected_fractals(b0, temporary, 5)
-    tla.set_flag(ready0)
+    mutex_event(_mutex_ready0, tla.arch.MTE1)
     inverse_mmad(c_inverse, a0, b0, ready0, free0, False, 3)
 
 
@@ -952,37 +974,6 @@ def cast_state_snapshot(state, snapshot, dv):
         tla.local_mem_bar(tla.params.MemType.VEC_STORE, tla.params.MemType.VEC_LOAD)
         for row in tla.range(dv):
             store_bf16(at(snapshot, row * 64, 64), at(state, row * 64, 64).load())
-
-
-@tla.jit
-def finish_u_delta(u, delta, output, dv, aiv, valid):
-    """Staged source consumes BF16 u, subtracts FP32 W@H, then casts once."""
-    width = 64
-    if tla.const_expr(dv < 64):
-        width = dv
-    with tla.vec.func(mode="simd"):
-        for group in tla.range(16):
-            for lane in tla.range_constexpr(2):
-                row = group * 2 + lane
-                for col in tla.range_constexpr((dv + 63) // 64):
-                    value = tla.full(0.0, dtype=tla.Float32)
-                    if aiv * 32 + row < valid:
-                        raw = load_bf16_f32(
-                            tla.tile_view(
-                                u, tla.make_shape(1, 64), tla.make_coord(row, col)
-                            )
-                        )
-                        change = tla.tile_view(
-                            delta, tla.make_shape(1, 64), tla.make_coord(row, col)
-                        ).load()
-                        value = raw - change
-                    store_bf16(
-                        tla.tile_view(
-                            output, tla.make_shape(1, 64), tla.make_coord(row, col)
-                        ),
-                        value,
-                        width,
-                    )
 
 
 @tla.jit
@@ -1170,6 +1161,11 @@ def compute_state_projections(
     projection_done=None,
     output_free=None,
 ):
+    _mutex_loaded = tla.mutex("compute_state_projections_1138_loaded", id=0)
+    _mutex_projection_done = tla.mutex(
+        "compute_state_projections_1138_projection_done", id=1
+    )
+    _mutex_output_free = tla.mutex("compute_state_projections_1138_output_free", id=2)
     a0 = tla.make_tensor_like(a0_ptr, row_major(a0_ptr, 64, 128), tla.arch.zN)
     a1 = tla.make_tensor_like(a1_ptr, row_major(a1_ptr, 64, 128), tla.arch.zN)
     # State is stored [V,K]. Its zN bytes are a transpose nZ view [K,V].
@@ -1181,70 +1177,53 @@ def compute_state_projections(
     co = tla.make_tensor_like(co_ptr, row_major(co_ptr, 64, dv), tla.arch.L0Clayout)
     tla.copy(b, state_transposed)
     tla.copy(a0, w)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     tla.mmad(cu, a0, b, init_c=True)
     if tla.const_expr(projection_done is not None):
-        tla.set_flag(projection_done)
+        mutex_event(_mutex_projection_done, tla.arch.CUBE)
     tla.copy(a1, q)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     if tla.const_expr(output_free is not None):
-        tla.wait_flag(output_free)
+        mutex_event(_mutex_output_free, tla.arch.CUBE)
     tla.mmad(co, a1, b, init_c=True)
 
 
 @tla.jit
 def load_recurrent_operands(kg, aqk, ka_ptr, aq_ptr, dv, loaded):
+    _mutex_loaded = tla.mutex("load_recurrent_operands_1177_loaded", id=0)
     kb = tla.make_tensor_like(ka_ptr, row_major(ka_ptr, 64, 128), tla.arch.nZ)
     qa = tla.make_tensor_like(aq_ptr, row_major(aq_ptr, 64, 64), tla.arch.zN)
     tla.copy(kb, kg)
     tla.copy(qa, aqk)
-    tla.set_flag(loaded)
-
-
-@tla.jit
-def compute_output_and_state_delta(
-    vnew, ka_ptr, aq_ptr, ua_ptr, ub_ptr, co_ptr, ch_ptr, dv, loaded
-):
-    # Source uses the same resident v_new for both delta H and output.
-    vt = tla.make_tensor_like(vnew.ptr, row_major(vnew.ptr, dv, 64), tla.arch.nZ)
-    ua = tla.make_tensor_like(ua_ptr, row_major(ua_ptr, dv, 64), tla.arch.zN)
-    ub = tla.make_tensor_like(ub_ptr, row_major(ub_ptr, 64, dv), tla.arch.nZ)
-    kb = tla.make_tensor_like(ka_ptr, row_major(ka_ptr, 64, 128), tla.arch.nZ)
-    qa = tla.make_tensor_like(aq_ptr, row_major(aq_ptr, 64, 64), tla.arch.zN)
-    co = tla.make_tensor_like(co_ptr, row_major(co_ptr, 64, dv), tla.arch.L0Clayout)
-    ch = tla.make_tensor_like(ch_ptr, row_major(ch_ptr, dv, 128), tla.arch.L0Clayout)
-    tla.copy(ua, vt)
-    tla.copy(ub, vnew)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
-    tla.mmad(ch, ua, kb, init_c=True)
-    tla.mmad(co, qa, ub, init_c=False)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
 
 
 @tla.jit
 def compute_state_delta(vnew, ka_ptr, ua_ptr, ch_ptr, dv, loaded):
     """Source update_state: publish this result before the output MMAD."""
+    _mutex_loaded = tla.mutex("compute_state_delta_1186_loaded", id=0)
     vt = tla.make_tensor_like(vnew.ptr, row_major(vnew.ptr, dv, 64), tla.arch.nZ)
     ua = tla.make_tensor_like(ua_ptr, row_major(ua_ptr, dv, 64), tla.arch.zN)
     kb = tla.make_tensor_like(ka_ptr, row_major(ka_ptr, 64, 128), tla.arch.nZ)
     ch = tla.make_tensor_like(ch_ptr, row_major(ch_ptr, dv, 128), tla.arch.L0Clayout)
     tla.copy(ua, vt)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     tla.mmad(ch, ua, kb, init_c=True)
 
 
 @tla.jit
 def accumulate_output(vnew, aq_ptr, ub_ptr, co_ptr, dv, loaded):
     """Source accumulate_mqk_u; independent of the state-delta FIX write."""
+    _mutex_loaded = tla.mutex("accumulate_output_1199_loaded", id=0)
     ub = tla.make_tensor_like(ub_ptr, row_major(ub_ptr, 64, dv), tla.arch.nZ)
     qa = tla.make_tensor_like(aq_ptr, row_major(aq_ptr, 64, 64), tla.arch.zN)
     co = tla.make_tensor_like(co_ptr, row_major(co_ptr, 64, dv), tla.arch.L0Clayout)
     tla.copy(ub, vnew)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     tla.mmad(co, qa, ub, init_c=False)
 
 
@@ -1365,6 +1344,10 @@ def prefix_inputs(
     defer_norm=False,
     inputs_prefetched=False,
 ):
+    _mutex_gm_loaded = tla.mutex("prefix_inputs_1270_gm_loaded", id=0)
+    _mutex_v_done = tla.mutex("prefix_inputs_1270_v_done", id=1)
+    _mutex_peer_loaded = tla.mutex("prefix_inputs_1270_peer_loaded", id=2)
+    _mutex_cast_free = tla.mutex("prefix_inputs_1270_cast_free", id=3)
     input_q = uq
     input_k = uk
     if tla.const_expr(qraw is not None):
@@ -1396,16 +1379,16 @@ def prefix_inputs(
                 beta_pitch,
                 first_chunk,
             )
-        tla.set_flag(gm_loaded)
-        tla.wait_flag(gm_loaded)
+        mutex_event(_mutex_gm_loaded, tla.arch.MTE2)
+        mutex_event(_mutex_gm_loaded, tla.arch.VECTOR)
         if valid < 64:
             zero_qkv_tail(input_q, input_k, uv, valid)
         if tla.const_expr(beta.ptr.dtype != tla.Float32):
             prepare_beta_input(beta_io, raw_beta, valid, beta_pitch)
         if tla.const_expr(normalize):
             compute_qk_partial_sums(input_q, input_k, at(stats, 0, 128))
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 row_major(exchange.ptr + aiv * 128, 1, 128),
                 row_major(stats.ptr, 1, 128),
@@ -1416,13 +1399,13 @@ def prefix_inputs(
                 row_major(stats.ptr + 128, 1, 128),
                 row_major(exchange.ptr + (1 - aiv) * 128, 1, 128),
             )
-            tla.set_flag(peer_loaded)
+            mutex_event(_mutex_peer_loaded, tla.arch.MTE2)
         if valid == 64:
             activate_gate(raw_gate, bias_ub, alpha_ub, ug, 64, mode, lower, True)
         else:
             activate_gate(raw_gate, bias_ub, alpha_ub, ug, valid, mode, lower, True)
         if tla.const_expr(normalize):
-            tla.wait_flag(peer_loaded)
+            mutex_event(_mutex_peer_loaded, tla.arch.VECTOR)
             tla.cross_core_set_flag(consumed, tla.arch.MTE2)
             tla.cross_core_wait_flag(consumed, tla.arch.MTE3)
             compute_qk_inverse_vectors(
@@ -1438,8 +1421,8 @@ def prefix_inputs(
             )
         else:
             activate_beta(raw_beta, ub, valid, beta_sigmoid, allow_negative)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         if tla.const_expr(save_norm and not defer_norm):
             if norm_owner:
                 tla.copy(
@@ -1463,8 +1446,8 @@ def prefix_inputs(
                     tla.copy(row_major(bact.ptr, 1, valid), row_major(ub.ptr, 1, valid))
                 else:
                     beta_to_column(ub, beta_column)
-                    tla.set_flag(v_done)
-                    tla.wait_flag(v_done)
+                    mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                    mutex_event(_mutex_v_done, tla.arch.MTE3)
                     tla.copy(
                         strided_rows(bact.ptr, valid, 1, beta_out_stride),
                         strided_rows(beta_column.ptr, valid, 1, 8),
@@ -1481,20 +1464,20 @@ def prefix_inputs(
                             row_major(stats.ptr + 320, 1, valid),
                         )
                     else:
-                        tla.set_flag(cast_free)
-                        tla.wait_flag(cast_free)
+                        mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                        mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                         beta_to_column(at(stats, 256, 64), beta_column)
-                        tla.set_flag(v_done)
-                        tla.wait_flag(v_done)
+                        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                        mutex_event(_mutex_v_done, tla.arch.MTE3)
                         tla.copy(
                             strided_rows(rstd.ptr, valid, 1, rstd_stride),
                             strided_rows(beta_column.ptr, valid, 1, 8),
                         )
-                        tla.set_flag(cast_free)
-                        tla.wait_flag(cast_free)
+                        mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                        mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                         beta_to_column(at(stats, 320, 64), beta_column)
-                        tla.set_flag(v_done)
-                        tla.wait_flag(v_done)
+                        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                        mutex_event(_mutex_v_done, tla.arch.MTE3)
                         tla.copy(
                             strided_rows(
                                 rstd.ptr + rstd_k_offset, valid, 1, rstd_stride
@@ -1593,6 +1576,7 @@ def update_safe_right(k, g, right, row_block, active):
 
 @tla.jit
 def publish_operand(nd, nz_ptr, l1_ptr, step, ready0, ready1, free0, free1, v_done):
+    _mutex_v_done = tla.mutex("publish_operand_1554_v_done", id=0)
     slot = step % 2
     if slot == 0:
         tla.cross_core_wait_flag(free0, tla.arch.VECTOR)
@@ -1600,8 +1584,8 @@ def publish_operand(nd, nz_ptr, l1_ptr, step, ready0, ready1, free0, free1, v_do
         tla.cross_core_wait_flag(free1, tla.arch.VECTOR)
     nz = flat(nz_ptr + slot * 1088, 1088)
     nd2nz_tile(nd, nz, 16, 64)
-    tla.set_flag(v_done)
-    tla.wait_flag(v_done)
+    mutex_event(_mutex_v_done, tla.arch.VECTOR)
+    mutex_event(_mutex_v_done, tla.arch.MTE3)
     l1 = tla.make_tensor_like(
         l1_ptr + slot * 2048, row_major(l1_ptr, 16, 128), tla.arch.zN
     )
@@ -1662,6 +1646,8 @@ def per_d_scores(
     Two L1 handoff slots; each holds both AIVs' 16x64 halves. The safe diagonal
     only evaluates non-positive gate differences; it is not the shared path.
     """
+    _mutex_op_free = tla.mutex("per_d_scores_1601_op_free", id=0)
+    _mutex_loaded = tla.mutex("per_d_scores_1601_loaded", id=1)
     ready0 = tla.cross_flag("pd_ready0", mode=2)
     ready1 = tla.cross_flag("pd_ready1", mode=2)
     free0 = tla.cross_flag("pd_free0", mode=2)
@@ -1675,24 +1661,24 @@ def per_d_scores(
         kb = tla.make_tensor_like(b_ptr, row_major(b_ptr, 128, 16), tla.arch.nZ)
         tla.cross_core_set_flag(free0, tla.arch.MTE1)
         tla.cross_core_set_flag(free1, tla.arch.MTE1)
-        tla.set_flag(op_free)
+        mutex_event(_mutex_op_free, tla.arch.CUBE)
         step = 0
         for rb in tla.range_constexpr(4):
             if tla.const_expr(rb > 0 or bounded):
-                tla.wait_flag(op_free)
+                mutex_event(_mutex_op_free, tla.arch.MTE1)
                 consume_operand(ka, l1_ptr, step, ready0, ready1, free0, free1, False)
                 step = step + 1
                 consume_operand(qa, l1_ptr, step, ready0, ready1, free0, free1, False)
                 step = step + 1
                 for cb in tla.range_constexpr(rb + int(bounded)):
                     if tla.const_expr(cb > 0):
-                        tla.wait_flag(op_free)
+                        mutex_event(_mutex_op_free, tla.arch.MTE1)
                     consume_operand(
                         kb, l1_ptr, step, ready0, ready1, free0, free1, True
                     )
                     step = step + 1
-                    tla.set_flag(loaded)
-                    tla.wait_flag(loaded)
+                    mutex_event(_mutex_loaded, tla.arch.MTE1)
+                    mutex_event(_mutex_loaded, tla.arch.CUBE)
                     c0 = tla.make_tensor_like(
                         ck + rb * 256 + cb * 1024,
                         row_major(ck, 16, 16),
@@ -1705,7 +1691,7 @@ def per_d_scores(
                     )
                     tla.mmad(c0, ka, kb, init_c=True)
                     tla.mmad(c1, qa, kb, init_c=True)
-                    tla.set_flag(op_free)
+                    mutex_event(_mutex_op_free, tla.arch.CUBE)
             if tla.const_expr(not bounded):
                 diag0 = tla.make_tensor_like(
                     ck + rb * 256 + rb * 1024, row_major(ck, 16, 16), tla.arch.L0Clayout
@@ -1714,7 +1700,7 @@ def per_d_scores(
                     cq + rb * 256 + rb * 1024, row_major(cq, 16, 16), tla.arch.L0Clayout
                 )
                 for active in tla.range(16):
-                    tla.wait_flag(op_free)
+                    mutex_event(_mutex_op_free, tla.arch.MTE1)
                     consume_operand(
                         ka, l1_ptr, step, ready0, ready1, free0, free1, False
                     )
@@ -1727,12 +1713,12 @@ def per_d_scores(
                         kb, l1_ptr, step, ready0, ready1, free0, free1, True
                     )
                     step = step + 1
-                    tla.set_flag(loaded)
-                    tla.wait_flag(loaded)
+                    mutex_event(_mutex_loaded, tla.arch.MTE1)
+                    mutex_event(_mutex_loaded, tla.arch.CUBE)
                     tla.mmad(diag0, ka, kb, init_c=active == 0)
                     tla.mmad(diag1, qa, kb, init_c=active == 0)
-                    tla.set_flag(op_free)
-        tla.wait_flag(op_free)
+                    mutex_event(_mutex_op_free, tla.arch.CUBE)
+        mutex_event(_mutex_op_free, tla.arch.MTE1)
     with tla.vector():
         step = 0
         for rb in tla.range_constexpr(4):
@@ -1810,12 +1796,16 @@ def publish_resident_inverse(
     # Source first FIX uses unit_flag=2 (wait without consuming). The current
     # TLA FIX API exposes only 0/3. An explicit CUBE->FIX edge closes that first
     # copy; the final unit_flag=3 copy retains the source's consuming boundary.
+    _mutex_cube_done = tla.mutex("publish_resident_inverse_1766_cube_done", id=0)
+    _mutex_resident_ready = tla.mutex(
+        "publish_resident_inverse_1766_resident_ready", id=1
+    )
     if tla.const_expr(save):
-        tla.set_flag(cube_done)
-        tla.wait_flag(cube_done)
+        mutex_event(_mutex_cube_done, tla.arch.CUBE)
+        mutex_event(_mutex_cube_done, tla.arch.FIX)
         tla.copy(public_inverse, acc)
     tla.copy(resident, acc, tla.params.CopyL0C2DstParams(unit_flag=3))
-    tla.set_flag(resident_ready)
+    mutex_event(_mutex_resident_ready, tla.arch.FIX)
 
 
 @tla.jit
@@ -1836,31 +1826,35 @@ def compute_u_pre_and_w(
     result_ready,
 ):
     """Keep inverse resident in L0A; preserve positive W and BF16 U_pre exits."""
+    _mutex_resident_ready = tla.mutex("compute_u_pre_and_w_1781_resident_ready", id=0)
+    _mutex_loaded = tla.mutex("compute_u_pre_and_w_1781_loaded", id=1)
+    _mutex_b_free = tla.mutex("compute_u_pre_and_w_1781_b_free", id=2)
+    _mutex_result_ready = tla.mutex("compute_u_pre_and_w_1781_result_ready", id=3)
     a = tla.make_tensor_like(a_ptr, row_major(a_ptr, 64, 64), tla.arch.zN)
     b = tla.make_tensor_like(b_ptr, row_major(b_ptr, 64, 128), tla.arch.nZ)
     cw = tla.make_tensor_like(c_ptr, row_major(c_ptr, 64, 128), tla.arch.L0Clayout)
     cu = tla.make_tensor_like(
         c_ptr + 8192, row_major(c_ptr, 64, 128), tla.arch.L0Clayout
     )
-    tla.wait_flag(resident_ready)
+    mutex_event(_mutex_resident_ready, tla.arch.MTE1)
     tla.copy(a, resident)
     tla.cross_core_wait_flag(k_ready, tla.arch.MTE1)
     tla.copy(b, k_beta)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     tla.mmad(cw, a, b, init_c=True)
-    tla.set_flag(b_free)
-    tla.set_flag(result_ready)
-    tla.wait_flag(result_ready)
+    mutex_event(_mutex_b_free, tla.arch.CUBE)
+    mutex_event(_mutex_result_ready, tla.arch.MTE1)
+    mutex_event(_mutex_result_ready, tla.arch.CUBE)
     tla.copy(out_w, cw)
-    tla.wait_flag(b_free)
+    mutex_event(_mutex_b_free, tla.arch.MTE1)
     tla.cross_core_wait_flag(v_ready, tla.arch.MTE1)
     tla.copy(b, v_beta)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     tla.mmad(cu, a, b, init_c=True)
-    tla.set_flag(result_ready)
-    tla.wait_flag(result_ready)
+    mutex_event(_mutex_result_ready, tla.arch.MTE1)
+    mutex_event(_mutex_result_ready, tla.arch.CUBE)
     tla.copy(out_u, cu)
 
 
@@ -1917,6 +1911,14 @@ def stage_one_chunk(
     rstd_stride=1,
     beta_sigmoid=True,
 ):
+    _mutex_gm_ready = tla.mutex("stage_one_chunk_1832_gm_ready", id=0)
+    _mutex_gm_loaded = tla.mutex("stage_one_chunk_1832_gm_loaded", id=1)
+    _mutex_v_done = tla.mutex("stage_one_chunk_1832_v_done", id=2)
+    _mutex_peer_loaded = tla.mutex("stage_one_chunk_1832_peer_loaded", id=3)
+    _mutex_cast_free = tla.mutex("stage_one_chunk_1832_cast_free", id=4)
+    _mutex_cube_done = tla.mutex("stage_one_chunk_1832_cube_done", id=5)
+    _mutex_free0 = tla.mutex("stage_one_chunk_1832_free0", id=6)
+    _mutex_free1 = tla.mutex("stage_one_chunk_1832_free1", id=7)
     uq = flat(tla.recast_ptr(ubase + 0, dtype=tla.BFloat16), 4096)
     uk = flat(tla.recast_ptr(ubase + 2048, dtype=tla.BFloat16), 4096)
     ug = flat(tla.recast_ptr(ubase + 4096, dtype=tla.Float32), 4096)
@@ -2009,7 +2011,7 @@ def stage_one_chunk(
                 tla.tile_view(identity, tla.make_shape(16, 16), tla.make_coord(i, i)),
                 row_major(identity16.ptr, 16, 16),
             )
-        tla.set_flag(gm_ready)
+        mutex_event(_mutex_gm_ready, tla.arch.MTE2)
     with tla.vector():
         aiv = tla.arch.sub_block_idx()
         tla.copy(
@@ -2037,15 +2039,15 @@ def stage_one_chunk(
             )
         tla.copy(row_major(bias_ub.ptr, 1, 64), row_major(bias.ptr + aiv * 64, 1, 64))
         tla.copy(row_major(alpha_ub.ptr, 1, 1), row_major(alpha.ptr, 1, 1))
-        tla.set_flag(gm_loaded)
-        tla.wait_flag(gm_loaded)
+        mutex_event(_mutex_gm_loaded, tla.arch.MTE2)
+        mutex_event(_mutex_gm_loaded, tla.arch.VECTOR)
         zero_qkv_tail(uq, uk, uv, valid)
         prepare_gate_input(raw_gate, gate_bf16, valid)
         prepare_beta_input(beta_io, raw_beta, valid, beta_pitch)
         if tla.const_expr(normalize):
             compute_qk_partial_sums(uq, uk, at(stats, 0, 128))
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 row_major(exchange.ptr + aiv * 128, 1, 128),
                 row_major(stats.ptr, 1, 128),
@@ -2056,10 +2058,10 @@ def stage_one_chunk(
                 row_major(stats.ptr + 128, 1, 128),
                 row_major(exchange.ptr + (1 - aiv) * 128, 1, 128),
             )
-            tla.set_flag(peer_loaded)
+            mutex_event(_mutex_peer_loaded, tla.arch.MTE2)
         activate_gate(gate_bf16, bias_ub, alpha_ub, ug, valid, mode, lower, True)
         if tla.const_expr(normalize):
-            tla.wait_flag(peer_loaded)
+            mutex_event(_mutex_peer_loaded, tla.arch.VECTOR)
             tla.cross_core_set_flag(consumed, tla.arch.MTE2)
             tla.cross_core_wait_flag(consumed, tla.arch.MTE3)
             compute_qk_inverse_vectors(
@@ -2067,8 +2069,8 @@ def stage_one_chunk(
             )
             normalize_local_qk(uq, uk, at(stats, 256, 128))
         activate_beta(raw_beta, ub, valid, beta_sigmoid, allow_negative)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         if norm_owner:
             tla.copy(
                 strided_rows(qn.ptr + aiv * 64, valid, 64, norm_stride),
@@ -2087,8 +2089,8 @@ def stage_one_chunk(
                 tla.copy(row_major(bact.ptr, 1, valid), row_major(ub.ptr, 1, valid))
             else:
                 beta_to_column(ub, beta_column)
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     strided_rows(bact.ptr, valid, 1, beta_out_stride),
                     strided_rows(beta_column.ptr, valid, 1, 8),
@@ -2105,20 +2107,20 @@ def stage_one_chunk(
                             row_major(stats.ptr + 320, 1, valid),
                         )
                     else:
-                        tla.set_flag(cast_free)
-                        tla.wait_flag(cast_free)
+                        mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                        mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                         beta_to_column(at(stats, 256, 64), beta_column)
-                        tla.set_flag(v_done)
-                        tla.wait_flag(v_done)
+                        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                        mutex_event(_mutex_v_done, tla.arch.MTE3)
                         tla.copy(
                             strided_rows(rstd.ptr, valid, 1, rstd_stride),
                             strided_rows(beta_column.ptr, valid, 1, 8),
                         )
-                        tla.set_flag(cast_free)
-                        tla.wait_flag(cast_free)
+                        mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                        mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                         beta_to_column(at(stats, 320, 64), beta_column)
-                        tla.set_flag(v_done)
-                        tla.wait_flag(v_done)
+                        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                        mutex_event(_mutex_v_done, tla.arch.MTE3)
                         tla.copy(
                             strided_rows(
                                 rstd.ptr + rstd_k_offset, valid, 1, rstd_stride
@@ -2141,8 +2143,8 @@ def stage_one_chunk(
             aiv = tla.arch.sub_block_idx()
             pack_shared_score_panel(uq, uk, ug, packed, 0, scale)
             pack_shared_score_panel(uq, uk, ug, packed, 1, scale)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(
                     shared_score_l1(score_ptr),
@@ -2172,8 +2174,8 @@ def stage_one_chunk(
             mode == 1,
         )
     with tla.cube():
-        tla.set_flag(cube_done)
-        tla.wait_flag(cube_done)
+        mutex_event(_mutex_cube_done, tla.arch.CUBE)
+        mutex_event(_mutex_cube_done, tla.arch.FIX)
         tla.copy(
             row_major(kkt.ptr, 64, 64),
             ci,
@@ -2186,9 +2188,9 @@ def stage_one_chunk(
         )
         tla.cross_core_set_flag(score_done, tla.arch.FIX)
         tla.cross_core_wait_flag(nt_ready, tla.arch.MTE1)
-        tla.wait_flag(gm_ready)
-        tla.set_flag(free0)
-        tla.set_flag(free1)
+        mutex_event(_mutex_gm_ready, tla.arch.MTE1)
+        mutex_event(_mutex_free0, tla.arch.CUBE)
+        mutex_event(_mutex_free1, tla.arch.CUBE)
         neumann_packed64_leaves(
             negative,
             identity,
@@ -2255,16 +2257,16 @@ def stage_one_chunk(
             left_free,
             cube_done,
         )
-        tla.wait_flag(free0)
-        tla.wait_flag(free1)
+        mutex_event(_mutex_free0, tla.arch.MTE1)
+        mutex_event(_mutex_free1, tla.arch.MTE1)
         tla.pipe_barrier(tla.pipes.ALL)
     with tla.vector():
         aiv = tla.arch.sub_block_idx()
         tla.cross_core_wait_flag(score_done, tla.arch.VECTOR)
         apply_beta_and_finish_t(kkt, ub, nt, aiv)
         nd2nz_tile(nt, ntnz, 32, 64)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         tla.copy(
             tla.tile_view(
                 matrix64(lp, tla.arch.zN),
@@ -2276,8 +2278,8 @@ def stage_one_chunk(
         tla.cross_core_set_flag(nt_ready, tla.arch.MTE3)
         beta_weighted_operand(uk, ub, ug, cast, True)
         nd2nz_tile(cast, nz0, 64, 64)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         kb = tla.make_tensor_like(kb_ptr, row_major(kb_ptr, 64, 128), tla.arch.zN)
         vb = tla.make_tensor_like(vb_ptr, row_major(vb_ptr, 64, 128), tla.arch.zN)
         tla.copy(
@@ -2285,12 +2287,12 @@ def stage_one_chunk(
             padded_nz(nz0.ptr, 64),
         )
         tla.cross_core_set_flag(kb_ready, tla.arch.MTE3)
-        tla.set_flag(cast_free)
-        tla.wait_flag(cast_free)
+        mutex_event(_mutex_cast_free, tla.arch.MTE3)
+        mutex_event(_mutex_cast_free, tla.arch.VECTOR)
         beta_weighted_operand(uv, ub, ug, cast, False)
         nd2nz_tile(cast, nz1, 64, 64)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         tla.copy(
             tla.tile_view(vb, tla.make_shape(64, 64), tla.make_coord(0, aiv)),
             padded_nz(nz1.ptr, 64),
@@ -2298,8 +2300,8 @@ def stage_one_chunk(
         tla.cross_core_set_flag(vb_ready, tla.arch.MTE3)
         prepare_decayed_q(uq, ug, uqg, uqs, scale)
         restored_state_inputs(uk, ug, ukg, ugamma)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         tla.copy(
             strided_rows(qg.ptr + aiv * 64, output_rows, 64, v_stride),
             row_major(uqg.ptr, output_rows, 64),
@@ -2318,8 +2320,8 @@ def stage_one_chunk(
         )
         tla.copy(row_major(gamma.ptr + aiv * 64, 1, 64), row_major(ugamma.ptr, 1, 64))
         mask_mqk(mqk, aq, aiv)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         rows = output_rows - aiv * 32
         if rows > 32:
             rows = 32
@@ -2457,6 +2459,17 @@ def stage_one_pipeline(
     save_beta=True,
 ):
     # 236800 bytes: raw Q/K rings, G/K snapshot rings, MQK ring, then temporaries.
+    _mutex_gm_ready = tla.mutex("stage_one_pipeline_2357_gm_ready", id=0)
+    _mutex_v_input_free = tla.mutex("stage_one_pipeline_2357_v_input_free", id=1)
+    _mutex_v_done = tla.mutex("stage_one_pipeline_2357_v_done", id=2)
+    _mutex_cast_free = tla.mutex("stage_one_pipeline_2357_cast_free", id=3)
+    _mutex_free0 = tla.mutex("stage_one_pipeline_2357_free0", id=4)
+    _mutex_free1 = tla.mutex("stage_one_pipeline_2357_free1", id=5)
+    _mutex_acc_free = tla.mutex("stage_one_pipeline_2357_acc_free", id=6)
+    _mutex_gm_loaded = tla.mutex("stage_one_pipeline_2357_gm_loaded", id=7)
+    _mutex_peer_loaded = tla.mutex("stage_one_pipeline_2357_peer_loaded", id=8)
+    _mutex_qk_input_free = tla.mutex("stage_one_pipeline_2357_qk_input_free", id=9)
+    _mutex_cube_done = tla.mutex("stage_one_pipeline_2357_cube_done", id=10)
     ub = flat(ubase + 26624, 64)
     kkt = flat(ubase + 24576, 2048)
     uv = flat(tla.recast_ptr(ubase + 26688, dtype=tla.BFloat16), 4096)
@@ -2544,8 +2557,8 @@ def stage_one_pipeline(
                 tla.tile_view(identity, tla.make_shape(16, 16), tla.make_coord(i, i)),
                 row_major(identity16.ptr, 16, 16),
             )
-        tla.set_flag(gm_ready)
-        tla.wait_flag(gm_ready)
+        mutex_event(_mutex_gm_ready, tla.arch.MTE2)
+        mutex_event(_mutex_gm_ready, tla.arch.MTE1)
     for tick in tla.range(lo.to(tla.Int32), (hi + tla.Int64(1)).to(tla.Int32)):
         task = tla.Int64(tick)
         parity = (task % tla.Int64(2)).to(tla.Int32)
@@ -2599,8 +2612,8 @@ def stage_one_pipeline(
             with tla.vector():
                 aiv_0 = tla.arch.sub_block_idx()
                 # Raw gate arrives while the delayed inverse runs on Cube.
-                tla.set_flag(v_input_free)
-                tla.wait_flag(v_input_free)
+                mutex_event(_mutex_v_input_free, tla.arch.VECTOR)
+                mutex_event(_mutex_v_input_free, tla.arch.MTE2)
                 tla.copy(
                     row_major(raw_gate.ptr, valid, 64),
                     strided_rows(g.ptr + vo + aiv_0 * 64, valid, 64, v_stride),
@@ -2637,8 +2650,8 @@ def stage_one_pipeline(
                 if task > lo + tla.Int64(1):
                     tla.cross_core_wait_flag(c3_free, tla.arch.MTE3)
                 finish_t_nz(kkt, ub, ntnz, aiv_1)
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     tla.tile_view(
                         negative, tla.make_shape(32, 64), tla.make_coord(aiv_1, 0)
@@ -2646,32 +2659,32 @@ def stage_one_pipeline(
                     padded_nz(ntnz.ptr, 32),
                 )
                 tla.cross_core_set_flag(nt_ready, tla.arch.MTE3)
-                tla.set_flag(cast_free)
-                tla.wait_flag(cast_free)
+                mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                 beta_weighted_nz(old_k, ub, old_g, nz0, True)
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     tla.tile_view(kb, tla.make_shape(64, 64), tla.make_coord(0, aiv_1)),
                     padded_nz(nz0.ptr, 64),
                 )
                 tla.cross_core_set_flag(kb_ready, tla.arch.MTE3)
-                tla.set_flag(cast_free)
-                tla.wait_flag(cast_free)
+                mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                 beta_weighted_nz(uv, ub, old_g, nz1, False)
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     tla.tile_view(vb, tla.make_shape(64, 64), tla.make_coord(0, aiv_1)),
                     padded_nz(nz1.ptr, 64),
                 )
                 tla.cross_core_set_flag(vb_ready, tla.arch.MTE3)
-                tla.set_flag(v_input_free)
-                tla.wait_flag(v_input_free)
+                mutex_event(_mutex_v_input_free, tla.arch.VECTOR)
+                mutex_event(_mutex_v_input_free, tla.arch.MTE2)
             with tla.cube():
                 tla.cross_core_wait_flag(nt_ready, tla.arch.MTE1)
-                tla.set_flag(free0)
-                tla.set_flag(free1)
+                mutex_event(_mutex_free0, tla.arch.CUBE)
+                mutex_event(_mutex_free1, tla.arch.CUBE)
                 neumann_packed64_leaves(
                     negative,
                     identity,
@@ -2719,10 +2732,10 @@ def stage_one_pipeline(
                     cube_done,
                     resident_ready,
                 )
-                tla.wait_flag(free0)
-                tla.wait_flag(free1)
-                tla.set_flag(acc_free)
-                tla.wait_flag(acc_free)
+                mutex_event(_mutex_free0, tla.arch.MTE1)
+                mutex_event(_mutex_free1, tla.arch.MTE1)
+                mutex_event(_mutex_acc_free, tla.arch.FIX)
+                mutex_event(_mutex_acc_free, tla.arch.CUBE)
         if task < hi:
             with tla.vector():
                 aiv_2 = tla.arch.sub_block_idx()
@@ -2742,16 +2755,16 @@ def stage_one_pipeline(
                             beta.ptr + vo // tla.Int64(128), valid, 1, beta_stride
                         ),
                     )
-                tla.set_flag(gm_loaded)
-                tla.wait_flag(gm_loaded)
+                mutex_event(_mutex_gm_loaded, tla.arch.MTE2)
+                mutex_event(_mutex_gm_loaded, tla.arch.VECTOR)
                 if valid < 64:
                     zero_qkv_tail(uq, uk, uv, valid)
                 if tla.const_expr(not direct_beta):
                     prepare_beta_input(beta_io, raw_beta, valid, beta_pitch)
                 if tla.const_expr(normalize):
                     compute_qk_partial_sums(uq, uk, at(stats, 0, 128))
-                    tla.set_flag(v_done)
-                    tla.wait_flag(v_done)
+                    mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                    mutex_event(_mutex_v_done, tla.arch.MTE3)
                     tla.copy(
                         row_major(exchange.ptr + aiv_2 * 128, 1, 128),
                         row_major(stats.ptr, 1, 128),
@@ -2762,7 +2775,7 @@ def stage_one_pipeline(
                         row_major(stats.ptr + 128, 1, 128),
                         row_major(exchange.ptr + (1 - aiv_2) * 128, 1, 128),
                     )
-                    tla.set_flag(peer_loaded)
+                    mutex_event(_mutex_peer_loaded, tla.arch.MTE2)
                 if valid == 64:
                     activate_gate(
                         raw_gate, bias_ub, alpha_ub, ug, 64, mode, lower, True
@@ -2772,7 +2785,7 @@ def stage_one_pipeline(
                         raw_gate, bias_ub, alpha_ub, ug, valid, mode, lower, True
                     )
                 if tla.const_expr(normalize):
-                    tla.wait_flag(peer_loaded)
+                    mutex_event(_mutex_peer_loaded, tla.arch.VECTOR)
                     tla.cross_core_set_flag(consumed, tla.arch.MTE2)
                     tla.cross_core_wait_flag(consumed, tla.arch.MTE3)
                     normalize_and_snapshot(
@@ -2785,8 +2798,8 @@ def stage_one_pipeline(
                     )
                 else:
                     copy_k_snapshot(uk, uk_snapshot)
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 if tla.const_expr(save_norm):
                     if head % tla.Int64(nv // nq) == tla.Int64(0):
                         tla.copy(
@@ -2832,11 +2845,11 @@ def stage_one_pipeline(
                                     row_major(stats.ptr + 320, 1, valid),
                                 )
                             else:
-                                tla.set_flag(cast_free)
-                                tla.wait_flag(cast_free)
+                                mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                                mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                                 beta_to_column(at(stats, 256, 64), beta_column)
-                                tla.set_flag(v_done)
-                                tla.wait_flag(v_done)
+                                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                                mutex_event(_mutex_v_done, tla.arch.MTE3)
                                 tla.copy(
                                     strided_rows(
                                         rstd.ptr + no // tla.Int64(128),
@@ -2846,11 +2859,11 @@ def stage_one_pipeline(
                                     ),
                                     strided_rows(beta_column.ptr, valid, 1, 8),
                                 )
-                                tla.set_flag(cast_free)
-                                tla.wait_flag(cast_free)
+                                mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                                mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                                 beta_to_column(at(stats, 320, 64), beta_column)
-                                tla.set_flag(v_done)
-                                tla.wait_flag(v_done)
+                                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                                mutex_event(_mutex_v_done, tla.arch.MTE3)
                                 tla.copy(
                                     strided_rows(
                                         rstd.ptr
@@ -2862,11 +2875,11 @@ def stage_one_pipeline(
                                     ),
                                     strided_rows(beta_column.ptr, valid, 1, 8),
                                 )
-                tla.set_flag(cast_free)
-                tla.wait_flag(cast_free)
+                mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                 prepare_decayed_q(uq, ug, uqg, uqs, scale)
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 if tla.const_expr(save_cache):
                     tla.copy(
                         strided_rows(qg.ptr + vo + aiv_2 * 64, valid, 64, v_stride),
@@ -2914,8 +2927,8 @@ def stage_one_pipeline(
                         ),
                         4096,
                     )
-                    tla.set_flag(qk_input_free)
-                    tla.wait_flag(qk_input_free)
+                    mutex_event(_mutex_qk_input_free, tla.arch.MTE3)
+                    mutex_event(_mutex_qk_input_free, tla.arch.MTE2)
                     tla.copy(
                         row_major(next_q.ptr, next_valid, 64),
                         strided_rows(
@@ -2944,8 +2957,8 @@ def stage_one_pipeline(
                     aiv_3 = tla.arch.sub_block_idx()
                     pack_shared_score_panel(uq, uk, ug, packed, 0, scale)
                     pack_shared_score_panel(uq, uk, ug, packed, 1, scale)
-                    tla.set_flag(v_done)
-                    tla.wait_flag(v_done)
+                    mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                    mutex_event(_mutex_v_done, tla.arch.MTE3)
                     tla.copy(
                         tla.tile_view(
                             shared_score_l1(score_ptr),
@@ -2975,8 +2988,8 @@ def stage_one_pipeline(
                     mode == 1,
                 )
             with tla.cube():
-                tla.set_flag(cube_done)
-                tla.wait_flag(cube_done)
+                mutex_event(_mutex_cube_done, tla.arch.CUBE)
+                mutex_event(_mutex_cube_done, tla.arch.FIX)
                 tla.copy(
                     row_major(kkt.ptr, 64, 64),
                     ci,
@@ -3002,11 +3015,11 @@ def stage_one_pipeline(
                     activate_beta(raw_beta, ub, valid, beta_sigmoid, allow_negative)
                 if tla.const_expr(save_beta):
                     if aiv_4 == 0:
-                        tla.set_flag(cast_free)
-                        tla.wait_flag(cast_free)
+                        mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                        mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                         beta_to_column(ub, beta_column)
-                        tla.set_flag(v_done)
-                        tla.wait_flag(v_done)
+                        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                        mutex_event(_mutex_v_done, tla.arch.MTE3)
                         tla.copy(
                             strided_rows(bact.ptr + bo, valid, 1, nv),
                             strided_rows(beta_column.ptr, valid, 1, 8),
@@ -3030,14 +3043,14 @@ def stage_one_pipeline(
                     cube_done,
                 )
                 tla.cross_core_set_flag(c3_free, tla.arch.MTE1)
-                tla.set_flag(acc_free)
-                tla.wait_flag(acc_free)
+                mutex_event(_mutex_acc_free, tla.arch.FIX)
+                mutex_event(_mutex_acc_free, tla.arch.CUBE)
             with tla.vector():
                 aiv_5 = tla.arch.sub_block_idx()
                 restored_state_inputs(old_k, old_g, ukg, ugamma)
                 mask_mqk(old_mqk, aq, aiv_5)
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     strided_rows(kg.ptr + old_vo + aiv_5 * 64, old_valid, 64, v_stride),
                     row_major(ukg.ptr, old_valid, 64),
@@ -3156,6 +3169,20 @@ def stage_two_group(
     Scratch operands are padded [chunk,64,128]; Aqk [chunk,64,64], gamma
     [chunk,128]. Output may be strided BSND/TND. State is [V,K].
     """
+    _mutex_gm_l1 = tla.mutex("stage_two_group_3083_gm_l1", id=0)
+    _mutex_acc_free = tla.mutex("stage_two_group_3083_acc_free", id=1)
+    _mutex_output_operands_free = tla.mutex(
+        "stage_two_group_3083_output_operands_free", id=2
+    )
+    _mutex_loaded = tla.mutex("stage_two_group_3083_loaded", id=3)
+    _mutex_l1_free0 = tla.mutex("stage_two_group_3083_l1_free0", id=4)
+    _mutex_l1_free1 = tla.mutex("stage_two_group_3083_l1_free1", id=5)
+    _mutex_cube_done = tla.mutex("stage_two_group_3083_cube_done", id=6)
+    _mutex_gm_ub = tla.mutex("stage_two_group_3083_gm_ub", id=7)
+    _mutex_v_done = tla.mutex("stage_two_group_3083_v_done", id=8)
+    _mutex_history_free = tla.mutex("stage_two_group_3083_history_free", id=9)
+    _mutex_input_free0 = tla.mutex("stage_two_group_3083_input_free0", id=10)
+    _mutex_input_free1 = tla.mutex("stage_two_group_3083_input_free1", id=11)
     state = flat(ubase, dv * 64)
     delta = flat(ubase + 8192, dv * 64)
     snz = flat(tla.recast_ptr(ubase + 20480, dtype=tla.BFloat16), (dv + 1) * 64)
@@ -3210,9 +3237,9 @@ def stage_two_group(
         load_chunk_l1(wl, w, first_valid, 128, token_stride)
         load_chunk_l1(kl, kg, first_valid, 128, token_stride)
         load_chunk_l1(al, aqk, first_valid, 64, 64)
-        tla.set_flag(gm_l1)
-        tla.set_flag(acc_free)
-        tla.set_flag(output_operands_free)
+        mutex_event(_mutex_gm_l1, tla.arch.MTE2)
+        mutex_event(_mutex_acc_free, tla.arch.FIX)
+        mutex_event(_mutex_output_operands_free, tla.arch.CUBE)
         for chunk in tla.range(chunks):
             slot = chunk % 2
             next_slot = (chunk + 1) % 2
@@ -3237,25 +3264,25 @@ def stage_two_group(
             ul = tla.make_tensor_like(
                 lbase + 90112 + slot * 8192, row_major(lbase, 64, dv), tla.arch.zN
             )
-            tla.wait_flag(gm_l1)
+            mutex_event(_mutex_gm_l1, tla.arch.MTE1)
             tla.cross_core_wait_flag(h_ready, tla.arch.MTE1)
             compute_state_projections(
                 ql, wl, hl, a0, a1, hb, cu, co, dv, loaded, cube_done, acc_free
             )
-            tla.wait_flag(output_operands_free)
+            mutex_event(_mutex_output_operands_free, tla.arch.MTE1)
             load_recurrent_operands(kl, al, kb, qa, dv, loaded)
-            tla.wait_flag(loaded)
+            mutex_event(_mutex_loaded, tla.arch.CUBE)
             if chunk + 2 < chunks:
                 if slot == 0:
-                    tla.set_flag(l1_free0)
+                    mutex_event(_mutex_l1_free0, tla.arch.MTE1)
                 else:
-                    tla.set_flag(l1_free1)
+                    mutex_event(_mutex_l1_free1, tla.arch.MTE1)
             if chunk + 1 < chunks:
                 if chunk > 0:
                     if next_slot == 0:
-                        tla.wait_flag(l1_free0)
+                        mutex_event(_mutex_l1_free0, tla.arch.MTE2)
                     else:
-                        tla.wait_flag(l1_free1)
+                        mutex_event(_mutex_l1_free1, tla.arch.MTE2)
                 next_q = tla.make_tensor_like(
                     lbase + next_slot * 8192, row_major(lbase, 64, 128), tla.arch.zN
                 )
@@ -3272,7 +3299,7 @@ def stage_two_group(
                     128,
                     token_stride,
                 )
-            tla.wait_flag(cube_done)
+            mutex_event(_mutex_cube_done, tla.arch.FIX)
             tla.copy(
                 row_major(du, 64, dv),
                 tla.make_tensor_like(cu, row_major(cu, 64, dv), tla.arch.L0Clayout),
@@ -3281,8 +3308,8 @@ def stage_two_group(
             tla.cross_core_set_flag(du_ready, tla.arch.FIX)
             tla.cross_core_wait_flag(u_ready, tla.arch.MTE1)
             compute_state_delta(ul, kb, ua, ch, dv, loaded)
-            tla.set_flag(cube_done)
-            tla.wait_flag(cube_done)
+            mutex_event(_mutex_cube_done, tla.arch.CUBE)
+            mutex_event(_mutex_cube_done, tla.arch.FIX)
             tla.copy(
                 strided_rows(delta.ptr, dv, 128, 64),
                 tla.make_tensor_like(ch, row_major(ch, dv, 128), tla.arch.L0Clayout),
@@ -3290,8 +3317,8 @@ def stage_two_group(
             )
             tla.cross_core_set_flag(dh_ready, tla.arch.FIX)
             accumulate_output(ul, qa, vb, co, dv, loaded)
-            tla.set_flag(output_operands_free)
-            tla.set_flag(cube_done)
+            mutex_event(_mutex_output_operands_free, tla.arch.CUBE)
+            mutex_event(_mutex_cube_done, tla.arch.CUBE)
             if chunk + 1 < chunks:
                 next_k = tla.make_tensor_like(
                     lbase + 32768 + next_slot * 8192,
@@ -3313,11 +3340,11 @@ def stage_two_group(
                 load_chunk_l1(
                     next_a, aqk + (chunk + 1) * matrix_chunk_stride, next_valid, 64, 64
                 )
-                tla.set_flag(gm_l1)
+                mutex_event(_mutex_gm_l1, tla.arch.MTE2)
             valid = 64
             if chunk + 1 == chunks:
                 valid = valid_last
-            tla.wait_flag(cube_done)
+            mutex_event(_mutex_cube_done, tla.arch.FIX)
             tla.copy(
                 strided_rows(
                     out + chunk * 64 * output_stride + dv_idx * dv,
@@ -3327,9 +3354,9 @@ def stage_two_group(
                 ),
                 tla.make_tensor_like(co, row_major(co, 64, dv), tla.arch.L0Clayout),
             )
-            tla.set_flag(acc_free)
-        tla.wait_flag(acc_free)
-        tla.wait_flag(output_operands_free)
+            mutex_event(_mutex_acc_free, tla.arch.FIX)
+        mutex_event(_mutex_acc_free, tla.arch.CUBE)
+        mutex_event(_mutex_output_operands_free, tla.arch.MTE1)
         tla.pipe_barrier(tla.pipes.ALL)
     with tla.vector():
         aiv = tla.arch.sub_block_idx()
@@ -3342,18 +3369,18 @@ def stage_two_group(
         if chunks == 1:
             first_valid = valid_last
         load_u_rows(uin_ptr, u, first_valid, dv, dv_idx, aiv, token_stride)
-        tla.set_flag(gm_ub)
-        tla.wait_flag(gm_ub)
+        mutex_event(_mutex_gm_ub, tla.arch.MTE2)
+        mutex_event(_mutex_gm_ub, tla.arch.VECTOR)
         cast_state_nz(state, snz, dv)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         hl = tla.make_tensor_like(lbase + 57344, row_major(lbase, dv, 128), tla.arch.zN)
         tla.copy(
             tla.tile_view(hl, tla.make_shape(dv, 64), tla.make_coord(0, aiv)),
             padded_nz(snz.ptr, dv),
         )
         tla.cross_core_set_flag(h_ready, tla.arch.MTE3)
-        tla.set_flag(history_free)
+        mutex_event(_mutex_history_free, tla.arch.MTE3)
         for chunk in tla.range(chunks):
             slot = chunk % 2
             next_slot = (chunk + 1) % 2
@@ -3364,13 +3391,13 @@ def stage_two_group(
             if chunk + 2 == chunks:
                 next_valid = valid_last
             if chunk > 0:
-                tla.wait_flag(gm_ub)
+                mutex_event(_mutex_gm_ub, tla.arch.VECTOR)
             if chunk + 1 < chunks:
                 if chunk > 0:
                     if next_slot == 0:
-                        tla.wait_flag(input_free0)
+                        mutex_event(_mutex_input_free0, tla.arch.MTE2)
                     else:
-                        tla.wait_flag(input_free1)
+                        mutex_event(_mutex_input_free1, tla.arch.MTE2)
                 tla.copy(
                     row_major(gamma_ptr + next_slot * 64, 1, 64),
                     row_major(gamma + (chunk + 1) * 128 + aiv * 64, 1, 64),
@@ -3384,7 +3411,7 @@ def stage_two_group(
                     aiv,
                     token_stride,
                 )
-                tla.set_flag(gm_ub)
+                mutex_event(_mutex_gm_ub, tla.arch.MTE2)
             tla.cross_core_wait_flag(du_ready, tla.arch.VECTOR)
             finish_u_delta_nz(
                 row_major(uin_ptr + slot * 4096, 32, dv),
@@ -3396,8 +3423,8 @@ def stage_two_group(
                 valid,
                 save_vnew,
             )
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             ul = tla.make_tensor_like(
                 lbase + 90112 + slot * 8192, row_major(lbase, 64, dv), tla.arch.zN
             )
@@ -3425,11 +3452,11 @@ def stage_two_group(
                         row_major(uv, rows, dv),
                     )
             tla.cross_core_wait_flag(dh_ready, tla.arch.VECTOR)
-            tla.wait_flag(history_free)
+            mutex_event(_mutex_history_free, tla.arch.VECTOR)
             if tla.const_expr(save_history):
                 tla.copy(row_major(history_copy, dv, 64), row_major(state.ptr, dv, 64))
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     strided_rows(
                         history
@@ -3442,16 +3469,16 @@ def stage_two_group(
                     ),
                     row_major(history_copy, dv, 64),
                 )
-            tla.set_flag(history_free)
+            mutex_event(_mutex_history_free, tla.arch.MTE3)
             update_state_nz(state, delta, flat(gamma_ptr + slot * 64, 64), snz, dv)
             if chunk + 2 < chunks:
                 if slot == 0:
-                    tla.set_flag(input_free0)
+                    mutex_event(_mutex_input_free0, tla.arch.VECTOR)
                 else:
-                    tla.set_flag(input_free1)
+                    mutex_event(_mutex_input_free1, tla.arch.VECTOR)
             if chunk + 1 < chunks:
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 hl = tla.make_tensor_like(
                     lbase + 57344 + next_slot * 16384,
                     row_major(lbase, dv, 128),
@@ -3462,9 +3489,9 @@ def stage_two_group(
                     padded_nz(snz.ptr, dv),
                 )
                 tla.cross_core_set_flag(h_ready, tla.arch.MTE3)
-        tla.wait_flag(history_free)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_history_free, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         tla.copy(
             strided_rows(final + dv_idx * dv * 128 + aiv * 64, dv, 64, 128),
             row_major(state.ptr, dv, 64),
@@ -3634,8 +3661,6 @@ class StagedMetadataKernel:
         save_history=True,
         save_norm=True,
         save_beta=True,
-        diagnostic_phase=0,
-        diagnostic_round=-1,
     ):
         if layout not in ("BNSD", "BSND", "TND"):
             raise ValueError("invalid layout")
@@ -3654,10 +3679,6 @@ class StagedMetadataKernel:
             save_history,
             save_norm,
             save_beta,
-        )
-        self.diagnostic_phase, self.diagnostic_round = (
-            diagnostic_phase,
-            diagnostic_round,
         )
         self.shared = mode == 1 and not negative and abs(scale) <= 0.125 and lower >= -5
         self.chunk_capacity = (length + 63) // 64
@@ -3767,7 +3788,7 @@ class StagedMetadataKernel:
         l1 = tla.allocate(131072, tla.BFloat16, tla.AddressSpace.l1, 512)
         a = tla.allocate(32768, tla.BFloat16, tla.AddressSpace.l0a, 512)
         b = tla.allocate(32768, tla.BFloat16, tla.AddressSpace.l0b, 512)
-        c = tla.allocate(32768, tla.Float32, tla.AddressSpace.l0c, 512)
+        c = tla.allocate(32768, tla.Float32, tla.AddressSpace.l0c, 1024)
         kb = tla.cross_flag("phase_kb", mode=2)
         vb = tla.cross_flag("phase_vb", mode=2)
         scores_in = tla.cross_flag("phase_scores_in", mode=2)
@@ -3783,9 +3804,6 @@ class StagedMetadataKernel:
         rounds = meta[i64(4)].to(tla.Int32)
         begin = tla.Int32(0)
         end_round = rounds
-        if tla.const_expr(self.diagnostic_round >= 0):
-            begin = tla.Int32(self.diagnostic_round)
-            end_round = tla.Int32(self.diagnostic_round + 1)
         for round_idx in tla.range(begin, end_round):
             record = meta[i64(11) + i64(round_idx)]
             active_batches = meta[record + i64(1)]
@@ -3800,68 +3818,160 @@ class StagedMetadataKernel:
             split_base = ranges1 + i64(64)
             prefix2_base = split_base + active_batches
             ranges2 = prefix2_base + active_batches + i64(1)
-            if tla.const_expr(self.diagnostic_phase != 2):
-                start1 = meta[ranges1 + block * i64(2)]
-                end1 = meta[ranges1 + block * i64(2) + i64(1)]
-                for active in tla.range(active_batches.to(tla.Int32)):
-                    ai = i64(active)
-                    prefix = meta[prefix1_base + ai]
-                    stop = meta[prefix1_base + ai + i64(1)]
-                    lo = start1
-                    hi = end1
-                    if lo < prefix:
-                        lo = prefix
-                    if hi > stop:
-                        hi = stop
-                    logical_batch = meta[batch_base + ai]
-                    storage_batch = meta[storage_base + ai]
-                    token_start = meta[token_base + ai]
-                    length = meta[length_base + ai]
-                    group = meta[group_base + ai]
-                    count = meta[count_base + ai]
-                    if tla.const_expr(self.pipeline):
-                        stage_one_pipeline(
+            start1 = meta[ranges1 + block * i64(2)]
+            end1 = meta[ranges1 + block * i64(2) + i64(1)]
+            for active in tla.range(active_batches.to(tla.Int32)):
+                ai = i64(active)
+                prefix = meta[prefix1_base + ai]
+                stop = meta[prefix1_base + ai + i64(1)]
+                lo = start1
+                hi = end1
+                if lo < prefix:
+                    lo = prefix
+                if hi > stop:
+                    hi = stop
+                logical_batch = meta[batch_base + ai]
+                storage_batch = meta[storage_base + ai]
+                token_start = meta[token_base + ai]
+                length = meta[length_base + ai]
+                group = meta[group_base + ai]
+                count = meta[count_base + ai]
+                if tla.const_expr(self.pipeline):
+                    stage_one_pipeline(
+                        ub,
+                        l1,
+                        a,
+                        b,
+                        c,
+                        q,
+                        k,
+                        v,
+                        g,
+                        beta,
+                        alpha,
+                        bias,
+                        flat(exchange.ptr + block * i64(256), 256),
+                        identity16,
+                        aqk,
+                        akk,
+                        w,
+                        u,
+                        qg,
+                        kg,
+                        qs,
+                        gamma,
+                        qn,
+                        kn,
+                        rstd,
+                        gc,
+                        bact,
+                        lo,
+                        hi,
+                        prefix,
+                        group,
+                        count,
+                        logical_batch,
+                        storage_batch,
+                        token_start,
+                        length,
+                        self.nq,
+                        self.nv,
+                        self.length,
+                        self.chunk_capacity,
+                        self.layout,
+                        self.mode,
+                        self.lower,
+                        self.negative,
+                        self.normalize,
+                        self.scale,
+                        self.shared,
+                        phase1,
+                        self.q_stride,
+                        self.token_stride,
+                        self.beta_stride,
+                        self.norm_stride,
+                        self.rstd_k_offset,
+                        self.rstd_stride,
+                        self.beta_sigmoid,
+                        self.save_matrices,
+                        self.save_cache,
+                        self.save_norm,
+                        self.save_beta,
+                    )
+                if tla.const_expr(not self.pipeline):
+                    for task in tla.range(lo.to(tla.Int32), hi.to(tla.Int32)):
+                        local = i64(task) - prefix
+                        head = local // count
+                        chunk = group + local % count
+                        qhead = head // i64(self.nv // self.nq)
+                        valid = i64(64)
+                        if (chunk + i64(1)) * i64(64) > length:
+                            valid = length - chunk * i64(64)
+                        token = token_start + chunk * i64(64)
+                        qo = token_offset(
+                            storage_batch,
+                            qhead,
+                            token,
+                            self.nq,
+                            self.length,
+                            self.layout,
+                        )
+                        vo = token_offset(
+                            storage_batch,
+                            head,
+                            token,
+                            self.nv,
+                            self.length,
+                            self.layout,
+                        )
+                        bo = vo // i64(128)
+                        no = (
+                            (storage_batch * i64(self.nq) + qhead) * i64(self.length)
+                            + token
+                        ) * i64(128)
+                        if tla.const_expr(self.layout == "TND"):
+                            no = (token * i64(self.nq) + qhead) * i64(128)
+                        ro = no // i64(128)
+                        chunk_slot = logical_batch * i64(self.chunk_capacity) + chunk
+                        if tla.const_expr(self.layout == "TND"):
+                            chunk_slot = token_start // i64(64) + logical_batch + chunk
+                        co = chunk_slot * i64(self.nv) + head
+                        workspace = prefix + local
+                        stage_one_chunk(
                             ub,
                             l1,
                             a,
                             b,
                             c,
-                            q,
-                            k,
-                            v,
-                            g,
-                            beta,
-                            alpha,
-                            bias,
+                            flat(q.ptr + qo, 1),
+                            flat(k.ptr + qo, 1),
+                            flat(v.ptr + vo, 1),
+                            flat(g.ptr + vo, 1),
+                            flat(beta.ptr + bo, 1),
+                            flat(alpha.ptr + head, 1),
+                            flat(bias.ptr + head * i64(128), 128),
                             flat(exchange.ptr + block * i64(256), 256),
                             identity16,
-                            aqk,
-                            akk,
-                            w,
-                            u,
-                            qg,
-                            kg,
-                            qs,
-                            gamma,
-                            qn,
-                            kn,
-                            rstd,
-                            gc,
-                            bact,
-                            lo,
-                            hi,
-                            prefix,
-                            group,
-                            count,
-                            logical_batch,
-                            storage_batch,
-                            token_start,
-                            length,
-                            self.nq,
-                            self.nv,
-                            self.length,
-                            self.chunk_capacity,
-                            self.layout,
+                            flat(aqk.ptr + co * i64(4096), 4096),
+                            flat(akk.ptr + co * i64(4096), 4096),
+                            flat(w.ptr + vo, 1),
+                            flat(u.ptr + vo, 1),
+                            flat(qg.ptr + vo, 1),
+                            flat(kg.ptr + vo, 1),
+                            flat(qs.ptr + workspace * i64(8192), 8192),
+                            flat(gamma.ptr + workspace * i64(128), 128),
+                            flat(qn.ptr + no, 1),
+                            flat(kn.ptr + no, 1),
+                            flat(rstd.ptr + ro, 1),
+                            flat(gc.ptr + co * i64(8192), 8192),
+                            flat(
+                                bact.ptr
+                                + (storage_batch * i64(self.length) + token)
+                                * i64(self.nv)
+                                + head,
+                                1,
+                            ),
+                            valid.to(tla.Int32),
                             self.mode,
                             self.lower,
                             self.negative,
@@ -3873,280 +3983,181 @@ class StagedMetadataKernel:
                             self.token_stride,
                             self.beta_stride,
                             self.norm_stride,
+                            self.nv,
+                            valid.to(tla.Int32),
+                            head % i64(self.nv // self.nq) == i64(0),
                             self.rstd_k_offset,
                             self.rstd_stride,
                             self.beta_sigmoid,
-                            self.save_matrices,
-                            self.save_cache,
-                            self.save_norm,
-                            self.save_beta,
                         )
-                    if tla.const_expr(not self.pipeline):
-                        for task in tla.range(lo.to(tla.Int32), hi.to(tla.Int32)):
-                            local = i64(task) - prefix
-                            head = local // count
-                            chunk = group + local % count
-                            qhead = head // i64(self.nv // self.nq)
-                            valid = i64(64)
-                            if (chunk + i64(1)) * i64(64) > length:
-                                valid = length - chunk * i64(64)
-                            token = token_start + chunk * i64(64)
-                            qo = token_offset(
-                                storage_batch,
-                                qhead,
-                                token,
-                                self.nq,
-                                self.length,
-                                self.layout,
-                            )
-                            vo = token_offset(
-                                storage_batch,
-                                head,
-                                token,
-                                self.nv,
-                                self.length,
-                                self.layout,
-                            )
-                            bo = vo // i64(128)
-                            no = (
-                                (storage_batch * i64(self.nq) + qhead)
-                                * i64(self.length)
-                                + token
-                            ) * i64(128)
-                            if tla.const_expr(self.layout == "TND"):
-                                no = (token * i64(self.nq) + qhead) * i64(128)
-                            ro = no // i64(128)
-                            chunk_slot = (
-                                logical_batch * i64(self.chunk_capacity) + chunk
-                            )
-                            if tla.const_expr(self.layout == "TND"):
-                                chunk_slot = (
-                                    token_start // i64(64) + logical_batch + chunk
-                                )
-                            co = chunk_slot * i64(self.nv) + head
-                            workspace = prefix + local
-                            stage_one_chunk(
-                                ub,
-                                l1,
-                                a,
-                                b,
-                                c,
-                                flat(q.ptr + qo, 1),
-                                flat(k.ptr + qo, 1),
-                                flat(v.ptr + vo, 1),
-                                flat(g.ptr + vo, 1),
-                                flat(beta.ptr + bo, 1),
-                                flat(alpha.ptr + head, 1),
-                                flat(bias.ptr + head * i64(128), 128),
-                                flat(exchange.ptr + block * i64(256), 256),
-                                identity16,
-                                flat(aqk.ptr + co * i64(4096), 4096),
-                                flat(akk.ptr + co * i64(4096), 4096),
-                                flat(w.ptr + vo, 1),
-                                flat(u.ptr + vo, 1),
-                                flat(qg.ptr + vo, 1),
-                                flat(kg.ptr + vo, 1),
-                                flat(qs.ptr + workspace * i64(8192), 8192),
-                                flat(gamma.ptr + workspace * i64(128), 128),
-                                flat(qn.ptr + no, 1),
-                                flat(kn.ptr + no, 1),
-                                flat(rstd.ptr + ro, 1),
-                                flat(gc.ptr + co * i64(8192), 8192),
-                                flat(
-                                    bact.ptr
-                                    + (storage_batch * i64(self.length) + token)
-                                    * i64(self.nv)
-                                    + head,
-                                    1,
-                                ),
-                                valid.to(tla.Int32),
-                                self.mode,
-                                self.lower,
-                                self.negative,
-                                self.normalize,
-                                self.scale,
-                                self.shared,
-                                phase1,
-                                self.q_stride,
-                                self.token_stride,
-                                self.beta_stride,
-                                self.norm_stride,
-                                self.nv,
-                                valid.to(tla.Int32),
-                                head % i64(self.nv // self.nq) == i64(0),
-                                self.rstd_k_offset,
-                                self.rstd_stride,
-                                self.beta_sigmoid,
-                            )
             stage_boundary(av_ready, ac_all, ac_release)
-            if tla.const_expr(self.diagnostic_phase != 1):
-                start2 = meta[ranges2 + block * i64(2)]
-                end2 = meta[ranges2 + block * i64(2) + i64(1)]
-                splits = meta[split_base]
-                if splits == i64(1):
-                    state_items(
-                        128,
-                        ub,
-                        l1,
-                        a,
-                        b,
-                        c,
-                        qs,
-                        w,
-                        kg,
-                        aqk,
-                        u,
-                        initial,
-                        gamma,
-                        out,
-                        vnew,
-                        history,
-                        final,
-                        meta,
-                        active_batches,
-                        batch_base,
-                        storage_base,
-                        token_base,
-                        length_base,
-                        group_base,
-                        count_base,
-                        prefix1_base,
-                        prefix2_base,
-                        start2,
-                        end2,
-                        phase2,
-                        state_flags,
-                        self.nv,
-                        self.length,
-                        self.chunk_capacity,
-                        self.token_stride,
-                        self.layout,
-                        self.save_history,
-                        self.save_cache,
-                    )
-                elif splits == i64(2):
-                    state_items(
-                        64,
-                        ub,
-                        l1,
-                        a,
-                        b,
-                        c,
-                        qs,
-                        w,
-                        kg,
-                        aqk,
-                        u,
-                        initial,
-                        gamma,
-                        out,
-                        vnew,
-                        history,
-                        final,
-                        meta,
-                        active_batches,
-                        batch_base,
-                        storage_base,
-                        token_base,
-                        length_base,
-                        group_base,
-                        count_base,
-                        prefix1_base,
-                        prefix2_base,
-                        start2,
-                        end2,
-                        phase2,
-                        state_flags,
-                        self.nv,
-                        self.length,
-                        self.chunk_capacity,
-                        self.token_stride,
-                        self.layout,
-                        self.save_history,
-                        self.save_cache,
-                    )
-                elif splits == i64(4):
-                    state_items(
-                        32,
-                        ub,
-                        l1,
-                        a,
-                        b,
-                        c,
-                        qs,
-                        w,
-                        kg,
-                        aqk,
-                        u,
-                        initial,
-                        gamma,
-                        out,
-                        vnew,
-                        history,
-                        final,
-                        meta,
-                        active_batches,
-                        batch_base,
-                        storage_base,
-                        token_base,
-                        length_base,
-                        group_base,
-                        count_base,
-                        prefix1_base,
-                        prefix2_base,
-                        start2,
-                        end2,
-                        phase2,
-                        state_flags,
-                        self.nv,
-                        self.length,
-                        self.chunk_capacity,
-                        self.token_stride,
-                        self.layout,
-                        self.save_history,
-                        self.save_cache,
-                    )
-                else:
-                    state_items(
-                        16,
-                        ub,
-                        l1,
-                        a,
-                        b,
-                        c,
-                        qs,
-                        w,
-                        kg,
-                        aqk,
-                        u,
-                        initial,
-                        gamma,
-                        out,
-                        vnew,
-                        history,
-                        final,
-                        meta,
-                        active_batches,
-                        batch_base,
-                        storage_base,
-                        token_base,
-                        length_base,
-                        group_base,
-                        count_base,
-                        prefix1_base,
-                        prefix2_base,
-                        start2,
-                        end2,
-                        phase2,
-                        state_flags,
-                        self.nv,
-                        self.length,
-                        self.chunk_capacity,
-                        self.token_stride,
-                        self.layout,
-                        self.save_history,
-                        self.save_cache,
-                    )
+            start2 = meta[ranges2 + block * i64(2)]
+            end2 = meta[ranges2 + block * i64(2) + i64(1)]
+            splits = meta[split_base]
+            if splits == i64(1):
+                state_items(
+                    128,
+                    ub,
+                    l1,
+                    a,
+                    b,
+                    c,
+                    qs,
+                    w,
+                    kg,
+                    aqk,
+                    u,
+                    initial,
+                    gamma,
+                    out,
+                    vnew,
+                    history,
+                    final,
+                    meta,
+                    active_batches,
+                    batch_base,
+                    storage_base,
+                    token_base,
+                    length_base,
+                    group_base,
+                    count_base,
+                    prefix1_base,
+                    prefix2_base,
+                    start2,
+                    end2,
+                    phase2,
+                    state_flags,
+                    self.nv,
+                    self.length,
+                    self.chunk_capacity,
+                    self.token_stride,
+                    self.layout,
+                    self.save_history,
+                    self.save_cache,
+                )
+            elif splits == i64(2):
+                state_items(
+                    64,
+                    ub,
+                    l1,
+                    a,
+                    b,
+                    c,
+                    qs,
+                    w,
+                    kg,
+                    aqk,
+                    u,
+                    initial,
+                    gamma,
+                    out,
+                    vnew,
+                    history,
+                    final,
+                    meta,
+                    active_batches,
+                    batch_base,
+                    storage_base,
+                    token_base,
+                    length_base,
+                    group_base,
+                    count_base,
+                    prefix1_base,
+                    prefix2_base,
+                    start2,
+                    end2,
+                    phase2,
+                    state_flags,
+                    self.nv,
+                    self.length,
+                    self.chunk_capacity,
+                    self.token_stride,
+                    self.layout,
+                    self.save_history,
+                    self.save_cache,
+                )
+            elif splits == i64(4):
+                state_items(
+                    32,
+                    ub,
+                    l1,
+                    a,
+                    b,
+                    c,
+                    qs,
+                    w,
+                    kg,
+                    aqk,
+                    u,
+                    initial,
+                    gamma,
+                    out,
+                    vnew,
+                    history,
+                    final,
+                    meta,
+                    active_batches,
+                    batch_base,
+                    storage_base,
+                    token_base,
+                    length_base,
+                    group_base,
+                    count_base,
+                    prefix1_base,
+                    prefix2_base,
+                    start2,
+                    end2,
+                    phase2,
+                    state_flags,
+                    self.nv,
+                    self.length,
+                    self.chunk_capacity,
+                    self.token_stride,
+                    self.layout,
+                    self.save_history,
+                    self.save_cache,
+                )
+            else:
+                state_items(
+                    16,
+                    ub,
+                    l1,
+                    a,
+                    b,
+                    c,
+                    qs,
+                    w,
+                    kg,
+                    aqk,
+                    u,
+                    initial,
+                    gamma,
+                    out,
+                    vnew,
+                    history,
+                    final,
+                    meta,
+                    active_batches,
+                    batch_base,
+                    storage_base,
+                    token_base,
+                    length_base,
+                    group_base,
+                    count_base,
+                    prefix1_base,
+                    prefix2_base,
+                    start2,
+                    end2,
+                    phase2,
+                    state_flags,
+                    self.nv,
+                    self.length,
+                    self.chunk_capacity,
+                    self.token_stride,
+                    self.layout,
+                    self.save_history,
+                    self.save_cache,
+                )
             if round_idx + 1 < rounds:
                 stage_boundary(av_ready, ac_all, ac_release)
 
@@ -4461,24 +4472,26 @@ def compose_persistent_inverse(
     acc_free,
 ):
     """Source four full64 MMADs: odd/even16 composition, then lower32 update."""
+    _mutex_free0 = tla.mutex("compose_persistent_inverse_4386_free0", id=0)
+    _mutex_ready0 = tla.mutex("compose_persistent_inverse_4386_ready0", id=1)
     load_selected_pair(negative, diagonal, a1, b1, zero, ready1, free1, 3, 1)
     inverse_mmad(ct, a1, b1, ready1, free1, True, 3)
     inverse_fix(temporary, ct, fix_ready, acc_free)
-    tla.wait_flag(free0)
+    mutex_event(_mutex_free0, tla.arch.MTE1)
     tla.copy(a0, diagonal)
     tla.copy(b0, identity)
     copy_selected_fractals(b0, temporary, 3)
-    tla.set_flag(ready0)
+    mutex_event(_mutex_ready0, tla.arch.MTE1)
     inverse_mmad(ci, a0, b0, ready0, free0, True, 3)
     inverse_fix(inverse, ci, fix_ready, acc_free)
     load_selected_pair(negative, inverse, a1, b1, zero, ready1, free1, 0, 4)
-    tla.wait_flag(free0)
+    mutex_event(_mutex_free0, tla.arch.MTE1)
     tla.copy(a0, inverse)
     tla.copy(b0, zero)
     inverse_mmad(ct, a1, b1, ready1, free1, True, 3)
     inverse_fix(temporary, ct, fix_ready, acc_free)
     copy_selected_fractals(b0, temporary, 5)
-    tla.set_flag(ready0)
+    mutex_event(_mutex_ready0, tla.arch.MTE1)
     inverse_mmad(ci, a0, b0, ready0, free0, False, 3)
 
 
@@ -4541,6 +4554,7 @@ def pack_recurrent(q, k, v, g, beta, packed, gamma, qg, kg, scale, save_cache):
 
 @tla.jit
 def prefetch_half(q, k, qraw, kraw, next_valid, stride, half, free):
+    _mutex_free = tla.mutex("prefetch_half_4486_free", id=0)
     with tla.vector():
         aiv = tla.arch.sub_block_idx()
         rows = next_valid - half * 32
@@ -4548,8 +4562,8 @@ def prefetch_half(q, k, qraw, kraw, next_valid, stride, half, free):
             rows = 32
         if rows > 0:
             # Raw Q/K have already been consumed by normalization/panel packing.
-            tla.set_flag(free)
-            tla.wait_flag(free)
+            mutex_event(_mutex_free, tla.arch.VECTOR)
+            mutex_event(_mutex_free, tla.arch.MTE2)
             source = tla.Int64((64 + half * 32) * stride) + tla.Int64(aiv * 64)
             tla.copy(
                 row_major(qraw.ptr + half * 2048, rows, 64),
@@ -4708,24 +4722,30 @@ def persistent_score_mmads(
     shared=False,
 ):
     """Source RHS loading batches and next-row LHS prefetch, two L0A banks."""
+    _mutex_free0 = tla.mutex("persistent_score_mmads_4639_free0", id=0)
+    _mutex_free1 = tla.mutex("persistent_score_mmads_4639_free1", id=1)
+    _mutex_loaded = tla.mutex("persistent_score_mmads_4639_loaded", id=2)
+    _mutex_ready0 = tla.mutex("persistent_score_mmads_4639_ready0", id=3)
+    _mutex_ready1 = tla.mutex("persistent_score_mmads_4639_ready1", id=4)
+    _mutex_cube_done = tla.mutex("persistent_score_mmads_4639_cube_done", id=5)
     ready0 = tla.flag("ps_left_ready0", tla.arch.MTE1, tla.arch.CUBE)
     ready1 = tla.flag("ps_left_ready1", tla.arch.MTE1, tla.arch.CUBE)
     free0 = tla.flag("ps_left_free0", tla.arch.CUBE, tla.arch.MTE1)
     free1 = tla.flag("ps_left_free1", tla.arch.CUBE, tla.arch.MTE1)
-    tla.set_flag(free0)
-    tla.set_flag(free1)
+    mutex_event(_mutex_free0, tla.arch.CUBE)
+    mutex_event(_mutex_free1, tla.arch.CUBE)
     for kind in tla.range_constexpr(2):
         # This CUBE->MTE1 edge also releases the previous chunk's output
         # operands at bp[0:8192]. All RHS preloads must follow it.
-        tla.wait_flag(free0)
+        mutex_event(_mutex_free0, tla.arch.MTE1)
         if tla.const_expr(shared and kind == 0):
             for j in tla.range_constexpr(6):
                 right = tla.make_tensor_like(
                     right_ptr + j * 2048, row_major(right_ptr, 128, 16), tla.arch.nZ
                 )
                 tla.copy(right, right_transpose(cache.ptr, j, True))
-            tla.set_flag(loaded)
-            tla.wait_flag(loaded)
+            mutex_event(_mutex_loaded, tla.arch.MTE1)
+            mutex_event(_mutex_loaded, tla.arch.CUBE)
         left0 = tla.make_tensor_like(
             left_ptr, row_major(left_ptr, 16, 128), tla.arch.zN
         )
@@ -4733,15 +4753,15 @@ def persistent_score_mmads(
             left0,
             tla.tile_view(cache, tla.make_shape(16, 128), tla.make_coord(kind, 0)),
         )
-        tla.set_flag(ready0)
+        mutex_event(_mutex_ready0, tla.arch.MTE1)
         for row in tla.range_constexpr(4):
             left = tla.make_tensor_like(
                 left_ptr + (row % 2) * 2048, row_major(left_ptr, 16, 128), tla.arch.zN
             )
             if tla.const_expr(row % 2 == 0):
-                tla.wait_flag(ready0)
+                mutex_event(_mutex_ready0, tla.arch.CUBE)
             else:
-                tla.wait_flag(ready1)
+                mutex_event(_mutex_ready1, tla.arch.CUBE)
             for col in tla.range_constexpr(row + 1):
                 index = (
                     (col if row < 2 else 2 + col)
@@ -4768,8 +4788,8 @@ def persistent_score_mmads(
                                 tla.arch.nZ,
                             )
                             tla.copy(right, right_transpose(cache.ptr, j))
-                        tla.set_flag(loaded)
-                        tla.wait_flag(loaded)
+                        mutex_event(_mutex_loaded, tla.arch.MTE1)
+                        mutex_event(_mutex_loaded, tla.arch.CUBE)
                 right = tla.make_tensor_like(
                     right_ptr + index * 2048, row_major(right_ptr, 128, 16), tla.arch.nZ
                 )
@@ -4784,9 +4804,9 @@ def persistent_score_mmads(
                 tla.mmad(acc, left, right, init_c=True)
                 if tla.const_expr(row < 3 and col == 0):
                     if tla.const_expr(row % 2 == 0):
-                        tla.wait_flag(free1)
+                        mutex_event(_mutex_free1, tla.arch.MTE1)
                     else:
-                        tla.wait_flag(free0)
+                        mutex_event(_mutex_free0, tla.arch.MTE1)
                     next_left = tla.make_tensor_like(
                         left_ptr + ((row + 1) % 2) * 2048,
                         row_major(left_ptr, 16, 128),
@@ -4801,13 +4821,13 @@ def persistent_score_mmads(
                         ),
                     )
                     if tla.const_expr(row % 2 == 0):
-                        tla.set_flag(ready1)
+                        mutex_event(_mutex_ready1, tla.arch.MTE1)
                     else:
-                        tla.set_flag(ready0)
+                        mutex_event(_mutex_ready0, tla.arch.MTE1)
             if tla.const_expr(row % 2 == 0):
-                tla.set_flag(free0)
+                mutex_event(_mutex_free0, tla.arch.CUBE)
             else:
-                tla.set_flag(free1)
+                mutex_event(_mutex_free1, tla.arch.CUBE)
         if tla.const_expr(kk is not None):
             result = ck
             output = kk
@@ -4816,8 +4836,8 @@ def persistent_score_mmads(
                 result = cq
                 output = mq
                 notification = mq_ready
-            tla.set_flag(cube_done)
-            tla.wait_flag(cube_done)
+            mutex_event(_mutex_cube_done, tla.arch.CUBE)
+            mutex_event(_mutex_cube_done, tla.arch.FIX)
             tla.copy(
                 row_major(output.ptr, 64, 64),
                 tla.make_tensor_like(
@@ -4826,8 +4846,8 @@ def persistent_score_mmads(
                 tla.params.CopyL0C2DstParams(l0c2ub_mode=tla.params.L0C2UBMode.SPLIT_M),
             )
             tla.cross_core_set_flag(notification, tla.arch.FIX)
-    tla.wait_flag(free0)
-    tla.wait_flag(free1)
+    mutex_event(_mutex_free0, tla.arch.MTE1)
+    mutex_event(_mutex_free1, tla.arch.MTE1)
 
 
 # -----------------------------------------------------------------------------
@@ -4870,6 +4890,21 @@ def persistent_products_and_state(
     first_chunk=True,
     last_chunk=True,
 ):
+    _mutex_resident_ready = tla.mutex(
+        "persistent_products_and_state_4782_resident_ready", id=0
+    )
+    _mutex_loaded = tla.mutex("persistent_products_and_state_4782_loaded", id=1)
+    _mutex_b_free = tla.mutex("persistent_products_and_state_4782_b_free", id=2)
+    _mutex_cube_done = tla.mutex("persistent_products_and_state_4782_cube_done", id=3)
+    _mutex_w_ready = tla.mutex("persistent_products_and_state_4782_w_ready", id=4)
+    _mutex_output_read = tla.mutex(
+        "persistent_products_and_state_4782_output_read", id=5
+    )
+    _mutex_output_free = tla.mutex(
+        "persistent_products_and_state_4782_output_free", id=6
+    )
+    _mutex_vnew_ready = tla.mutex("persistent_products_and_state_4782_vnew_ready", id=7)
+    _mutex_delta_read = tla.mutex("persistent_products_and_state_4782_delta_read", id=8)
     w_ready = tla.flag("pr_w_ready", tla.arch.FIX, tla.arch.MTE1)
     vnew_ready = tla.flag("pr_vnew_ready", tla.arch.FIX, tla.arch.MTE1)
     output_read = tla.flag("pr_output_read", tla.arch.FIX, tla.arch.CUBE)
@@ -4882,17 +4917,17 @@ def persistent_products_and_state(
     cw = tla.make_tensor_like(cp, row_major(cp, 64, 128), tla.arch.L0Clayout)
     cu = tla.make_tensor_like(cp + 8192, row_major(cp, 64, 128), tla.arch.L0Clayout)
     co = tla.make_tensor_like(cp + 16384, row_major(cp, 64, 128), tla.arch.L0Clayout)
-    tla.wait_flag(resident_ready)
+    mutex_event(_mutex_resident_ready, tla.arch.MTE1)
     tla.copy(inverse_a, resident)
     if tla.const_expr(not inputs_ready):
         tla.cross_core_wait_flag(k_ready, tla.arch.MTE1)
     tla.copy(beta_b, kbeta)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     tla.mmad(cw, inverse_a, beta_b, init_c=True)
-    tla.set_flag(b_free)
-    tla.set_flag(cube_done)
-    tla.wait_flag(cube_done)
+    mutex_event(_mutex_b_free, tla.arch.CUBE)
+    mutex_event(_mutex_cube_done, tla.arch.CUBE)
+    mutex_event(_mutex_cube_done, tla.arch.FIX)
     if tla.const_expr(save_cache):
         tla.copy(
             strided_rows(out_w, valid, 128, stride),
@@ -4902,19 +4937,19 @@ def persistent_products_and_state(
             ),
         )
     tla.copy(negative_w, cw)
-    tla.set_flag(w_ready)
-    tla.wait_flag(b_free)
+    mutex_event(_mutex_w_ready, tla.arch.FIX)
+    mutex_event(_mutex_b_free, tla.arch.MTE1)
     if tla.const_expr(not inputs_ready):
         tla.cross_core_wait_flag(v_ready, tla.arch.MTE1)
     tla.copy(beta_b, vbeta)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     tla.mmad(cu, inverse_a, beta_b, init_c=True)
     if tla.const_expr(save_cache):
-        tla.set_flag(cube_done)
-        tla.wait_flag(cube_done)
+        mutex_event(_mutex_cube_done, tla.arch.CUBE)
+        mutex_event(_mutex_cube_done, tla.arch.FIX)
         tla.copy(strided_rows(out_u, valid, 128, stride), cu)
-        tla.set_flag(output_read)
+        mutex_event(_mutex_output_read, tla.arch.FIX)
     state_b = tla.make_tensor_like(bp + 8192, row_major(bp, 128, 128), tla.arch.nZ)
     state_t = tla.make_tensor_like(
         state.ptr, row_major(state.ptr, 128, 128), tla.arch.nZ
@@ -4923,42 +4958,42 @@ def persistent_products_and_state(
     qa = tla.make_tensor_like(ap + 24576, row_major(ap, 64, 128), tla.arch.zN)
     tla.cross_core_wait_flag(state_ready, tla.arch.MTE1)
     tla.copy(state_b, state_t)
-    tla.wait_flag(w_ready)
+    mutex_event(_mutex_w_ready, tla.arch.MTE1)
     tla.copy(wa, negative_w)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     if tla.const_expr(save_cache):
-        tla.wait_flag(output_read)
+        mutex_event(_mutex_output_read, tla.arch.CUBE)
     tla.mmad(cu, wa, state_b, init_c=False)
-    tla.set_flag(cube_done)
+    mutex_event(_mutex_cube_done, tla.arch.CUBE)
     tla.copy(qa, qs)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     if tla.const_expr(output_overlap):
         if first_chunk:
-            tla.set_flag(output_free)
-        tla.wait_flag(output_free)
+            mutex_event(_mutex_output_free, tla.arch.FIX)
+        mutex_event(_mutex_output_free, tla.arch.CUBE)
     tla.mmad(co, qa, state_b, init_c=True)
-    tla.wait_flag(cube_done)
+    mutex_event(_mutex_cube_done, tla.arch.FIX)
     if tla.const_expr(save_cache):
         tla.copy(strided_rows(out_vnew, valid, 128, stride), cu)
     tla.copy(vnew, cu)
-    tla.set_flag(vnew_ready)
+    mutex_event(_mutex_vnew_ready, tla.arch.FIX)
     kb = tla.make_tensor_like(bp + 24576, row_major(bp, 64, 128), tla.arch.nZ)
     aq = tla.make_tensor_like(ap + 8192, row_major(ap, 64, 64), tla.arch.zN)
     vt = tla.make_tensor_like(vnew.ptr, row_major(vnew.ptr, 128, 64), tla.arch.nZ)
     va = tla.make_tensor_like(ap, row_major(ap, 128, 64), tla.arch.zN)
     vb = tla.make_tensor_like(bp, row_major(bp, 64, 128), tla.arch.nZ)
     tla.copy(kb, kg)
-    tla.wait_flag(vnew_ready)
+    mutex_event(_mutex_vnew_ready, tla.arch.MTE1)
     tla.copy(va, vt)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
     # vnew_ready -> MTE1 loads -> loaded already closes FIX's cu reader.
     ch = tla.make_tensor_like(cp, row_major(cp, 128, 128), tla.arch.L0Clayout)
     tla.mmad(ch, va, kb, init_c=True)
-    tla.set_flag(cube_done)
-    tla.wait_flag(cube_done)
+    mutex_event(_mutex_cube_done, tla.arch.CUBE)
+    mutex_event(_mutex_cube_done, tla.arch.FIX)
     tla.copy(
         strided_rows(delta, 128, 128, 64),
         ch,
@@ -4966,22 +5001,22 @@ def persistent_products_and_state(
     )
     tla.cross_core_set_flag(delta_ready, tla.arch.FIX)
     if tla.const_expr(output_overlap):
-        tla.set_flag(delta_read)
+        mutex_event(_mutex_delta_read, tla.arch.FIX)
     # Only Aqk depends on recur_ready; Qs and Kg were acquired in the bulk bank.
     tla.cross_core_wait_flag(recurrent_ready, tla.arch.MTE1)
     tla.copy(aq, aqk)
     tla.copy(vb, vnew)
-    tla.set_flag(loaded)
-    tla.wait_flag(loaded)
+    mutex_event(_mutex_loaded, tla.arch.MTE1)
+    mutex_event(_mutex_loaded, tla.arch.CUBE)
+    _mutex_output_path = tla.mutex("pr_output_path", id=0)
+    _mutex_output_path.lock(pipe=tla.arch.CUBE)
     tla.mmad(co, aq, vb, init_c=False)
-    tla.set_flag(output_done)
-    tla.wait_flag(output_done)
+    _mutex_output_path.unlock(pipe=tla.arch.CUBE)
+    _mutex_output_path.lock(pipe=tla.arch.FIX)
     tla.copy(strided_rows(out, valid, 128, stride), co)
+    _mutex_output_path.unlock(pipe=tla.arch.FIX)
     if tla.const_expr(output_overlap):
-        tla.set_flag(output_free)
-        tla.wait_flag(delta_read)
-        if last_chunk:
-            tla.wait_flag(output_free)
+        mutex_event(_mutex_delta_read, tla.arch.CUBE)
 
 
 # -----------------------------------------------------------------------------
@@ -5047,6 +5082,12 @@ def persistent_chunk(
     bulk_operands=False,
 ):
     # State [128,64] occupies [0,8192) FP32 for the entire sequence.
+    _mutex_identity_ready = tla.mutex("persistent_chunk_4936_identity_ready", id=0)
+    _mutex_v_done = tla.mutex("persistent_chunk_4936_v_done", id=1)
+    _mutex_cast_free = tla.mutex("persistent_chunk_4936_cast_free", id=2)
+    _mutex_cube_done = tla.mutex("persistent_chunk_4936_cube_done", id=3)
+    _mutex_free0 = tla.mutex("persistent_chunk_4936_free0", id=4)
+    _mutex_free1 = tla.mutex("persistent_chunk_4936_free1", id=5)
     state = flat(ubase, 8192)
     uq = flat(tla.recast_ptr(ubase + 8192, dtype=tla.BFloat16), 4096)
     uk = flat(tla.recast_ptr(ubase + 10240, dtype=tla.BFloat16), 4096)
@@ -5163,13 +5204,13 @@ def persistent_chunk(
                 tla.tile_view(identity, tla.make_shape(16, 16), tla.make_coord(j, j)),
                 row_major(identity16.ptr, 16, 16),
             )
-        tla.set_flag(identity_ready)
+        mutex_event(_mutex_identity_ready, tla.arch.MTE2)
     with tla.vector():
         aiv = tla.arch.sub_block_idx()
         # Incoming state is ready on V, so publish the transitive MTE2->V->MTE3
         # edge before a history DMA reads the same UB allocation.
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         if tla.const_expr(save_history):
             tla.copy(
                 strided_rows(history.ptr + aiv * 64, 128, 64, 128),
@@ -5239,8 +5280,8 @@ def persistent_chunk(
         with tla.vector():
             aiv = tla.arch.sub_block_idx()
             pack_persistent_panel(uq, uk, ug, packed, 1, scale)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(
                     score_l1(lp), tla.make_shape(288, 64), tla.make_coord(0, aiv)
@@ -5275,8 +5316,8 @@ def persistent_chunk(
     if tla.const_expr(bulk_operands):
         with tla.vector():
             aiv_recurrent = tla.arch.sub_block_idx()
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
             pack_recurrent(
                 uq,
                 uk,
@@ -5290,8 +5331,8 @@ def persistent_chunk(
                 scale,
                 save_cache,
             )
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(
                     recurrent, tla.make_shape(256, 64), tla.make_coord(0, aiv_recurrent)
@@ -5310,8 +5351,8 @@ def persistent_chunk(
                     row_major(saved_kg.ptr, valid, 64),
                 )
     with tla.cube():
-        tla.set_flag(cube_done)
-        tla.wait_flag(cube_done)
+        mutex_event(_mutex_cube_done, tla.arch.CUBE)
+        mutex_event(_mutex_cube_done, tla.arch.FIX)
         tla.copy(
             row_major(kk.ptr, 64, 64),
             ci,
@@ -5324,9 +5365,9 @@ def persistent_chunk(
         )
         tla.cross_core_set_flag(scores_done, tla.arch.FIX)
         tla.cross_core_wait_flag(inverse_ready, tla.arch.MTE1)
-        tla.wait_flag(identity_ready)
-        tla.set_flag(free0)
-        tla.set_flag(free1)
+        mutex_event(_mutex_identity_ready, tla.arch.MTE1)
+        mutex_event(_mutex_free0, tla.arch.CUBE)
+        mutex_event(_mutex_free1, tla.arch.CUBE)
         compose_persistent_inverse(
             nt_l1,
             diagonal,
@@ -5355,8 +5396,8 @@ def persistent_chunk(
             cube_done,
             resident_ready,
         )
-        tla.wait_flag(free0)
-        tla.wait_flag(free1)
+        mutex_event(_mutex_free0, tla.arch.MTE1)
+        mutex_event(_mutex_free1, tla.arch.MTE1)
         persistent_products_and_state(
             resident,
             kl,
@@ -5406,8 +5447,8 @@ def persistent_chunk(
         prefetch_half(q, k, raw_q, raw_k, next_valid, q_stride, 1, prefetch_free)
     with tla.vector():
         aiv = tla.arch.sub_block_idx()
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         tla.copy(
             tla.tile_view(nt_l1, tla.make_shape(32, 64), tla.make_coord(aiv, 0)),
             padded_nz(ntnz.ptr, 32),
@@ -5422,30 +5463,30 @@ def persistent_chunk(
             # packing, so Cube produces -W; the public W FIX reverses the sign.
             beta_weighted_operand(uk, ub, ug, cast, True, True)
             nd2nz_tile(cast, nz, 64, 64)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(kl, tla.make_shape(64, 64), tla.make_coord(0, aiv)),
                 padded_nz(nz.ptr, 64),
             )
             tla.cross_core_set_flag(k_ready, tla.arch.MTE3)
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
             beta_weighted_operand(uv, ub, ug, cast, False)
             nd2nz_tile(cast, nz, 64, 64)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(vl, tla.make_shape(64, 64), tla.make_coord(0, aiv)),
                 padded_nz(nz.ptr, 64),
             )
             tla.cross_core_set_flag(v_ready, tla.arch.MTE3)
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
             prepare_decayed_q(uq, ug, cast, decayed, scale)
             nd2nz_tile(decayed, nz, 64, 64)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             if tla.const_expr(save_cache):
                 tla.copy(
                     strided_rows(qg.ptr + aiv * 64, valid, 64, v_stride),
@@ -5455,12 +5496,12 @@ def persistent_chunk(
                 tla.tile_view(ql, tla.make_shape(64, 64), tla.make_coord(0, aiv)),
                 padded_nz(nz.ptr, 64),
             )
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
             restored_state_inputs(uk, ug, cast, ugamma)
             nd2nz_tile(cast, nz, 64, 64)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             if tla.const_expr(save_cache):
                 tla.copy(
                     strided_rows(kg.ptr + aiv * 64, valid, 64, v_stride),
@@ -5470,12 +5511,12 @@ def persistent_chunk(
                 tla.tile_view(kgl, tla.make_shape(64, 64), tla.make_coord(0, aiv)),
                 padded_nz(nz.ptr, 64),
             )
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
         mask_mqk(mq, public, aiv)
         nd2nz_tile(public, aq_nz, 32, 64)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         rows = valid - aiv * 32
         if rows > 32:
             rows = 32
@@ -5492,8 +5533,8 @@ def persistent_chunk(
         tla.cross_core_set_flag(recur_ready, tla.arch.MTE3)
         cast_state_snapshot(state, snapshot, 128)
         nd2nz_tile(snapshot, snz, 128, 64)
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         tla.copy(
             tla.tile_view(hl, tla.make_shape(128, 64), tla.make_coord(0, aiv)),
             padded_nz(snz.ptr, 128),
@@ -5571,6 +5612,17 @@ def persistent_pipeline_chunk(
     shared_scores=False,
 ):
     # State [128,64] occupies [0,8192) FP32 for the entire sequence.
+    _mutex_identity_ready = tla.mutex(
+        "persistent_pipeline_chunk_5456_identity_ready", id=0
+    )
+    _mutex_v_done = tla.mutex("persistent_pipeline_chunk_5456_v_done", id=1)
+    _mutex_cast_free = tla.mutex("persistent_pipeline_chunk_5456_cast_free", id=2)
+    _mutex_input_dma_free = tla.mutex(
+        "persistent_pipeline_chunk_5456_input_dma_free", id=3
+    )
+    _mutex_cube_done = tla.mutex("persistent_pipeline_chunk_5456_cube_done", id=4)
+    _mutex_free0 = tla.mutex("persistent_pipeline_chunk_5456_free0", id=5)
+    _mutex_free1 = tla.mutex("persistent_pipeline_chunk_5456_free1", id=6)
     score_rows = 224 if shared_scores else 288
     state = flat(ubase, 8192)
     uq = flat(tla.recast_ptr(ubase + 8192, dtype=tla.BFloat16), 4096)
@@ -5697,13 +5749,13 @@ def persistent_pipeline_chunk(
                     ),
                     row_major(identity16.ptr, 16, 16),
                 )
-            tla.set_flag(identity_ready)
+            mutex_event(_mutex_identity_ready, tla.arch.MTE2)
     with tla.vector():
         aiv_entry = tla.arch.sub_block_idx()
         # Incoming state is ready on V, so publish the transitive MTE2->V->MTE3
         # edge before a history DMA reads the same UB allocation.
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         if tla.const_expr(save_history):
             tla.copy(
                 strided_rows(history.ptr + aiv_entry * 64, 128, 64, 128),
@@ -5711,8 +5763,8 @@ def persistent_pipeline_chunk(
             )
         if first_chunk:
             cast_state_nz(state, snz, 128)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(
                     hl, tla.make_shape(128, 64), tla.make_coord(0, aiv_entry)
@@ -5780,8 +5832,8 @@ def persistent_pipeline_chunk(
     if first_chunk:
         if tla.const_expr(mode == 1):
             with tla.vector():
-                tla.set_flag(cast_free)
-                tla.wait_flag(cast_free)
+                mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                 pack_persistent_panel(
                     uq,
                     uk,
@@ -5812,8 +5864,8 @@ def persistent_pipeline_chunk(
                     inverse_norm,
                     shared_scores,
                 )
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     tla.tile_view(
                         score_l1(lp, shared_scores),
@@ -5860,8 +5912,8 @@ def persistent_pipeline_chunk(
             )
     else:
         with tla.vector():
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
         per_d_scores(
             uq,
             uk,
@@ -5884,8 +5936,8 @@ def persistent_pipeline_chunk(
         if tla.const_expr(bulk_operands):
             with tla.vector():
                 aiv_recurrent = tla.arch.sub_block_idx()
-                tla.set_flag(cast_free)
-                tla.wait_flag(cast_free)
+                mutex_event(_mutex_cast_free, tla.arch.MTE3)
+                mutex_event(_mutex_cast_free, tla.arch.VECTOR)
                 pack_recurrent(
                     uq,
                     uk,
@@ -5899,8 +5951,8 @@ def persistent_pipeline_chunk(
                     scale,
                     save_cache,
                 )
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     tla.tile_view(
                         recurrent,
@@ -5926,8 +5978,8 @@ def persistent_pipeline_chunk(
         with tla.vector():
             # Current raw V/g/beta have already become independent L1 operands.
             # Close all previous MTE3 readers before reusing their UB aliases.
-            tla.set_flag(input_dma_free)
-            tla.wait_flag(input_dma_free)
+            mutex_event(_mutex_input_dma_free, tla.arch.MTE3)
+            mutex_event(_mutex_input_dma_free, tla.arch.MTE2)
             load_raw_prefix_inputs(
                 q,
                 k,
@@ -5953,8 +6005,8 @@ def persistent_pipeline_chunk(
             )
     with tla.cube():
         if tla.const_expr(mode != 1):
-            tla.set_flag(cube_done)
-            tla.wait_flag(cube_done)
+            mutex_event(_mutex_cube_done, tla.arch.CUBE)
+            mutex_event(_mutex_cube_done, tla.arch.FIX)
             tla.copy(
                 row_major(kk.ptr, 64, 64),
                 ci,
@@ -5969,9 +6021,9 @@ def persistent_pipeline_chunk(
             tla.cross_core_set_flag(mq_done, tla.arch.FIX)
         tla.cross_core_wait_flag(inverse_ready, tla.arch.MTE1)
         if first_chunk:
-            tla.wait_flag(identity_ready)
-        tla.set_flag(free0)
-        tla.set_flag(free1)
+            mutex_event(_mutex_identity_ready, tla.arch.MTE1)
+        mutex_event(_mutex_free0, tla.arch.CUBE)
+        mutex_event(_mutex_free1, tla.arch.CUBE)
         compose_persistent_inverse(
             nt_l1,
             diagonal,
@@ -6000,8 +6052,8 @@ def persistent_pipeline_chunk(
             cube_done,
             resident_ready,
         )
-        tla.wait_flag(free0)
-        tla.wait_flag(free1)
+        mutex_event(_mutex_free0, tla.arch.MTE1)
+        mutex_event(_mutex_free1, tla.arch.MTE1)
         if parity == 0:
             tla.cross_core_wait_flag(k_ready, tla.arch.MTE1)
         else:
@@ -6044,8 +6096,8 @@ def persistent_pipeline_chunk(
         aiv_leaf = tla.arch.sub_block_idx()
         tla.cross_core_wait_flag(scores_done, tla.arch.VECTOR)
         # Snapshot NZ and leaf workspace alias; close its MTE3 reader first.
-        tla.set_flag(cast_free)
-        tla.wait_flag(cast_free)
+        mutex_event(_mutex_cast_free, tla.arch.MTE3)
+        mutex_event(_mutex_cast_free, tla.arch.VECTOR)
         persistent_negative_t(kk, ub, nt32, ntnz, aiv_leaf)
         persistent_diagonal_inverse(
             nt32, prefix, padded_nz(dnz.ptr, 32), aiv_leaf, first_chunk
@@ -6057,8 +6109,8 @@ def persistent_pipeline_chunk(
         prefetch_half(q, k, raw_q, raw_k, next_valid, q_stride, 1, prefetch_free)
     with tla.vector():
         aiv_inverse = tla.arch.sub_block_idx()
-        tla.set_flag(v_done)
-        tla.wait_flag(v_done)
+        mutex_event(_mutex_v_done, tla.arch.VECTOR)
+        mutex_event(_mutex_v_done, tla.arch.MTE3)
         tla.copy(
             tla.tile_view(
                 nt_l1, tla.make_shape(32, 64), tla.make_coord(aiv_inverse, 0)
@@ -6076,8 +6128,8 @@ def persistent_pipeline_chunk(
         with tla.vector():
             aiv_aq = tla.arch.sub_block_idx()
             mask_mqk_nz(mq, public, aq_nz, aiv_aq, save_matrices)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             rows = valid - aiv_aq * 32
             if rows > 32:
                 rows = 32
@@ -6189,8 +6241,8 @@ def persistent_pipeline_chunk(
                     inverse_norm,
                     shared_scores,
                 )
-                tla.set_flag(v_done)
-                tla.wait_flag(v_done)
+                mutex_event(_mutex_v_done, tla.arch.VECTOR)
+                mutex_event(_mutex_v_done, tla.arch.MTE3)
                 tla.copy(
                     tla.tile_view(
                         score_l1(lp, shared_scores),
@@ -6238,30 +6290,30 @@ def persistent_pipeline_chunk(
             # packing, so Cube produces -W; the public W FIX reverses the sign.
             beta_weighted_operand(uk, ub, ug, cast, True, True)
             nd2nz_tile(cast, nz, 64, 64)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(kl, tla.make_shape(64, 64), tla.make_coord(0, aiv_tail)),
                 padded_nz(nz.ptr, 64),
             )
             tla.cross_core_set_flag(k_ready, tla.arch.MTE3)
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
             beta_weighted_operand(uv, ub, ug, cast, False)
             nd2nz_tile(cast, nz, 64, 64)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(vl, tla.make_shape(64, 64), tla.make_coord(0, aiv_tail)),
                 padded_nz(nz.ptr, 64),
             )
             tla.cross_core_set_flag(v_ready, tla.arch.MTE3)
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
             prepare_decayed_q(uq, ug, cast, decayed, scale)
             nd2nz_tile(decayed, nz, 64, 64)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             if tla.const_expr(save_cache):
                 tla.copy(
                     strided_rows(qg.ptr + aiv_tail * 64, valid, 64, v_stride),
@@ -6271,12 +6323,12 @@ def persistent_pipeline_chunk(
                 tla.tile_view(ql, tla.make_shape(64, 64), tla.make_coord(0, aiv_tail)),
                 padded_nz(nz.ptr, 64),
             )
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
             restored_state_inputs(uk, ug, cast, ugamma)
             nd2nz_tile(cast, nz, 64, 64)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             if tla.const_expr(save_cache):
                 tla.copy(
                     strided_rows(kg.ptr + aiv_tail * 64, valid, 64, v_stride),
@@ -6286,12 +6338,12 @@ def persistent_pipeline_chunk(
                 tla.tile_view(kgl, tla.make_shape(64, 64), tla.make_coord(0, aiv_tail)),
                 padded_nz(nz.ptr, 64),
             )
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
         if tla.const_expr(not bulk_operands):
             mask_mqk_nz(mq, public, aq_nz, aiv_tail, save_matrices)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             rows = valid - aiv_tail * 32
             if rows > 32:
                 rows = 32
@@ -6311,8 +6363,8 @@ def persistent_pipeline_chunk(
         next_gamma = flat(ubase + 43616 + (1 - parity) * 64, 64)
         with tla.vector():
             aiv_pack = tla.arch.sub_block_idx()
-            tla.set_flag(cast_free)
-            tla.wait_flag(cast_free)
+            mutex_event(_mutex_cast_free, tla.arch.MTE3)
+            mutex_event(_mutex_cast_free, tla.arch.VECTOR)
             pack_recurrent(
                 uq,
                 uk,
@@ -6326,8 +6378,8 @@ def persistent_pipeline_chunk(
                 scale,
                 save_cache,
             )
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(
                     next_recurrent, tla.make_shape(256, 64), tla.make_coord(0, aiv_pack)
@@ -6364,8 +6416,8 @@ def persistent_pipeline_chunk(
             # cast_free before next recurrent packing has released score's
             # MTE3 read of the SNZ alias; the recurrent buffer is disjoint.
             update_state_nz(state, delta, ugamma, snz, 128)
-            tla.set_flag(v_done)
-            tla.wait_flag(v_done)
+            mutex_event(_mutex_v_done, tla.arch.VECTOR)
+            mutex_event(_mutex_v_done, tla.arch.MTE3)
             tla.copy(
                 tla.tile_view(
                     hl, tla.make_shape(128, 64), tla.make_coord(0, aiv_update)
@@ -6534,13 +6586,15 @@ class PersistentMetadataKernel:
         history,
         final,
     ):
+        _mutex_load_state = tla.mutex("run_6449_load_state", id=0)
+        _mutex_save_state = tla.mutex("run_6449_save_state", id=1)
         ub = tla.allocate(61440, tla.Float32, tla.AddressSpace.ub, 256)
         l1 = tla.allocate(
             172032 if self.pipeline else 131072, tla.BFloat16, tla.AddressSpace.l1, 512
         )
         a = tla.allocate(32768, tla.BFloat16, tla.AddressSpace.l0a, 512)
         b = tla.allocate(32768, tla.BFloat16, tla.AddressSpace.l0b, 512)
-        c = tla.allocate(32768, tla.Float32, tla.AddressSpace.l0c, 512)
+        c = tla.allocate(32768, tla.Float32, tla.AddressSpace.l0c, 1024)
         load_state = tla.flag("ps_load_state", tla.arch.MTE2, tla.arch.VECTOR)
         save_state = tla.flag("ps_save_state", tla.arch.VECTOR, tla.arch.MTE3)
         block = i64(tla.arch.block_idx())
@@ -6560,8 +6614,8 @@ class PersistentMetadataKernel:
                     row_major(ub, 128, 64),
                     strided_rows(initial.ptr + si + i64(aiv * 64), 128, 64, 128),
                 )
-                tla.set_flag(load_state)
-                tla.wait_flag(load_state)
+                mutex_event(_mutex_load_state, tla.arch.MTE2)
+                mutex_event(_mutex_load_state, tla.arch.VECTOR)
             for chunk in tla.range(total):
                 ci = i64(chunk)
                 valid = i64(64)
@@ -6727,8 +6781,8 @@ class PersistentMetadataKernel:
                     )
             with tla.vector():
                 aiv = tla.arch.sub_block_idx()
-                tla.set_flag(save_state)
-                tla.wait_flag(save_state)
+                mutex_event(_mutex_save_state, tla.arch.VECTOR)
+                mutex_event(_mutex_save_state, tla.arch.MTE3)
                 tla.copy(
                     strided_rows(final.ptr + si + i64(aiv * 64), 128, 64, 128),
                     row_major(ub, 128, 64),
@@ -6737,3 +6791,1964 @@ class PersistentMetadataKernel:
             with tla.cube():
                 tla.pipe_barrier(tla.pipes.ALL)
             task = meta[task + i64(5)]
+
+
+# =============================================================================
+# Host side: parameter checks, ABI4 integer scheduling, allocation and launch.
+# =============================================================================
+
+# Ascend 950 native CATLASS DSL Flash KDA forward host interface.
+#
+# Input validation, ABI4 integer scheduling and forward launch live here.
+# See README.md. Device arithmetic lives in the section above.
+
+__all__ = ["flash_kda_fwd"]
+
+
+# -----------------------------------------------------------------------------
+# Host input validation.
+# -----------------------------------------------------------------------------
+
+D = 128
+
+
+def _require(ok, message):
+    if not ok:
+        raise ValueError(message)
+
+
+def _tensor(name, value, dtype, shape=None, rank=None):
+    _require(isinstance(value, Tensor), f"{name} must be a Tensor")
+    _require(value.device.type == "npu", f"{name} must be on NPU")
+    _require(value.dtype in dtype, f"{name}: unsupported dtype {value.dtype}")
+    _require(value.is_contiguous(), f"{name} must be contiguous")
+    if rank is not None:
+        _require(value.ndim == rank, f"{name}: expected rank {rank}")
+    if shape is not None:
+        _require(tuple(value.shape) == tuple(shape), f"{name}: expected shape {shape}")
+
+
+def _validate(
+    q,
+    k,
+    v,
+    g,
+    beta,
+    metadata,
+    initial_state,
+    A_log,
+    dt_bias,
+    cu_seqlens,
+    seqused,
+    *,
+    scale,
+    layout,
+    flags,
+    lower_bound,
+):
+    _require(layout in ("BNSD", "BSND", "TND"), "unsupported layout")
+    _require(metadata is None, "metadata must be None in this interface version")
+    for name, flag in flags.items():
+        _require(isinstance(flag, bool), f"{name} must be bool")
+    _require(
+        scale is None
+        or (
+            isinstance(scale, (int, float))
+            and not isinstance(scale, bool)
+            and math.isfinite(scale)
+        ),
+        "scale must be finite",
+    )
+    rank = 3 if layout == "TND" else 4
+    for name, x in (("q", q), ("k", k), ("v", v)):
+        _tensor(name, x, (torch.bfloat16,), rank=rank)
+    _tensor("g", g, (torch.bfloat16, torch.float32), v.shape)
+    _tensor("beta", beta, (torch.bfloat16, torch.float32), v.shape[:-1])
+    _require(k.shape == q.shape, "q/k shapes must match")
+    _require(q.shape[-1] == D and v.shape[-1] == D, "D must be 128")
+    if layout == "TND":
+        _tensor("cu_seqlens", cu_seqlens, (torch.int32,), rank=1)
+        batch, length, nq, nv = (
+            cu_seqlens.numel() - 1,
+            q.shape[0],
+            q.shape[1],
+            v.shape[1],
+        )
+        expected_v = (length, nv, D)
+    else:
+        batch = q.shape[0]
+        length = q.shape[2 if layout == "BNSD" else 1]
+        nq, nv = (
+            q.shape[1 if layout == "BNSD" else 2],
+            v.shape[1 if layout == "BNSD" else 2],
+        )
+        expected_v = (
+            (batch, nv, length, D) if layout == "BNSD" else (batch, length, nv, D)
+        )
+    _require(batch > 0 and length > 0, "batch and storage length must be positive")
+    _require(1 <= nq <= nv <= 96 and nv % nq == 0, "invalid GQA head counts")
+    _require(tuple(v.shape) == expected_v, "v shape does not match q")
+    lengths = None
+    if cu_seqlens is not None:
+        _tensor("cu_seqlens", cu_seqlens, (torch.int32,), (batch + 1,))
+        prefix = cu_seqlens.cpu().tolist()
+        _require(prefix[0] == 0, "cu_seqlens must start at 0")
+        lengths = [b - a for a, b in zip(prefix, prefix[1:])]
+        _require(all(0 < x <= length for x in lengths), "invalid sequence lengths")
+        if layout == "TND":
+            _require(prefix[-1] == length, "cu_seqlens endpoint must equal T")
+    if seqused is not None:
+        _tensor("seqused", seqused, (torch.int32,), (batch,))
+        used = seqused.cpu().tolist()
+        _require(all(0 < x <= length for x in used), "invalid seqused")
+        _require(lengths is None or lengths == used, "inconsistent length tensors")
+        lengths = used
+    lengths = lengths if lengths is not None else [length] * batch
+    _require(sum(lengths) <= 2**31 - 1, "length prefix exceeds INT32")
+    if initial_state is not None:
+        _tensor("initial_state", initial_state, (torch.float32,), (batch, nv, D, D))
+    if flags["use_gate_in_kernel"]:
+        _tensor("A_log", A_log, (torch.float32,), (nv,))
+        if dt_bias is not None:
+            _tensor("dt_bias", dt_bias, (torch.float32,), (nv, D))
+        _require(
+            lower_bound is None
+            or (
+                isinstance(lower_bound, (int, float))
+                and not isinstance(lower_bound, bool)
+                and math.isfinite(lower_bound)
+                and -5 <= lower_bound < 0
+            ),
+            "invalid lower_bound",
+        )
+    _require(
+        not flags["allow_neg_eigval"] or flags["use_beta_sigmoid_in_kernel"],
+        "allow_neg_eigval requires beta sigmoid",
+    )
+    for name, tensor in (
+        ("k", k),
+        ("v", v),
+        ("g", g),
+        ("beta", beta),
+        ("initial_state", initial_state),
+        ("A_log", A_log if flags["use_gate_in_kernel"] else None),
+        ("dt_bias", dt_bias if flags["use_gate_in_kernel"] else None),
+        ("cu_seqlens", cu_seqlens),
+        ("seqused", seqused),
+    ):
+        if tensor is not None:
+            _require(
+                isinstance(tensor, Tensor) and tensor.device == q.device,
+                f"{name} must be on the same NPU as q",
+            )
+    return batch, nq, nv, length, lengths
+
+
+# -----------------------------------------------------------------------------
+# Host ABI4 scheduling.
+# -----------------------------------------------------------------------------
+
+CHUNK_SIZE = 64
+MAX_VALUE_HEADS = 96
+WORKSPACE_SLOTS = 1024
+MAX_CHUNK_GROUP = 512
+HEADER_WORDS = 11
+STATUS_OK = 0
+I64 = int
+
+
+def zeros(dtype, count):
+    return [0] * count
+
+
+MAGIC = 0x4B444132
+
+ABI_VERSION = 4
+
+MAX_AIC_CORES = 32
+
+ROUND_FIXED_WORDS = 133
+
+ROUND_WORDS_PER_BATCH = 9
+
+HEADER_MAGIC = 0
+
+HEADER_ABI_VERSION = 1
+
+HEADER_STATUS = 2
+
+HEADER_CORE_NUM = 3
+
+HEADER_STAGE12_ROUND_NUM = 4
+
+HEADER_BATCH = 5
+
+HEADER_VALUE_HEADS = 6
+
+HEADER_HAS_CU = 7
+
+HEADER_WORKSPACE_SLOTS = 8
+
+HEADER_TEMPLATE = 9
+
+HEADER_CHUNK_TASK_NUM = 10
+
+TEMPLATE_AUTO = 0
+
+TEMPLATE_STAGED = 1
+
+TEMPLATE_PERSISTENT = 2
+
+CHUNK_TASK_WORDS = 6
+
+CHUNK_TASK_BATCH = 0
+
+CHUNK_TASK_STORAGE_BATCH = 1
+
+CHUNK_TASK_TOKEN_START = 2
+
+CHUNK_TASK_LENGTH = 3
+
+CHUNK_TASK_VALUE_HEAD = 4
+
+CHUNK_TASK_NEXT = 5
+
+STATUS_BAD_CORE_NUM = 1
+
+STATUS_BAD_WORKSPACE_SLOTS = 2
+
+STATUS_BAD_FLAGS = 3
+
+STATUS_BAD_SHAPE = 4
+
+STATUS_BAD_CU_START = 5
+
+STATUS_BAD_LENGTH = 6
+
+STATUS_BAD_PADDED_LENGTH = 7
+
+STATUS_BAD_PACKED_END = 8
+
+STATUS_BAD_METADATA_CAPACITY = 9
+
+SHORT_TRAIN_CHUNK_GROUP = 13
+
+SHORT_TRAIN_MIN_LENGTH = 8192
+
+SHORT_TRAIN_HEADS = 32
+
+INT64_MAX = 2**63 - 1
+
+ROUTE_COST_SCALE = 64
+
+MAX_SCALED_QUANTITY = INT64_MAX // ROUTE_COST_SCALE
+
+ROUTE_PARAMETER_WORDS = 16
+
+ROUTE_SCHEMA_INDEX = 13
+
+ROUTE_MARGIN_INDEX = 14
+
+PARTS_PER_MILLION = 1_000_000
+
+PICOSECONDS_PER_NANOSECOND = 1000
+
+FULL_CHUNK_COST_NS = 4930
+
+CALIBRATED_MIN_CHUNKS = 64
+
+CALIBRATED_MAX_CHUNKS = 256
+
+CALIBRATED_GROUP_LIMIT = 16
+
+MAX_ACTIVE_BATCHES = WORKSPACE_SLOTS
+
+MAX_STAGE1_TASKS = WORKSPACE_SLOTS
+
+MAX_STAGE2_TASKS = WORKSPACE_SLOTS * 8
+
+
+def _interpolate_stage1_task_cost(
+    valid_row_num,
+    left_row_num,
+    left_cost,
+    right_row_num,
+    right_cost,
+):
+    # 拟合系数单位为皮秒，调度成本单位为纳秒。
+    row_span = right_row_num - left_row_num
+    numerator = left_cost * row_span + (valid_row_num - left_row_num) * (
+        right_cost - left_cost
+    )
+    denominator = row_span * PICOSECONDS_PER_NANOSECOND
+    return (numerator + denominator // 2) // denominator
+
+
+def _stage1_task_cost(valid_row_num):
+    cost = 0
+    if valid_row_num > 0:
+        if valid_row_num <= 16:
+            cost = _interpolate_stage1_task_cost(valid_row_num, 1, 4892380, 16, 4920438)
+        elif valid_row_num <= 32:
+            cost = _interpolate_stage1_task_cost(
+                valid_row_num, 16, 4920438, 32, 4970718
+            )
+        elif valid_row_num <= 48:
+            cost = _interpolate_stage1_task_cost(
+                valid_row_num, 32, 4970718, 48, 4992347
+            )
+        elif valid_row_num <= 63:
+            cost = _interpolate_stage1_task_cost(
+                valid_row_num, 48, 4992347, 63, 4952972
+            )
+        else:
+            cost = FULL_CHUNK_COST_NS
+    return cost
+
+
+def _stage2_task_cost(candidate_idx, chunk_num):
+    item_init = 352
+    chunk_cost = 1839
+    if candidate_idx == 1:
+        item_init = 133
+        chunk_cost = 1186
+    elif candidate_idx == 2:
+        item_init = 19
+        chunk_cost = 884
+    elif candidate_idx == 3:
+        item_init = 65
+        chunk_cost = 729
+    return item_init + chunk_num * chunk_cost
+
+
+def round_record_words(active_batch_num: int) -> int:
+    """返回一条变长记录占用的字数。"""
+
+    active_batch_num = int(active_batch_num)
+    if active_batch_num <= 0:
+        raise ValueError("active_batch_num must be positive")
+    return ROUND_FIXED_WORDS + ROUND_WORDS_PER_BATCH * active_batch_num
+
+
+def metadata_capacity_upper_bound(
+    batch: int,
+    storage_length: int,
+    *,
+    is_packed: bool,
+    value_heads: int = MAX_VALUE_HEADS,
+) -> int:
+    """返回覆盖所有合法轮次划分的安全容量上界。"""
+
+    batch = int(batch)
+    storage_length = int(storage_length)
+    if batch <= 0:
+        raise ValueError("batch must be positive")
+    if storage_length <= 0:
+        raise ValueError("storage_length must be positive")
+    storage_chunk_num = (storage_length + CHUNK_SIZE - 1) // CHUNK_SIZE
+    if is_packed:
+        chunk_entries = storage_chunk_num + batch - 1
+    else:
+        chunk_entries = batch * storage_chunk_num
+    if not 1 <= int(value_heads) <= MAX_VALUE_HEADS:
+        raise ValueError("value_heads must be in [1, 96]")
+    # 每个可能的 chunk 条目预留一个目录字和一条单批次记录。
+    group_capacity = (
+        HEADER_WORDS
+        + 1
+        + (1 + ROUND_FIXED_WORDS + ROUND_WORDS_PER_BATCH) * chunk_entries
+    )
+    # chunk 调度器在任务记录后使用 B 个临时批次索引。
+    chunk_capacity = (
+        HEADER_WORDS
+        + MAX_AIC_CORES
+        + CHUNK_TASK_WORDS * batch * int(value_heads)
+        + batch
+    )
+    return max(group_capacity, chunk_capacity)
+
+
+def _select_group_num(
+    remaining_chunk_num,
+    active_batch_num,
+    value_heads,
+    workspace_slots,
+    max_chunk_group,
+):
+    max_remaining_chunk_num = 0
+    for active_idx in range(0, active_batch_num):
+        if remaining_chunk_num[active_idx] > max_remaining_chunk_num:
+            max_remaining_chunk_num = remaining_chunk_num[active_idx]
+
+    selected_group_num = 1
+    lower_group_num = 1
+    upper_group_num = max_remaining_chunk_num
+    if upper_group_num > max_chunk_group:
+        upper_group_num = max_chunk_group
+    workspace_group_limit = workspace_slots // value_heads
+    if upper_group_num > workspace_group_limit:
+        upper_group_num = workspace_group_limit
+    # 槽位用量随组大小单调增长。选取最大可行分组，减少长序列跨越全局阶段屏障的次数。
+    while lower_group_num <= upper_group_num:
+        candidate_group_num = (lower_group_num + upper_group_num) // 2
+        slot_num = 0
+        for active_idx in range(0, active_batch_num):
+            current_chunk_num = remaining_chunk_num[active_idx]
+            if current_chunk_num > candidate_group_num:
+                current_chunk_num = candidate_group_num
+            slot_num += value_heads * current_chunk_num
+        if slot_num <= workspace_slots:
+            selected_group_num = candidate_group_num
+            lower_group_num = candidate_group_num + 1
+        else:
+            upper_group_num = candidate_group_num - 1
+    return selected_group_num
+
+
+def _partition_costs(
+    task_costs,
+    task_num,
+    core_num,
+    core_ranges,
+    core_costs,
+):
+    for core_idx in range(0, MAX_AIC_CORES):
+        core_ranges[core_idx * 2] = 0
+        core_ranges[core_idx * 2 + 1] = 0
+        core_costs[core_idx] = 0
+
+    if task_num > 0:
+        active_core_num = task_num
+        if active_core_num > core_num:
+            active_core_num = core_num
+        remaining_cost = 0
+        for task_idx in range(0, task_num):
+            remaining_cost += task_costs[task_idx]
+
+        start = 0
+        for core_idx in range(0, active_core_num):
+            remaining_core_num = active_core_num - core_idx
+            if remaining_core_num == 1:
+                end = task_num
+            else:
+                max_end = task_num - (remaining_core_num - 1)
+                end = start + 1
+                segment_cost = task_costs[start]
+                while end < max_end:
+                    next_cost = segment_cost + task_costs[end]
+                    next_error = abs(next_cost * remaining_core_num - remaining_cost)
+                    current_error = abs(
+                        segment_cost * remaining_core_num - remaining_cost
+                    )
+                    if next_error <= current_error:
+                        segment_cost = next_cost
+                        end += 1
+                    else:
+                        break
+
+            segment_cost = 0
+            for task_idx in range(start, end):
+                segment_cost += task_costs[task_idx]
+            core_ranges[core_idx * 2] = start
+            core_ranges[core_idx * 2 + 1] = end
+            core_costs[core_idx] = segment_cost
+            remaining_cost -= segment_cost
+            start = end
+
+
+def _chunk_batch_precedes(cu_seqlens, left_batch, right_batch):
+    left_length = cu_seqlens[left_batch + 1] - cu_seqlens[left_batch]
+    right_length = cu_seqlens[right_batch + 1] - cu_seqlens[right_batch]
+    left_chunks = (left_length + CHUNK_SIZE - 1) // CHUNK_SIZE
+    right_chunks = (right_length + CHUNK_SIZE - 1) // CHUNK_SIZE
+    precedes = 0
+    if left_chunks > right_chunks:
+        precedes = 1
+    elif left_chunks == right_chunks and left_batch < right_batch:
+        precedes = 1
+    return precedes
+
+
+def _chunk_heap_sift_down(cu_seqlens, metadata, heap_base, heap_num, root_idx):
+    # 最大堆先按 chunk 数排序，再按原始批次索引排序。
+    while root_idx * 2 + 1 < heap_num:
+        child_idx = root_idx * 2 + 1
+        if child_idx + 1 < heap_num:
+            if (
+                _chunk_batch_precedes(
+                    cu_seqlens,
+                    metadata[heap_base + child_idx + 1],
+                    metadata[heap_base + child_idx],
+                )
+                == 1
+            ):
+                child_idx += 1
+        root_batch = metadata[heap_base + root_idx]
+        child_batch = metadata[heap_base + child_idx]
+        if _chunk_batch_precedes(cu_seqlens, child_batch, root_batch) == 0:
+            break
+        metadata[heap_base + root_idx] = child_batch
+        metadata[heap_base + child_idx] = root_batch
+        root_idx = child_idx
+
+
+def _training_group_limit(schedule_args, max_chunks):
+    requested = schedule_args.max_chunk_group
+    if schedule_args.calibration_enabled == 0:
+        return requested
+    if (
+        schedule_args.layout_kind == 1
+        and schedule_args.core_num == MAX_AIC_CORES
+        and schedule_args.batch == 1
+        and schedule_args.value_heads > 32
+        and schedule_args.value_heads <= MAX_VALUE_HEADS
+        and max_chunks >= CALIBRATED_MIN_CHUNKS
+        and max_chunks <= CALIBRATED_MAX_CHUNKS
+    ):
+        return min(requested, CALIBRATED_GROUP_LIMIT)
+    return requested
+
+
+def _route_add_cost(time, cost, quantity):
+    if time < 0 or cost < 0 or quantity < 0:
+        return -1
+    if quantity > 0 and cost > (INT64_MAX - time) // quantity:
+        return -1
+    return time + cost * quantity
+
+
+def _route_rounds(schedule_args, max_group, remaining_chunks):
+    rounds = 0
+    batch_start = 0
+    batches_per_set = schedule_args.workspace_slots // schedule_args.value_heads
+    while batch_start < schedule_args.batch:
+        batch_count = min(batches_per_set, schedule_args.batch - batch_start)
+        longest = 0
+        for local_batch in range(batch_count):
+            batch = batch_start + local_batch
+            length = schedule_args.storage_length
+            if schedule_args.has_cu == 1:
+                length = (
+                    schedule_args.cu_seqlens[batch + 1]
+                    - schedule_args.cu_seqlens[batch]
+                )
+            chunks = (length + CHUNK_SIZE - 1) // CHUNK_SIZE
+            remaining_chunks[local_batch] = chunks
+            longest = max(longest, chunks)
+        while longest > 0:
+            low = 1
+            high = min(max_group, min(longest, batches_per_set))
+            while low < high:
+                middle = (low + high + 1) // 2
+                chunk_count = 0
+                for local_batch in range(batch_count):
+                    chunk_count += min(remaining_chunks[local_batch], middle)
+                if (
+                    chunk_count
+                    <= schedule_args.workspace_slots // schedule_args.value_heads
+                ):
+                    low = middle
+                else:
+                    high = middle - 1
+            longest = 0
+            for local_batch in range(batch_count):
+                chunks = max(0, remaining_chunks[local_batch] - low)
+                remaining_chunks[local_batch] = chunks
+                longest = max(longest, chunks)
+            rounds += 1
+        batch_start += batch_count
+    return rounds
+
+
+def _route_persistent_loads(schedule_args, uniform_chunks, core_chunks, core_rows):
+    # 使用与执行调度相同的堆及按 chunk 数排序的 LPT 顺序。
+    task_count = schedule_args.batch * schedule_args.value_heads
+    heap_base = HEADER_WORDS + MAX_AIC_CORES + CHUNK_TASK_WORDS * task_count
+    if heap_base + schedule_args.batch > schedule_args.metadata_word_capacity:
+        return -1
+    heap_count = schedule_args.batch
+    if uniform_chunks == 0:
+        for batch in range(schedule_args.batch):
+            schedule_args.metadata[heap_base + batch] = batch
+        root = heap_count // 2
+        while root > 0:
+            root -= 1
+            _chunk_heap_sift_down(
+                schedule_args.cu_seqlens,
+                schedule_args.metadata,
+                heap_base,
+                heap_count,
+                root,
+            )
+    peak = 0
+    for scheduled_batch in range(schedule_args.batch):
+        batch = scheduled_batch
+        if uniform_chunks == 0:
+            batch = schedule_args.metadata[heap_base]
+            heap_count -= 1
+            if heap_count > 0:
+                schedule_args.metadata[heap_base] = schedule_args.metadata[
+                    heap_base + heap_count
+                ]
+                _chunk_heap_sift_down(
+                    schedule_args.cu_seqlens,
+                    schedule_args.metadata,
+                    heap_base,
+                    heap_count,
+                    0,
+                )
+        length = schedule_args.storage_length
+        if schedule_args.has_cu == 1:
+            length = (
+                schedule_args.cu_seqlens[batch + 1] - schedule_args.cu_seqlens[batch]
+            )
+        chunks = (length + CHUNK_SIZE - 1) // CHUNK_SIZE
+        for head in range(schedule_args.value_heads):
+            selected_core = 0
+            for core in range(1, schedule_args.core_num):
+                if core_chunks[core] < core_chunks[selected_core]:
+                    selected_core = core
+            core_chunks[selected_core] += chunks
+            core_rows[selected_core] += length
+            peak = max(peak, core_chunks[selected_core])
+    return peak
+
+
+def _select_route_from_model(
+    schedule_args,
+    staged_peak,
+    total_chunks,
+    total_rows,
+    query_rows,
+    persistent_peak,
+    core_rows,
+    max_group,
+    remaining_chunks,
+):
+    # 非负成本单位为飞秒，两种时间均乘以 64 后比较。
+    if (
+        staged_peak < 1
+        or total_chunks < 1
+        or total_rows < 1
+        or query_rows < 1
+        or persistent_peak < 1
+    ):
+        return TEMPLATE_STAGED
+    parallel_chunks = (total_chunks - 1) // schedule_args.core_num + 1
+    head_count = schedule_args.batch * schedule_args.value_heads
+    rounds = _route_rounds(schedule_args, max_group, remaining_chunks)
+    if (
+        parallel_chunks > MAX_SCALED_QUANTITY
+        or staged_peak > MAX_SCALED_QUANTITY
+        or persistent_peak > MAX_SCALED_QUANTITY
+        or rounds > MAX_SCALED_QUANTITY
+        or head_count > MAX_SCALED_QUANTITY
+    ):
+        return TEMPLATE_STAGED
+    base = schedule_args.layout_kind * ROUTE_PARAMETER_WORDS
+    schema = schedule_args.route_coefficients[base + ROUTE_SCHEMA_INDEX]
+    if schema != 6 and schema != 7:
+        return TEMPLATE_STAGED
+    for index in range(ROUTE_SCHEMA_INDEX):
+        if schedule_args.route_coefficients[base + index] < 0:
+            return TEMPLATE_STAGED
+    staged = 0
+    for index in range(5):
+        quantity = ROUTE_COST_SCALE
+        if index == 1:
+            quantity = parallel_chunks * ROUTE_COST_SCALE
+        elif index == 2:
+            quantity = staged_peak * ROUTE_COST_SCALE
+        elif index == 3:
+            quantity = rounds * ROUTE_COST_SCALE
+        elif index == 4:
+            quantity = query_rows
+        staged = _route_add_cost(
+            staged, schedule_args.route_coefficients[base + index], quantity
+        )
+        if staged < 0:
+            return TEMPLATE_STAGED
+    compute = _route_add_cost(
+        0,
+        schedule_args.route_coefficients[base + 5],
+        parallel_chunks * ROUTE_COST_SCALE,
+    )
+    memory = _route_add_cost(0, schedule_args.route_coefficients[base + 6], total_rows)
+    if compute < 0 or memory < 0:
+        return TEMPLATE_STAGED
+    staged = _route_add_cost(staged, max(compute, memory), 1)
+    if staged < 0:
+        return TEMPLATE_STAGED
+    persistent = 0
+    for index in range(7, 11):
+        quantity = ROUTE_COST_SCALE
+        if index == 8:
+            quantity = persistent_peak * ROUTE_COST_SCALE
+        elif index == 9:
+            quantity = head_count * ROUTE_COST_SCALE
+        elif index == 10:
+            quantity = query_rows
+        persistent = _route_add_cost(
+            persistent, schedule_args.route_coefficients[base + index], quantity
+        )
+        if persistent < 0:
+            return TEMPLATE_STAGED
+    previous_rows = 0
+    for phase in range(schedule_args.core_num):
+        next_rows = 0
+        active_cores = 0
+        for core in range(schedule_args.core_num):
+            rows = core_rows[core]
+            if rows > previous_rows:
+                active_cores += 1
+                if next_rows == 0 or rows < next_rows:
+                    next_rows = rows
+        if next_rows == 0:
+            break
+        memory = _route_add_cost(
+            0, schedule_args.route_coefficients[base + 12], active_cores
+        )
+        if memory < 0:
+            return TEMPLATE_STAGED
+        cost = max(schedule_args.route_coefficients[base + 11], memory)
+        persistent = _route_add_cost(persistent, cost, next_rows - previous_rows)
+        if persistent < 0:
+            return TEMPLATE_STAGED
+        previous_rows = next_rows
+    margin = schedule_args.route_coefficients[base + ROUTE_MARGIN_INDEX]
+    if margin < 0 or margin >= PARTS_PER_MILLION:
+        return TEMPLATE_STAGED
+    required_gain = (staged // PARTS_PER_MILLION) * margin + (
+        staged % PARTS_PER_MILLION
+    ) * margin // PARTS_PER_MILLION
+    if persistent < staged - required_gain:
+        return TEMPLATE_PERSISTENT
+    return TEMPLATE_STAGED
+
+
+def flash_kda_fwd_metadata_kernel(a):
+    # Source annotation is postponed and never evaluated; callers pass SimpleNamespace.
+    valid_seq_len_by_batch = zeros(I64, MAX_ACTIVE_BATCHES)  # noqa: F821 - AICPU 编译器内建函数。
+    token_start_by_batch = zeros(I64, MAX_ACTIVE_BATCHES)  # noqa: F821 - AICPU 编译器内建函数。
+    chunk_num_by_batch = zeros(I64, MAX_ACTIVE_BATCHES)  # noqa: F821 - AICPU 编译器内建函数。
+    tail_row_num_by_batch = zeros(I64, MAX_ACTIVE_BATCHES)  # noqa: F821 - AICPU 编译器内建函数。
+    active_local_batch_idx = zeros(I64, MAX_ACTIVE_BATCHES)  # noqa: F821 - AICPU 编译器内建函数。
+    remaining_chunk_num = zeros(I64, MAX_ACTIVE_BATCHES)  # noqa: F821 - AICPU 编译器内建函数。
+    chunk_num_per_group = zeros(I64, MAX_ACTIVE_BATCHES)  # noqa: F821 - AICPU 编译器内建函数。
+    stage1_task_costs = zeros(I64, MAX_STAGE1_TASKS)  # noqa: F821 - AICPU 编译器内建函数。
+    stage1_core_ranges = zeros(I64, MAX_AIC_CORES * 2)  # noqa: F821 - AICPU 编译器内建函数。
+    stage1_core_costs = zeros(I64, MAX_AIC_CORES)  # noqa: F821 - AICPU 编译器内建函数。
+    stage2_task_costs = zeros(I64, MAX_STAGE2_TASKS)  # noqa: F821 - AICPU 编译器内建函数。
+    candidate_stage2_core_ranges = zeros(I64, MAX_AIC_CORES * 2)  # noqa: F821 - AICPU 编译器内建函数。
+    candidate_stage2_core_costs = zeros(I64, MAX_AIC_CORES)  # noqa: F821 - AICPU 编译器内建函数。
+    selected_stage2_core_ranges = zeros(I64, MAX_AIC_CORES * 2)  # noqa: F821 - AICPU 编译器内建函数。
+    route_core_costs = zeros(I64, MAX_AIC_CORES)  # noqa: F821 - AICPU 编译器内建函数。
+    route_lpt_costs = zeros(I64, MAX_AIC_CORES)  # noqa: F821 - AICPU 编译器内建函数。
+    route_valid_rows = zeros(I64, MAX_AIC_CORES)  # noqa: F821 - AICPU 编译器内建函数。
+    chunk_core_costs = zeros(I64, MAX_AIC_CORES)  # noqa: F821 - AICPU 编译器内建函数。
+    chunk_core_tails = zeros(I64, MAX_AIC_CORES)  # noqa: F821 - AICPU 编译器内建函数。
+
+    if a.metadata_word_capacity < HEADER_WORDS:
+        # AICPU 将非零内核返回值视为任务异常（ACL 507005）。
+        # 诊断码写入 metadata 头部，不作为内核返回值。
+        return STATUS_OK
+
+    a.metadata[HEADER_MAGIC] = MAGIC
+    a.metadata[HEADER_ABI_VERSION] = ABI_VERSION
+    a.metadata[HEADER_STATUS] = STATUS_OK
+    a.metadata[HEADER_CORE_NUM] = a.core_num
+    a.metadata[HEADER_STAGE12_ROUND_NUM] = 0
+    a.metadata[HEADER_BATCH] = a.batch
+    a.metadata[HEADER_VALUE_HEADS] = a.value_heads
+    a.metadata[HEADER_HAS_CU] = a.has_cu
+    a.metadata[HEADER_WORKSPACE_SLOTS] = a.workspace_slots
+    a.metadata[HEADER_TEMPLATE] = TEMPLATE_AUTO
+    a.metadata[HEADER_CHUNK_TASK_NUM] = 0
+    if a.metadata_word_capacity > HEADER_WORDS:
+        a.metadata[HEADER_WORDS] = HEADER_WORDS + 1
+
+    status = STATUS_OK
+    if a.core_num < 1 or a.core_num > MAX_AIC_CORES:
+        status = STATUS_BAD_CORE_NUM
+    elif (
+        a.template_kind != TEMPLATE_AUTO
+        and a.template_kind != TEMPLATE_STAGED
+        and a.template_kind != TEMPLATE_PERSISTENT
+    ):
+        status = STATUS_BAD_FLAGS
+    elif a.calibration_enabled != 0 and a.calibration_enabled != 1:
+        status = STATUS_BAD_FLAGS
+    elif a.layout_kind != 0 and a.layout_kind != 1:
+        status = STATUS_BAD_FLAGS
+    elif a.workspace_slots != WORKSPACE_SLOTS:
+        status = STATUS_BAD_WORKSPACE_SLOTS
+    elif a.max_chunk_group < 1 or a.max_chunk_group > MAX_CHUNK_GROUP:
+        status = STATUS_BAD_FLAGS
+    elif not (a.has_cu == 0 or a.has_cu == 1):
+        status = STATUS_BAD_FLAGS
+    elif not (a.is_packed == 0 or a.is_packed == 1):
+        status = STATUS_BAD_FLAGS
+    elif a.is_packed == 1 and a.has_cu == 0:
+        status = STATUS_BAD_FLAGS
+    elif a.batch < 1 or a.storage_length < 1 or a.value_heads < 1:
+        status = STATUS_BAD_SHAPE
+    elif a.value_heads > MAX_VALUE_HEADS:
+        status = STATUS_BAD_SHAPE
+    elif a.is_packed == 1 and a.physical_batches != 1:
+        status = STATUS_BAD_SHAPE
+    elif a.is_packed == 0 and a.physical_batches != a.batch:
+        status = STATUS_BAD_SHAPE
+    if status != STATUS_OK:
+        a.metadata[HEADER_STATUS] = status
+        return STATUS_OK
+
+    if a.has_cu == 1:
+        if a.cu_seqlens[0] != 0:
+            a.metadata[HEADER_STATUS] = STATUS_BAD_CU_START
+            return STATUS_OK
+
+    # 发布选路结果或任务前，检查所有实际序列长度。
+    uniform_chunk_num = 1
+    first_chunk_num = 0
+    route_max_chunk_num = 0
+    route_total_chunk_num = 0
+    route_peak_chunk_num = 0
+    route_total_rows = 0
+    route_query_rows = 0
+    evaluate_route = 0
+    if a.template_kind == TEMPLATE_AUTO and a.calibration_enabled == 1:
+        evaluate_route = 1
+    for batch_idx in range(0, a.batch):
+        valid_seq_len = a.storage_length
+        if a.has_cu == 1:
+            valid_seq_len = a.cu_seqlens[batch_idx + 1] - a.cu_seqlens[batch_idx]
+        if valid_seq_len <= 0:
+            status = STATUS_BAD_LENGTH
+        elif a.is_packed == 0 and valid_seq_len > a.storage_length:
+            status = STATUS_BAD_PADDED_LENGTH
+        else:
+            current_chunk_num = (valid_seq_len + CHUNK_SIZE - 1) // CHUNK_SIZE
+            if batch_idx == 0:
+                first_chunk_num = current_chunk_num
+            elif current_chunk_num != first_chunk_num:
+                uniform_chunk_num = 0
+            if current_chunk_num > route_max_chunk_num:
+                route_max_chunk_num = current_chunk_num
+            if evaluate_route == 1:
+                if current_chunk_num > INT64_MAX // a.value_heads:
+                    evaluate_route = 0
+                else:
+                    batch_chunk_num = a.value_heads * current_chunk_num
+                    if route_total_chunk_num > INT64_MAX - batch_chunk_num:
+                        evaluate_route = 0
+                    else:
+                        route_total_chunk_num += batch_chunk_num
+                        route_total_rows = _route_add_cost(
+                            route_total_rows, a.value_heads, valid_seq_len
+                        )
+                        route_query_rows = _route_add_cost(
+                            route_query_rows, a.query_heads, valid_seq_len
+                        )
+                        if route_total_rows < 0 or route_query_rows < 0:
+                            evaluate_route = 0
+                        # 每个核的成本不超过已检查的总成本。
+                        for value_head_idx in range(0, a.value_heads):
+                            cyclic_core = (
+                                batch_idx * a.value_heads + value_head_idx
+                            ) % a.core_num
+                            route_core_costs[cyclic_core] += current_chunk_num
+    if status == STATUS_OK and a.is_packed == 1:
+        if a.cu_seqlens[a.batch] != a.storage_length:
+            status = STATUS_BAD_PACKED_END
+    if status != STATUS_OK:
+        a.metadata[HEADER_STATUS] = status
+        return STATUS_OK
+    selected_template = a.template_kind
+    if selected_template == TEMPLATE_AUTO:
+        selected_template = TEMPLATE_STAGED
+        if evaluate_route == 1:
+            for core_idx in range(0, a.core_num):
+                if route_core_costs[core_idx] > route_peak_chunk_num:
+                    route_peak_chunk_num = route_core_costs[core_idx]
+            persistent_peak = _route_persistent_loads(
+                a, uniform_chunk_num, route_lpt_costs, route_valid_rows
+            )
+            selected_template = _select_route_from_model(
+                a,
+                route_peak_chunk_num,
+                route_total_chunk_num,
+                route_total_rows,
+                route_query_rows,
+                persistent_peak,
+                route_valid_rows,
+                _training_group_limit(a, route_max_chunk_num),
+                remaining_chunk_num,
+            )
+            # 短多序列训练保留直接 U 路径的缓存。
+            if a.has_cu == 1 and a.batch > 1 and route_max_chunk_num <= 2:
+                selected_template = TEMPLATE_PERSISTENT
+    a.metadata[HEADER_TEMPLATE] = selected_template
+    if selected_template == TEMPLATE_PERSISTENT:
+        task_num = a.batch * a.value_heads
+        task_base = HEADER_WORDS + MAX_AIC_CORES
+        used_words = task_base + CHUNK_TASK_WORDS * task_num
+        heap_base = used_words
+        if used_words + a.batch > a.metadata_word_capacity:
+            a.metadata[HEADER_STATUS] = STATUS_BAD_METADATA_CAPACITY
+            return STATUS_OK
+        for core_idx in range(0, MAX_AIC_CORES):
+            a.metadata[HEADER_WORDS + core_idx] = 0
+        # 等长序列保持原始批次和头顺序；变长批次采用 O(B log B) 的 LPT 调度。
+        # 使用 B 个 GM 临时字，避免固定本地数组和反复扫描全部批次。
+        heap_num = a.batch
+        if uniform_chunk_num == 0:
+            for batch_idx in range(0, a.batch):
+                a.metadata[heap_base + batch_idx] = batch_idx
+            heap_root = a.batch // 2
+            while heap_root > 0:
+                heap_root -= 1
+                _chunk_heap_sift_down(
+                    a.cu_seqlens, a.metadata, heap_base, heap_num, heap_root
+                )
+        task_cursor = task_base
+        for scheduled_batch_idx in range(0, a.batch):
+            batch_idx = scheduled_batch_idx
+            if uniform_chunk_num == 0:
+                batch_idx = a.metadata[heap_base]
+                heap_num -= 1
+                if heap_num > 0:
+                    a.metadata[heap_base] = a.metadata[heap_base + heap_num]
+                    _chunk_heap_sift_down(
+                        a.cu_seqlens, a.metadata, heap_base, heap_num, 0
+                    )
+            storage_batch_idx = batch_idx
+            token_start = 0
+            valid_seq_len = a.storage_length
+            if a.has_cu == 1:
+                token_start = a.cu_seqlens[batch_idx]
+                valid_seq_len = a.cu_seqlens[batch_idx + 1] - token_start
+            if a.is_packed == 1:
+                storage_batch_idx = 0
+            else:
+                token_start = 0
+            chunk_num = (valid_seq_len + CHUNK_SIZE - 1) // CHUNK_SIZE
+            for value_head_idx in range(0, a.value_heads):
+                selected_core = 0
+                for core_idx in range(1, a.core_num):
+                    if chunk_core_costs[core_idx] < chunk_core_costs[selected_core]:
+                        selected_core = core_idx
+                a.metadata[task_cursor + CHUNK_TASK_BATCH] = batch_idx
+                a.metadata[task_cursor + CHUNK_TASK_STORAGE_BATCH] = storage_batch_idx
+                a.metadata[task_cursor + CHUNK_TASK_TOKEN_START] = token_start
+                a.metadata[task_cursor + CHUNK_TASK_LENGTH] = valid_seq_len
+                a.metadata[task_cursor + CHUNK_TASK_VALUE_HEAD] = value_head_idx
+                a.metadata[task_cursor + CHUNK_TASK_NEXT] = 0
+                previous_task = chunk_core_tails[selected_core]
+                if previous_task == 0:
+                    a.metadata[HEADER_WORDS + selected_core] = task_cursor
+                else:
+                    a.metadata[previous_task + CHUNK_TASK_NEXT] = task_cursor
+                chunk_core_tails[selected_core] = task_cursor
+                chunk_core_costs[selected_core] += chunk_num
+                task_cursor += CHUNK_TASK_WORDS
+        a.metadata[HEADER_CHUNK_TASK_NUM] = task_num
+        return STATUS_OK
+
+    max_chunk_group = a.max_chunk_group
+    if a.template_kind == TEMPLATE_AUTO:
+        max_chunk_group = _training_group_limit(a, route_max_chunk_num)
+    batch_num_per_set = a.workspace_slots // a.value_heads
+    stage12_round_num = 0
+    total_active_batch_entries = 0
+    batch_start = 0
+    while batch_start < a.batch:
+        batch_num_in_set = a.batch - batch_start
+        if batch_num_in_set > batch_num_per_set:
+            batch_num_in_set = batch_num_per_set
+        for local_batch_idx in range(0, batch_num_in_set):
+            batch_idx = batch_start + local_batch_idx
+            token_start = 0
+            valid_seq_len = a.storage_length
+            if a.has_cu == 1:
+                token_start = a.cu_seqlens[batch_idx]
+                token_end = a.cu_seqlens[batch_idx + 1]
+                valid_seq_len = token_end - token_start
+            valid_seq_len_by_batch[local_batch_idx] = valid_seq_len
+            token_start_by_batch[local_batch_idx] = token_start
+            if valid_seq_len <= 0:
+                status = STATUS_BAD_LENGTH
+                chunk_num_by_batch[local_batch_idx] = 0
+                tail_row_num_by_batch[local_batch_idx] = 0
+            elif a.is_packed == 0 and valid_seq_len > a.storage_length:
+                status = STATUS_BAD_PADDED_LENGTH
+                chunk_num_by_batch[local_batch_idx] = 0
+                tail_row_num_by_batch[local_batch_idx] = 0
+            else:
+                chunk_num_by_batch[local_batch_idx] = (
+                    valid_seq_len + CHUNK_SIZE - 1
+                ) // CHUNK_SIZE
+                tail_row_num_by_batch[local_batch_idx] = (
+                    (valid_seq_len - 1) % CHUNK_SIZE
+                ) + 1
+
+        chunk_start = 0
+        while True:
+            active_batch_num = 0
+            for local_batch_idx in range(0, batch_num_in_set):
+                if chunk_num_by_batch[local_batch_idx] > chunk_start:
+                    active_local_batch_idx[active_batch_num] = local_batch_idx
+                    remaining_chunk_num[active_batch_num] = (
+                        chunk_num_by_batch[local_batch_idx] - chunk_start
+                    )
+                    active_batch_num += 1
+            if active_batch_num == 0:
+                break
+            group_num = _select_group_num(
+                remaining_chunk_num,
+                active_batch_num,
+                a.value_heads,
+                a.workspace_slots,
+                max_chunk_group,
+            )
+            stage12_round_num += 1
+            total_active_batch_entries += active_batch_num
+            chunk_start += group_num
+        batch_start += batch_num_in_set
+
+    if status == STATUS_OK and a.is_packed == 1:
+        if a.cu_seqlens[a.batch] != a.storage_length:
+            status = STATUS_BAD_PACKED_END
+    if status != STATUS_OK:
+        a.metadata[HEADER_STATUS] = status
+        return STATUS_OK
+
+    record_begin = HEADER_WORDS + stage12_round_num + 1
+    used_words = (
+        record_begin
+        + ROUND_FIXED_WORDS * stage12_round_num
+        + ROUND_WORDS_PER_BATCH * total_active_batch_entries
+    )
+    if used_words > a.metadata_word_capacity:
+        a.metadata[HEADER_STATUS] = STATUS_BAD_METADATA_CAPACITY
+        return STATUS_OK
+
+    a.metadata[HEADER_STAGE12_ROUND_NUM] = stage12_round_num
+    record_cursor = record_begin
+    global_round_idx = 0
+    batch_start = 0
+    while batch_start < a.batch:
+        batch_num_in_set = a.batch - batch_start
+        if batch_num_in_set > batch_num_per_set:
+            batch_num_in_set = batch_num_per_set
+        for local_batch_idx in range(0, batch_num_in_set):
+            batch_idx = batch_start + local_batch_idx
+            token_start = 0
+            valid_seq_len = a.storage_length
+            if a.has_cu == 1:
+                token_start = a.cu_seqlens[batch_idx]
+                token_end = a.cu_seqlens[batch_idx + 1]
+                valid_seq_len = token_end - token_start
+            valid_seq_len_by_batch[local_batch_idx] = valid_seq_len
+            token_start_by_batch[local_batch_idx] = token_start
+            chunk_num_by_batch[local_batch_idx] = (
+                valid_seq_len + CHUNK_SIZE - 1
+            ) // CHUNK_SIZE
+            tail_row_num_by_batch[local_batch_idx] = (
+                (valid_seq_len - 1) % CHUNK_SIZE
+            ) + 1
+
+        chunk_start = 0
+        while True:
+            active_batch_num = 0
+            for local_batch_idx in range(0, batch_num_in_set):
+                if chunk_num_by_batch[local_batch_idx] > chunk_start:
+                    active_local_batch_idx[active_batch_num] = local_batch_idx
+                    remaining_chunk_num[active_batch_num] = (
+                        chunk_num_by_batch[local_batch_idx] - chunk_start
+                    )
+                    active_batch_num += 1
+            if active_batch_num == 0:
+                break
+
+            group_num = _select_group_num(
+                remaining_chunk_num,
+                active_batch_num,
+                a.value_heads,
+                a.workspace_slots,
+                max_chunk_group,
+            )
+            for active_idx in range(0, active_batch_num):
+                current_chunk_num = remaining_chunk_num[active_idx]
+                if current_chunk_num > group_num:
+                    current_chunk_num = group_num
+                chunk_num_per_group[active_idx] = current_chunk_num
+
+            a.metadata[HEADER_WORDS + global_round_idx] = record_cursor
+            cursor = record_cursor
+            a.metadata[cursor] = global_round_idx
+            a.metadata[cursor + 1] = active_batch_num
+            cursor += 2
+            for active_idx in range(0, active_batch_num):
+                a.metadata[cursor + active_idx] = (
+                    batch_start + active_local_batch_idx[active_idx]
+                )
+            cursor += active_batch_num
+            for active_idx in range(0, active_batch_num):
+                logical_batch_idx = batch_start + active_local_batch_idx[active_idx]
+                if a.is_packed == 1:
+                    a.metadata[cursor + active_idx] = 0
+                else:
+                    a.metadata[cursor + active_idx] = logical_batch_idx
+            cursor += active_batch_num
+            for active_idx in range(0, active_batch_num):
+                local_batch_idx = active_local_batch_idx[active_idx]
+                if a.is_packed == 1:
+                    a.metadata[cursor + active_idx] = token_start_by_batch[
+                        local_batch_idx
+                    ]
+                else:
+                    a.metadata[cursor + active_idx] = 0
+            cursor += active_batch_num
+            for active_idx in range(0, active_batch_num):
+                local_batch_idx = active_local_batch_idx[active_idx]
+                a.metadata[cursor + active_idx] = valid_seq_len_by_batch[
+                    local_batch_idx
+                ]
+            cursor += active_batch_num
+            a.metadata[cursor] = group_num
+            cursor += 1
+            for active_idx in range(0, active_batch_num):
+                a.metadata[cursor + active_idx] = chunk_start
+            cursor += active_batch_num
+            for active_idx in range(0, active_batch_num):
+                a.metadata[cursor + active_idx] = chunk_num_per_group[active_idx]
+            cursor += active_batch_num
+
+            stage1_task_num = 0
+            a.metadata[cursor] = 0
+            for active_idx in range(0, active_batch_num):
+                stage1_task_num += a.value_heads * chunk_num_per_group[active_idx]
+                a.metadata[cursor + active_idx + 1] = stage1_task_num
+            cursor += active_batch_num + 1
+
+            stage1_task_idx = 0
+            for active_idx in range(0, active_batch_num):
+                local_batch_idx = active_local_batch_idx[active_idx]
+                for _ in range(0, a.value_heads):
+                    for local_chunk_idx in range(0, chunk_num_per_group[active_idx]):
+                        global_chunk_idx = chunk_start + local_chunk_idx
+                        stage1_cost = FULL_CHUNK_COST_NS
+                        if (
+                            global_chunk_idx + 1 == chunk_num_by_batch[local_batch_idx]
+                            and tail_row_num_by_batch[local_batch_idx] < CHUNK_SIZE
+                        ):
+                            stage1_cost = _stage1_task_cost(
+                                tail_row_num_by_batch[local_batch_idx]
+                            )
+                        stage1_task_costs[stage1_task_idx] = stage1_cost
+                        stage1_task_idx += 1
+            _partition_costs(
+                stage1_task_costs,
+                stage1_task_num,
+                a.core_num,
+                stage1_core_ranges,
+                stage1_core_costs,
+            )
+            for range_idx in range(0, MAX_AIC_CORES * 2):
+                a.metadata[cursor + range_idx] = stage1_core_ranges[range_idx]
+            cursor += MAX_AIC_CORES * 2
+
+            selected_dv_splits_num = 1
+            selected_max_core_cost = 0
+            selected_total_cost = 0
+            selected_task_num = 0
+            selected_is_set = 0
+            for candidate_idx in range(0, 4):
+                candidate_dv_splits_num = 1 << candidate_idx
+                candidate_task_num = 0
+                candidate_total_cost = 0
+                for active_idx in range(0, active_batch_num):
+                    task_cost = (
+                        _stage2_task_cost(
+                            candidate_idx, chunk_num_per_group[active_idx]
+                        )
+                        + a.stage2_overhead_ns * chunk_num_per_group[active_idx]
+                    )
+                    batch_task_num = a.value_heads * candidate_dv_splits_num
+                    for _ in range(0, batch_task_num):
+                        stage2_task_costs[candidate_task_num] = task_cost
+                        candidate_task_num += 1
+                        candidate_total_cost += task_cost
+                _partition_costs(
+                    stage2_task_costs,
+                    candidate_task_num,
+                    a.core_num,
+                    candidate_stage2_core_ranges,
+                    candidate_stage2_core_costs,
+                )
+                candidate_max_core_cost = 0
+                for core_idx in range(0, MAX_AIC_CORES):
+                    if candidate_stage2_core_costs[core_idx] > candidate_max_core_cost:
+                        candidate_max_core_cost = candidate_stage2_core_costs[core_idx]
+
+                candidate_is_better = 0
+                if selected_is_set == 0:
+                    candidate_is_better = 1
+                elif candidate_max_core_cost < selected_max_core_cost:
+                    candidate_is_better = 1
+                elif candidate_max_core_cost == selected_max_core_cost:
+                    if candidate_total_cost < selected_total_cost:
+                        candidate_is_better = 1
+                    elif candidate_total_cost == selected_total_cost:
+                        if candidate_task_num < selected_task_num:
+                            candidate_is_better = 1
+                        elif candidate_task_num == selected_task_num:
+                            if candidate_dv_splits_num < selected_dv_splits_num:
+                                candidate_is_better = 1
+                if candidate_is_better == 1:
+                    selected_is_set = 1
+                    selected_dv_splits_num = candidate_dv_splits_num
+                    selected_max_core_cost = candidate_max_core_cost
+                    selected_total_cost = candidate_total_cost
+                    selected_task_num = candidate_task_num
+                    for range_idx in range(0, MAX_AIC_CORES * 2):
+                        selected_stage2_core_ranges[range_idx] = (
+                            candidate_stage2_core_ranges[range_idx]
+                        )
+
+            for active_idx in range(0, active_batch_num):
+                a.metadata[cursor + active_idx] = selected_dv_splits_num
+            cursor += active_batch_num
+            stage2_task_num = 0
+            a.metadata[cursor] = 0
+            for active_idx in range(0, active_batch_num):
+                stage2_task_num += a.value_heads * selected_dv_splits_num
+                a.metadata[cursor + active_idx + 1] = stage2_task_num
+            cursor += active_batch_num + 1
+            for range_idx in range(0, MAX_AIC_CORES * 2):
+                a.metadata[cursor + range_idx] = selected_stage2_core_ranges[range_idx]
+            cursor += MAX_AIC_CORES * 2
+
+            record_cursor = cursor
+            global_round_idx += 1
+            chunk_start += group_num
+        batch_start += batch_num_in_set
+
+    a.metadata[HEADER_WORDS + stage12_round_num] = record_cursor
+    return STATUS_OK
+
+
+def _take(words: list[int], cursor: int, count: int) -> tuple[list[int], int]:
+    end = cursor + count
+    if cursor < 0 or count < 0 or end > len(words):
+        raise ValueError("metadata record extends past available words")
+    return words[cursor:end], end
+
+
+def _decode_ranges(flat_words: list[int]) -> list[tuple[int, int]]:
+    if len(flat_words) != MAX_AIC_CORES * 2:
+        raise ValueError("core range block must contain 64 words")
+    return [
+        (flat_words[index], flat_words[index + 1])
+        for index in range(0, len(flat_words), 2)
+    ]
+
+
+def _validate_prefix(prefix: list[int], name: str) -> None:
+    if not prefix or prefix[0] != 0:
+        raise ValueError(f"{name} must start at zero")
+    if any(end < start for start, end in zip(prefix, prefix[1:])):
+        raise ValueError(f"{name} must be nondecreasing")
+
+
+def _validate_ranges(ranges: list[tuple[int, int]], total: int, name: str) -> None:
+    cursor = 0
+    saw_empty = False
+    for start, end in ranges:
+        if (start, end) == (0, 0):
+            saw_empty = True
+            continue
+        if saw_empty:
+            raise ValueError(f"{name} has work after an unused core")
+        if start != cursor or end <= start or end > total:
+            raise ValueError(f"{name} is not a contiguous partition")
+        cursor = end
+    if cursor != total:
+        raise ValueError(f"{name} does not cover its task total")
+
+
+def _decode_round(
+    words: list[int],
+    start: int,
+    end: int,
+    *,
+    batch: int,
+    value_heads: int,
+) -> dict[str, object]:
+    if start < 0 or end > len(words) or start + 2 > end:
+        raise ValueError("metadata round record is truncated")
+    # 将后续所有 _take 和标量访问限制在当前记录范围内。
+    words = words[start:end]
+    start, end = 0, end - start
+    cursor = 0
+    stage12_round_idx, active_batch_num = words[cursor : cursor + 2]
+    cursor += 2
+    if not 1 <= active_batch_num <= min(batch, WORKSPACE_SLOTS):
+        raise ValueError("metadata active_batch_num outside batch/workspace bounds")
+    if start + round_record_words(active_batch_num) != end:
+        raise ValueError("metadata round record length does not match active batches")
+
+    batch_idx, cursor = _take(words, cursor, active_batch_num)
+    storage_batch_idx, cursor = _take(words, cursor, active_batch_num)
+    token_start, cursor = _take(words, cursor, active_batch_num)
+    valid_seq_len, cursor = _take(words, cursor, active_batch_num)
+    group_num = words[cursor]
+    cursor += 1
+    chunk_start_per_group, cursor = _take(words, cursor, active_batch_num)
+    chunk_num_per_group, cursor = _take(words, cursor, active_batch_num)
+    stage1_task_prefix, cursor = _take(words, cursor, active_batch_num + 1)
+    stage1_ranges_flat, cursor = _take(words, cursor, MAX_AIC_CORES * 2)
+    dv_splits_num, cursor = _take(words, cursor, active_batch_num)
+    stage2_task_prefix, cursor = _take(words, cursor, active_batch_num + 1)
+    stage2_ranges_flat, cursor = _take(words, cursor, MAX_AIC_CORES * 2)
+    if cursor != end:
+        raise ValueError("metadata round decoder did not consume the full record")
+
+    if group_num <= 0:
+        raise ValueError("group_num must be positive")
+    if any(index < 0 or index >= batch for index in batch_idx):
+        raise ValueError("batch_idx is outside logical batch")
+    if any(length <= 0 for length in valid_seq_len):
+        raise ValueError("valid_seq_len must be positive")
+    if any(count <= 0 for count in chunk_num_per_group):
+        raise ValueError("chunk_num_per_group must be positive")
+    if any(value not in (1, 2, 4, 8) for value in dv_splits_num):
+        raise ValueError("dv_splits_num must be 1, 2, 4, or 8")
+
+    _validate_prefix(stage1_task_prefix, "stage1_task_prefix")
+    _validate_prefix(stage2_task_prefix, "stage2_task_prefix")
+    for index, chunk_num in enumerate(chunk_num_per_group):
+        if stage1_task_prefix[index + 1] - stage1_task_prefix[index] != (
+            value_heads * chunk_num
+        ):
+            raise ValueError("stage1_task_prefix does not match chunk tasks")
+        if stage2_task_prefix[index + 1] - stage2_task_prefix[index] != (
+            value_heads * dv_splits_num[index]
+        ):
+            raise ValueError("stage2_task_prefix does not match DV tasks")
+    if stage1_task_prefix[-1] > WORKSPACE_SLOTS:
+        raise ValueError("stage1 task total exceeds workspace slots")
+    if stage2_task_prefix[-1] > WORKSPACE_SLOTS * 8:
+        raise ValueError("stage2 task total exceeds workspace slots")
+
+    stage1_core_ranges = _decode_ranges(stage1_ranges_flat)
+    stage2_core_ranges = _decode_ranges(stage2_ranges_flat)
+    _validate_ranges(stage1_core_ranges, stage1_task_prefix[-1], "stage1_core_ranges")
+    _validate_ranges(stage2_core_ranges, stage2_task_prefix[-1], "stage2_core_ranges")
+    return {
+        "stage12_round_idx": stage12_round_idx,
+        "active_batch_num": active_batch_num,
+        "batch_idx": batch_idx,
+        "storage_batch_idx": storage_batch_idx,
+        "token_start": token_start,
+        "valid_seq_len": valid_seq_len,
+        "group_num": group_num,
+        "chunk_start_per_group": chunk_start_per_group,
+        "chunk_num_per_group": chunk_num_per_group,
+        "stage1_task_prefix": stage1_task_prefix,
+        "stage1_core_ranges": stage1_core_ranges,
+        "dv_splits_num": dv_splits_num,
+        "stage2_task_prefix": stage2_task_prefix,
+        "stage2_core_ranges": stage2_core_ranges,
+    }
+
+
+def decode_metadata(raw: Sequence[int]) -> dict[str, object]:
+    """解码并检查 metadata，供测试和诊断使用。"""
+
+    words = [int(value) for value in raw]
+    if len(words) < HEADER_WORDS:
+        raise ValueError("metadata is shorter than its header")
+    if words[HEADER_MAGIC] != MAGIC:
+        raise ValueError("metadata magic does not match")
+    if words[HEADER_ABI_VERSION] != ABI_VERSION:
+        raise ValueError("metadata ABI version does not match")
+
+    status = words[HEADER_STATUS]
+    header = {
+        "magic": words[HEADER_MAGIC],
+        "abi_version": words[HEADER_ABI_VERSION],
+        "status": status,
+        "core_num": words[HEADER_CORE_NUM],
+        "stage12_round_num": words[HEADER_STAGE12_ROUND_NUM],
+        "batch": words[HEADER_BATCH],
+        "value_heads": words[HEADER_VALUE_HEADS],
+        "has_cu": words[HEADER_HAS_CU],
+        "workspace_slots": words[HEADER_WORKSPACE_SLOTS],
+        "template": {TEMPLATE_STAGED: "staged", TEMPLATE_PERSISTENT: "persistent"}.get(
+            words[HEADER_TEMPLATE], "unknown"
+        ),
+    }
+    if status != STATUS_OK:
+        header["used_words"] = HEADER_WORDS
+        header["stage12_rounds"] = []
+        return header
+    if not 1 <= header["core_num"] <= MAX_AIC_CORES:
+        raise ValueError("metadata core_num must be in [1, 32]")
+    if header["workspace_slots"] != WORKSPACE_SLOTS:
+        raise ValueError(f"metadata workspace_slots must be {WORKSPACE_SLOTS}")
+    if header["batch"] <= 0:
+        raise ValueError("successful metadata requires positive batch")
+    if not 1 <= header["value_heads"] <= MAX_VALUE_HEADS:
+        raise ValueError("metadata value_heads must be in [1, 96]")
+
+    if header["has_cu"] not in (0, 1):
+        raise ValueError("metadata has_cu must be 0 or 1")
+    if header["template"] == "unknown":
+        raise ValueError("metadata template is invalid")
+    if header["template"] == "persistent":
+        task_num = words[HEADER_CHUNK_TASK_NUM]
+        task_base = HEADER_WORDS + MAX_AIC_CORES
+        used_words = task_base + CHUNK_TASK_WORDS * task_num
+        if (
+            header["stage12_round_num"] != 0
+            or task_num != header["batch"] * header["value_heads"]
+        ):
+            raise ValueError("chunk metadata task count does not match its shape")
+        if used_words > len(words):
+            raise ValueError("chunk metadata tasks are truncated")
+        seen_offsets = set()
+        seen_jobs = set()
+        tasks_by_core = []
+        for core_idx in range(MAX_AIC_CORES):
+            cursor = words[HEADER_WORDS + core_idx]
+            if core_idx >= header["core_num"] and cursor:
+                raise ValueError("inactive core has chunk tasks")
+            tasks = []
+            while cursor:
+                if cursor in seen_offsets:
+                    raise ValueError("chunk task chain contains a cycle or duplicate")
+                if (
+                    cursor < task_base
+                    or cursor + CHUNK_TASK_WORDS > used_words
+                    or (cursor - task_base) % CHUNK_TASK_WORDS
+                ):
+                    raise ValueError("chunk task pointer is out of bounds or unaligned")
+                seen_offsets.add(cursor)
+                batch_idx = words[cursor + CHUNK_TASK_BATCH]
+                head_idx = words[cursor + CHUNK_TASK_VALUE_HEAD]
+                if (
+                    not 0 <= batch_idx < header["batch"]
+                    or not 0 <= head_idx < header["value_heads"]
+                ):
+                    raise ValueError("chunk task batch/head index is out of bounds")
+                if (batch_idx, head_idx) in seen_jobs:
+                    raise ValueError("chunk sequence/head task is duplicated")
+                seen_jobs.add((batch_idx, head_idx))
+                length = words[cursor + CHUNK_TASK_LENGTH]
+                storage_batch = words[cursor + CHUNK_TASK_STORAGE_BATCH]
+                token_start = words[cursor + CHUNK_TASK_TOKEN_START]
+                if (
+                    length <= 0
+                    or token_start < 0
+                    or storage_batch not in (0, batch_idx)
+                ):
+                    raise ValueError("chunk task has invalid sequence coordinates")
+                tasks.append(
+                    dict(
+                        batch_idx=batch_idx,
+                        storage_batch_idx=storage_batch,
+                        token_start=token_start,
+                        sequence_length=length,
+                        value_head_idx=head_idx,
+                    ),
+                )
+                cursor = words[cursor + CHUNK_TASK_NEXT]
+            tasks_by_core.append(tasks)
+        if len(seen_jobs) != task_num:
+            raise ValueError("chunk metadata does not cover every task")
+        header.update(
+            used_words=used_words,
+            stage12_rounds=[],
+            chunk_task_num=task_num,
+            chunk_tasks_by_core=tasks_by_core,
+        )
+        return header
+
+    if words[HEADER_CHUNK_TASK_NUM] != 0:
+        raise ValueError("staged metadata must not contain persistent tasks")
+    stage12_round_num = int(header["stage12_round_num"])
+    if stage12_round_num < 1:
+        raise ValueError("staged metadata round count must be positive")
+    offset_begin = HEADER_WORDS
+    offset_end = offset_begin + stage12_round_num + 1
+    if offset_end > len(words):
+        raise ValueError("metadata offset table is truncated")
+    min_record_words = round_record_words(1)
+    if offset_end + stage12_round_num * min_record_words > len(words):
+        raise ValueError("metadata capacity is insufficient for round records")
+    offsets = words[offset_begin:offset_end]
+    if any(offset < 0 for offset in offsets):
+        raise ValueError("metadata offset must be nonnegative")
+    if offsets[0] < offset_end:
+        raise ValueError("metadata first record offset overlaps the offset table")
+    if offsets[-1] > len(words):
+        raise ValueError("metadata final offset exceeds capacity")
+    if any(end <= start for start, end in zip(offsets, offsets[1:])):
+        raise ValueError("metadata offsets must be strictly increasing")
+
+    header["used_words"] = offsets[-1]
+    header["stage12_rounds"] = [
+        _decode_round(
+            words,
+            offsets[index],
+            offsets[index + 1],
+            batch=int(header["batch"]),
+            value_heads=int(header["value_heads"]),
+        )
+        for index in range(stage12_round_num)
+    ]
+    return header
+
+
+_ROUTE_PARAMETERS = (
+    0,
+    2711857704,
+    699286307,
+    16555661144,
+    28359460,
+    94263834,
+    94263834,
+    12013349865,
+    1045656019,
+    84358156,
+    12842477,
+    2527878117,
+    181898838,
+    6,
+    8441,
+    0,
+    0,
+    692059912,
+    851406583,
+    21510815509,
+    73490570,
+    81791118,
+    166178779,
+    12029971961,
+    2552246171,
+    459139222,
+    45086212,
+    2303638937,
+    143977434,
+    6,
+    18992,
+    0,
+)
+
+_DT_ROUTE_PARAMETERS = (
+    4135271144,
+    193981546,
+    366448654,
+    12881511041,
+    29417161,
+    4351059785,
+    158980371,
+    10652650460,
+    3206978745,
+    332321804,
+    0,
+    419242242,
+    29945874,
+    7,
+    0,
+    0,
+    20317858430,
+    1160598799,
+    1018161115,
+    1015361233,
+    14389959,
+    933231823,
+    115749683,
+    11499084207,
+    4373896639,
+    413928806,
+    41555011,
+    0,
+    0,
+    7,
+    0,
+    0,
+)
+
+
+def build_schedule(
+    *,
+    batch,
+    nheads_qk,
+    nheads_v,
+    storage_length,
+    layout,
+    lengths=None,
+    enable_grad=False,
+    core_num=28,
+    template="auto",
+    device_kind="PR",
+    stage2_overhead_ns=0,
+):
+    """ABI4 scheduling with the native workspace capacity.
+
+    The original 861-slot capacity is checked separately against fixed-source
+    ABI words; production uses WORKSPACE_SLOTS consistently for allocations.
+
+    Lengths are already validated host metadata; None means unpadded uniform input.
+    The source has no empty-sequence route. Do not silently invent one here.
+    A nonzero native per-chunk Stage2 overhead changes only its DV cost ranking;
+    all Stage1 groups, numerical formulas and sequence ownership remain intact.
+    """
+    if layout not in ("BNSD", "BSND", "TND"):
+        raise ValueError("invalid layout")
+    if not 0 < nheads_qk <= nheads_v <= 96 or nheads_v % nheads_qk:
+        raise ValueError("invalid GQA heads")
+    if template not in ("auto", "staged", "persistent"):
+        raise ValueError("invalid template")
+    has_cu = lengths is not None
+    if layout == "TND" and not has_cu:
+        raise ValueError("TND requires lengths")
+    lengths = [storage_length] * batch if lengths is None else list(lengths)
+    if len(lengths) != batch or any(x <= 0 for x in lengths):
+        raise ValueError("source schedule requires positive sequence lengths")
+    if layout == "TND" and sum(lengths) != storage_length:
+        raise ValueError("packed lengths must cover storage")
+    prefix = [0]
+    for size in lengths:
+        prefix.append(prefix[-1] + size)
+    capacity = metadata_capacity_upper_bound(
+        batch, storage_length, is_packed=layout == "TND", value_heads=nheads_v
+    )
+    short = (
+        enable_grad
+        and layout == "BNSD"
+        and batch == 1
+        and nheads_qk == nheads_v == SHORT_TRAIN_HEADS
+        and storage_length >= SHORT_TRAIN_MIN_LENGTH
+        and storage_length % CHUNK_SIZE == 0
+        and not has_cu
+        and core_num == MAX_AIC_CORES
+    )
+    words = [0] * capacity
+    args = SimpleNamespace(
+        cu_seqlens=prefix,
+        route_coefficients=_DT_ROUTE_PARAMETERS
+        if device_kind == "DT"
+        else _ROUTE_PARAMETERS,
+        calibration_enabled=1,
+        layout_kind=0 if layout == "BNSD" else 1,
+        metadata=words,
+        metadata_word_capacity=capacity,
+        batch=batch,
+        physical_batches=1 if layout == "TND" else batch,
+        storage_length=storage_length,
+        value_heads=nheads_v,
+        query_heads=nheads_qk,
+        has_cu=int(has_cu),
+        is_packed=int(layout == "TND"),
+        core_num=core_num,
+        workspace_slots=WORKSPACE_SLOTS,
+        template_kind={"auto": 0, "staged": 1, "persistent": 2}[template],
+        max_chunk_group=SHORT_TRAIN_CHUNK_GROUP if short else MAX_CHUNK_GROUP,
+        stage2_overhead_ns=stage2_overhead_ns,
+    )
+    status = flash_kda_fwd_metadata_kernel(args)
+    if status != STATUS_OK:
+        raise RuntimeError(f"metadata kernel returned status {status}")
+    decoded = decode_metadata(words)
+    if decoded["status"]:
+        raise ValueError(f"source schedule status {decoded['status']}")
+    return words[: decoded["used_words"]], decoded
+
+
+# -----------------------------------------------------------------------------
+# Runtime caches and public forward entry.
+# -----------------------------------------------------------------------------
+
+_COMPILED = {}
+_LOCK = Lock()
+_IDENTITIES = {}
+
+
+def _identity16(device):
+    """Cache only the immutable constant; publish it safely across streams."""
+    stream = torch.npu.current_stream(device)
+    with _LOCK:
+        entry = _IDENTITIES.get(device.index)
+        if entry is None:
+            value = torch.eye(16, dtype=torch.float16, device=device)
+            ready = stream.record_event()
+            _IDENTITIES[device.index] = (value, ready, stream)
+        else:
+            value, ready, owner = entry
+            if stream != owner:
+                stream.wait_event(ready)
+    return value
+
+
+def flash_kda_fwd(
+    q,
+    k,
+    v,
+    g,
+    beta,
+    metadata=None,
+    initial_state=None,
+    A_log=None,
+    dt_bias=None,
+    cu_seqlens=None,
+    seqused=None,
+    *,
+    scale=128**-0.5,
+    output_final_state=False,
+    return_intermediate_states=False,
+    use_qk_l2norm_in_kernel=True,
+    use_gate_in_kernel=True,
+    use_beta_sigmoid_in_kernel=True,
+    allow_neg_eigval=False,
+    disable_recompute=False,
+    lower_bound=None,
+    layout="TND",
+):
+    flags = dict(
+        output_final_state=output_final_state,
+        return_intermediate_states=return_intermediate_states,
+        use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        use_gate_in_kernel=use_gate_in_kernel,
+        use_beta_sigmoid_in_kernel=use_beta_sigmoid_in_kernel,
+        allow_neg_eigval=allow_neg_eigval,
+        disable_recompute=disable_recompute,
+    )
+    batch, nq, nv, length, lengths = _validate(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        metadata,
+        initial_state,
+        A_log,
+        dt_bias,
+        cu_seqlens,
+        seqused,
+        scale=scale,
+        layout=layout,
+        flags=flags,
+        lower_bound=lower_bound,
+    )
+    training = not torch.is_inference_mode_enabled()
+    save = training and disable_recompute
+    norm = training and use_qk_l2norm_in_kernel
+    save_beta = training and use_beta_sigmoid_in_kernel
+    scale = 128**-0.5 if scale is None else float(scale)
+    mode = 0 if not use_gate_in_kernel else (2 if lower_bound is None else 1)
+    lower = -0.1 if mode != 1 else float(lower_bound)
+    packed = layout == "TND"
+    chunks = (length + 63) // 64
+    chunk_shape = (chunks + batch,) if packed else (batch, chunks)
+    norm_shape = (length, nq) if packed else (batch, nq, length)
+    beta_shape = (length, nv) if packed else (batch, length, nv)
+    with torch.npu.device(q.device):
+        properties = torch.npu.get_device_properties(q.device)
+        cores = properties.cube_core_num
+        native_template = "auto"
+        if (
+            not training
+            and use_qk_l2norm_in_kernel
+            and mode == 1
+            and lower == -5
+            and abs(scale) <= 0.125
+            and all(n % 64 == 0 for n in lengths)
+        ):
+            native_template = "persistent"
+        try:
+            schedule_result = build_schedule(
+                batch=batch,
+                nheads_qk=nq,
+                nheads_v=nv,
+                storage_length=length,
+                layout=layout,
+                lengths=lengths
+                if cu_seqlens is not None or seqused is not None
+                else None,
+                enable_grad=training,
+                core_num=cores,
+                device_kind="DT" if "DT" in properties.name else "PR",
+                stage2_overhead_ns=1000,
+                template=native_template,
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"Flash KDA schedule validation failed: {error}"
+            ) from error
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"Flash KDA schedule generation failed: {error}"
+            ) from error
+        if not isinstance(schedule_result, tuple) or len(schedule_result) != 2:
+            raise RuntimeError("Flash KDA schedule returned an invalid result")
+        words, decoded = schedule_result
+        if decoded["status"] != STATUS_OK:
+            raise RuntimeError(
+                f"Flash KDA schedule returned status {decoded['status']}"
+            )
+
+        def allocate(shape, dtype=torch.bfloat16, zero=False):
+            element_size = 2 if dtype == torch.bfloat16 or dtype == torch.float16 else 4
+            _require(
+                math.prod(shape) <= (2**63 - 1) // element_size,
+                "tensor byte size exceeds signed 64-bit addressing",
+            )
+            factory = torch.zeros if zero else torch.empty
+            return factory(shape, dtype=dtype, device=q.device)
+
+        initial = (
+            initial_state
+            if initial_state is not None
+            else allocate((batch, nv, 128, 128), torch.float32, True)
+        )
+        alpha = A_log if use_gate_in_kernel else None
+        bias = dt_bias if use_gate_in_kernel else None
+        if alpha is None:
+            alpha = allocate((nv,), torch.float32, True)
+        if bias is None:
+            bias = allocate((nv, 128), torch.float32, True)
+        exchange = allocate((cores, 256), torch.float32)
+        identity = _identity16(q.device)
+        schedule = torch.tensor(words, dtype=torch.int64, device=q.device)
+        staged = decoded["template"] == "staged"
+        aq = allocate(chunk_shape + (nv, 64, 64) if training or staged else (1,))
+        ak = allocate(chunk_shape + (nv, 64, 64) if training else (1,))
+        cache_shape = tuple(v.shape) if save or staged else (1,)
+        w, u, kg = [allocate(cache_shape) for _ in range(3)]
+        qg, vnew = [allocate(tuple(v.shape) if save else (1,)) for _ in range(2)]
+        out = allocate(
+            tuple(v.shape), zero=not packed and any(n < length for n in lengths)
+        )
+        qs = allocate((WORKSPACE_SLOTS, 64, 128) if staged else (1,))
+        gamma = allocate((WORKSPACE_SLOTS, 128) if staged else (1,), torch.float32)
+        qn, kn = [allocate(norm_shape + (128,) if norm else (1,)) for _ in range(2)]
+        rstd = allocate((2,) + norm_shape if norm else (1,), torch.float32)
+        # Packed capacity includes unused chunk slots; padded seqused may leave
+        # whole unused chunks even when each valid length is a multiple of 64.
+        gc = allocate(
+            chunk_shape + (nv, 64, 128) if save else (1,),
+            torch.float32,
+            save and (packed or any(n % 64 or n < length for n in lengths)),
+        )
+        bact = allocate(beta_shape if save_beta else (1,), torch.float32)
+        history = allocate(
+            chunk_shape + (nv, 128, 128)
+            if return_intermediate_states or staged
+            else (1,),
+            torch.float32,
+        )
+        final = allocate((batch, nv, 128, 128), torch.float32)
+        tensors = [
+            q,
+            k,
+            v,
+            g,
+            beta,
+            alpha,
+            bias,
+            exchange,
+            identity,
+            initial,
+            schedule,
+            aq,
+            ak,
+            w,
+            u,
+            qg,
+            kg,
+            qs,
+            gamma,
+            qn,
+            kn,
+            rstd,
+            gc,
+            bact,
+            out,
+            vnew,
+            history,
+            final,
+        ]
+        bound = []
+        for tensor in tensors:
+            bound.append(
+                tla.from_dlpack(tensor.flatten(), layout_tag=tla.arch.RowMajor)
+            )
+        config = (
+            batch,
+            length,
+            nq,
+            nv,
+            layout,
+            mode,
+            allow_neg_eigval,
+            lower,
+            scale,
+            use_qk_l2norm_in_kernel,
+            use_beta_sigmoid_in_kernel,
+        )
+        options = dict(
+            save_matrices=training,
+            save_cache=save,
+            save_history=return_intermediate_states,
+            save_norm=norm,
+            save_beta=save_beta,
+        )
+        if staged:
+            options["pipeline"] = True
+        else:
+            options.update(prefetch=True, bulk_operands=True, pipeline=True)
+        key = (
+            decoded["template"],
+            config,
+            tuple(sorted(options.items())),
+            tuple((x.numel(), x.dtype) for x in tensors),
+        )
+        with _LOCK:
+            binary = _COMPILED.get(key)
+            if binary is None:
+                cls = (
+                    PersistentMetadataKernel
+                    if decoded["template"] == "persistent"
+                    else StagedMetadataKernel
+                )
+                binary = tla.compile(
+                    cls(*config, **options), *bound, options="--npu-arch 3510"
+                )
+                if len(_COMPILED) >= 128:
+                    _COMPILED.pop(next(iter(_COMPILED)))
+                _COMPILED[key] = binary
+        stream = torch.npu.current_stream(q.device)
+        for tensor in tensors:
+            tensor.record_stream(stream)
+        binary(*bound, block_num=cores, stream=stream.npu_stream)
+    return (
+        out,
+        final if output_final_state else None,
+        history if return_intermediate_states else None,
+        aq if training else None,
+        ak if training else None,
+        w if save else None,
+        u if save else None,
+        qg if save else None,
+        kg if save else None,
+        vnew if save else None,
+        gc if save else None,
+        qn if norm else None,
+        rstd[0] if norm else None,
+        kn if norm else None,
+        rstd[1] if norm else None,
+        bact if training and use_beta_sigmoid_in_kernel else None,
+    )

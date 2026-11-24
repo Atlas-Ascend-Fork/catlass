@@ -227,7 +227,7 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "- `tla.arch.warp_reduce_sync` for add/max/min reductions over the "
         "active lanes of a warp -- see **System Variable Access**.\n"
         "- Warp queries `tla.arch.warpsize` / `lane_idx` / `lanemask_eq` / "
-        "`lanemask_lt` / `lanemask_le` / `lanemask_gt` / `lanemask_ge` -- see "
+        "`lanemask_lt` / `lanemask_le` / `lanemask_gt` / `lanemask_ge` / `activemask` -- see "
         "**System Variable Access**.\n"
         "- `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`, and "
         "the launch-level `tla.arch.block_idx` / `block_num` -- see "
@@ -242,7 +242,7 @@ DIRECTORY_SECTIONS: list[tuple[str, str]] = [
         "- `tla.copy`: a DMA needs the tensor itself, and a SIMT region may "
         "capture only scalar runtime values. Stage data before the region, or "
         "let each thread address global memory directly.\n"
-        "- `tla.local_mem_bar` and `tla.pipe_barrier`.\n"
+        "- `tla.local_mem_bar`, `tla.data_sync_barrier` and `tla.pipe_barrier`.\n"
         "- `while` loops, in any `tla.vec.func`; carry the iteration through "
         "`tla.range` instead.\n"
         "- A nested `tla.vec.func`.",

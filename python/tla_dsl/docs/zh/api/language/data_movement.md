@@ -35,7 +35,13 @@ tla.copy(dst: Tensor, src: Tensor, params: CopyParams | None = None, *, scale: T
 - `dst`（`Tensor`）：目的 tile。必填。
 - `src`（`Tensor`）：源 tile。必填。
 - `params`（`CopyParams | None`）：通路参数：`CopyL0C2DstParams`、
-  `CopyUbToGmParams`。默认 `None`。
+  `CopyUbToGmParams` 或 `CopyPadParams`。默认 `None`。
+  - `CopyPadParams`：开启 GM→UB DataCopyPad（`isPad=true`）。支持的通路、
+    dtype 与填充规则见下方约束说明。
+  - `left_padding` / `right_padding`：最内维每侧填充的**元素个数**（编译期
+    int，或运行期整型/index SSA）。
+  - `padding_value`：填充区写入值（编译期字面量/Numeric，或运行期整型 bit
+    pattern）。默认 `0` 表示零填充。
 - `scale`（`Tensor | None`）：L1 上的 OCP `e8m0` 共享指数 tile，用于
   L1→L0A/L0B 的 MX load。以 `i8`/`u8` 存储；目的为 L0A 时 tag
   `tla.arch.zZMxScale`，为 L0B 时 tag `tla.arch.nNMxScale`。默认 `None`。
@@ -49,6 +55,22 @@ tla.copy(dst: Tensor, src: Tensor, params: CopyParams | None = None, *, scale: T
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.cube()` 或 `tla.vector()` 内调用。
 - 拷贝大小按各 tile 的 `origin_shape`。
+- UB 到 GM 和 L0C 到 GM 的搬运可通过 `params.atomic_mode`
+  指定本次写回的运算。`AtomicMode.ADD`、`MAX`、`MIN` 分别将写入值与 GM 旧值相加、
+  取最大值或取最小值。默认的 `NONE` 直接覆盖旧值。原子写回支持的 GM 元素类型为
+  i8、i16、i32、f16、bf16 和 f32。L0C 搬出的值先经过所选的类型转换、量化或 ReLU，再参与原子运算。
+  UB 到 GM 搬运可省略 `params`，或传入 `CopyUbToGmParams`。该参数对象的
+  `atomic_mode` 必须是 `AtomicMode` 枚举成员，默认值为 `AtomicMode.NONE`。
+- 当 `params` 为 `CopyPadParams`：仅 GM→UB，layout 为 RowMajor→RowMajor 或
+  VectorLayout→VectorLayout；元素 dtype 为
+  f32/f16/bf16/i32/u32/i16/u16/i8/u8/i1/i64/u64/f64（不含 fp8/hif8/fp4）。
+  侧边计数不得为 bool/`tla.Bool`/i1；静态侧边须满足 pad 字节 ≤32B；两端
+  extent 亦为静态时，目的最内维 ≥ src + left + right。
+- `CopyPadParams.padding_value` 须与源元素 dtype 一致（i1：bool/`tla.Bool`；
+  整型：裸 int 或同 dtype Numeric；浮点：裸 float 或同 dtype 浮点 Numeric；
+  裸 int `0` 为 dataclass 默认零填充）。运行期非 i1 按 i64 bit pattern；
+  运行期 i1 SSA 不支持。对 8B（`i64`/`u64`/`f64`）仅保证静态零填充；运行期
+  不做数值拦截，BC 恒填 0。
 - Ascend 950 上，两个逻辑秩为 3 的视图 `(B, M, N)` 启用批量 GM→L1 布局转换。
   FP8 支持 RowMajor→zN 和 ColumnMajor→nZ；E8M0 支持下表的四条 GM MX scale 通路。
   批次数取自 `origin_shape[0]`，源、目的矩阵间距分别取各自 layout 的首维 stride，
@@ -75,6 +97,20 @@ tla.copy(dst: Tensor, src: Tensor, params: CopyParams | None = None, *, scale: T
   整块 16×C0，1 字节类型为 32×32。
 - `GM`→`L1` / `L1`→`biasbuf` 连续平铺用 rank-1 `VectorLayout`；多行 bias
   tile 不可表示，请切出单行。
+- PER_CHANNEL 反量化参数（`CopyL0C2DstParams.quant_tensor`）为位于 `L1`
+  地址空间的 rank-1 `VectorLayout` tile，元素类型 `u64`、单位 stride。
+  每个元素携带一个输出通道内全部元素共享的反量化参数，因此长度须与目的
+  tile 通道数精确一致（`tile_view` 裁剪后的 `originShape[1]`）。两侧长度
+  均为静态时不相等即编译报错。
+- L0C→UB 的 1-byte 目的（`i8`/`u8`/`f8e4m3fn`/`hif8`）：Fixpipe **不论**
+  `unit_flag` 都会把写出维（RowMajor 的 `N` / ColumnMajor 的 `M`）按块长
+  上取整到 32 元素。静态 UB 行距须 `>= RoundUp(写出维, 32)`（RowMajor 的
+  `stride0`，ColumnMajor 的 `stride1`），否则多写部分会踩到下一行或越界。
+  首选把写出维本身对齐到 32。若 `unit_flag != 0`，mmad 仍按 16 计分形，
+  静态写出维未对齐还会挂死，前端因此要求 `N % 32 == 0`（RowMajor）或
+  `M % 32 == 0`（ColumnMajor）。`unit_flag=0` **只消除挂死**，行距仍须覆盖
+  RoundUp 写出（且 mmad 须改走 flag 同步）。动态 shape/stride 不做该静态
+  校验（调用方约定）。**GM** 上的 1-byte 目的不受此限。
 - **预打包 `GM` tile：** 已按分形顺序存放的缓冲区可用 `zN` 或转置排布的
   `nZ` tag 描述，并拷贝到相同布局的 L1 tile，不再重排数据。GM 源 tag 仅使用
   对齐的 `zN` / `nZ`；M 轴紧凑存储的 `zNUnAlign` 用于 UB→L1，GM 端的
@@ -87,26 +123,26 @@ tla.copy(dst: Tensor, src: Tensor, params: CopyParams | None = None, *, scale: T
   `UnalignStoreParams`。
 - **尺寸未按 32 字节对齐时：** C0 为 32 字节。ND GM↔UB 时，优先让主导维的
   字节数是 32 的倍数。否则保持 `origin_shape` 为真实尺寸并放大物理
-  layout，或改用非对齐 load/store。zN 在 `M` 不是 16 的整数倍时，用
-  `tla.arch.zNUnAlign`。
+  layout，或改用非对齐 load/store。
 
 无 scale 的 Cube 拷贝通路，`tla.copy(dst, src, scale=None)`
 
 |`src_addr`|`src_layout`|`dst_addr`|`dst_layout`|`dtypes`|
 |----------|------------|----------|------------|--------|
-|`gm`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i1`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`,`f4e2m1`,`f4e1m2`|
-|`gm`|`ColumnMajor`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`i1`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`,`f4e2m1`,`f4e1m2`|
-|`gm`|`zN`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
-|`gm`|`nZ`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i1`,`hif8`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`ColumnMajor`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`i1`,`hif8`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`zN`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i16`,`i32`,`u8`,`u16`,`u32`,`i1`,`hif8`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`gm`|`nZ`|`l1`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`i16`,`i32`,`u8`,`u16`,`u32`,`i1`,`hif8`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
 |`gm`|`zNUnAlign`|`l1`|`zNUnAlign`|`f32`,`f16`,`bf16`|
 |`gm`|`RowMajorMxScaleA`|`l1`|`zZMxScale`|`f8e8m0`|
 |`gm`|`ColMajorMxScaleA`|`l1`|`zZMxScale`|`f8e8m0`|
 |`gm`|`RowMajorMxScaleB`|`l1`|`nNMxScale`|`f8e8m0`|
 |`gm`|`ColMajorMxScaleB`|`l1`|`nNMxScale`|`f8e8m0`|
-|`gm`|`VectorLayout`|`l1`|`VectorLayout`|`f32`,`f16`,`bf16`,`i32`,`i8`,`i1`,`u64`,`i64`,`f64`|
+|`gm`|`VectorLayout`|`l1`|`VectorLayout`|`f32`,`f16`,`bf16`,`i8`,`i1`,`i16`,`i32`,`i64`,`u8`,`u16`,`u32`,`u64`,`f64`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 |`l1`|`VectorLayout`|`biasbuf`|`VectorLayout`|`f32`,`i32`|
 |`l1`|`zN`|`l0a`|`zN`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 |`l1`|`nZ`|`l0a`|`zN`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`|
+|`l1`|`VectorLayout`|`l0a`|`VectorLayout`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 |`l1`|`zN`|`l0b`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 |`l1`|`nZ`|`l0b`|`nZ`|`f32`,`f16`,`bf16`,`i8`,`u32`,`f8e4m3fn`,`f8e5m2`,`hif8`|
 
@@ -127,15 +163,21 @@ fixpipe 支持随路 quant 与 relu；quant 模式支持 `NO_QUANT`、`PER_TENSO
 
 - 链路为 (l0c acc) → quant（可选）→ relu（可选）→ 写出到 dst。
 - `NO_QUANT` 含纯数据类型转换，如 `f32`→`f16`、`f32`→`bf16`。
-- PER_CHANNEL 的反量化参数（`quant_tensor`）为 rank-1 `VectorLayout`，位于 L1，
-  `u64` 元素、stride 1。每通道一个元素，通道内全部元素共享该反量化参数；长度
-  须与目标 tile 的通道数精确一致（`tile_view` 裁剪后的 `originShape[1]`），两侧
-  长度均为编译期常量时不相等即编译报错。元素类型、地址空间与布局由前端校验。
 - 目的为 UB 时额外有 `split_mode`：nosplit（`NO_SPLIT_VEC_0`、`NO_SPLIT_VEC_1`）与
   split（`SPLIT_M`、`SPLIT_N`）。
 - 目的为 `(ub, ColumnMajor)` 时仅支持 `nosplit`。
 - UB 的 `split` 模式下禁用任何 quant_mode/relu，也不做纯 cast，仅允许
   `f32`→`f32` 与 `i32`→`i32`。
+- 目的为 L1 的量化拷贝仅支持 `zN` 布局。
+- L0C→UB 的 1-byte 目的（`i8`/`u8`/`f8e4m3fn`/`hif8`）：Fixpipe **不论**
+  `unit_flag` 都会把写出维（RowMajor 的 `N` / ColumnMajor 的 `M`）按块长
+  上取整到 32 元素。静态 UB 行距须 `>= RoundUp(写出维, 32)`（RowMajor 的
+  `stride0`，ColumnMajor 的 `stride1`），否则多写部分会踩到下一行或越界。
+  首选把写出维本身对齐到 32。若 `unit_flag != 0`，mmad 仍按 16 计分形，
+  静态写出维未对齐还会挂死，前端因此要求 `N % 32 == 0`（RowMajor）或
+  `M % 32 == 0`（ColumnMajor）。`unit_flag=0` **只消除挂死**，行距仍须覆盖
+  RoundUp 写出（且 mmad 须改走 flag 同步）。动态 shape/stride 不做该静态
+  校验（调用方约定）。**GM** 上的 1-byte 目的不受此限。
 
 |`dst`|`dst_layout`|`split_mode`|`quant_mode`|`relu`|`src_dtype`:`dst_dtype`|
 |-----|------------|------------|------------|------|-----------------------|
@@ -150,26 +192,38 @@ fixpipe 支持随路 quant 与 relu；quant 模式支持 `NO_QUANT`、`PER_TENSO
 |`l1`|`zN`|`-`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
 |`ub`|`RowMajor`|`nosplit`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
 |`ub`|`ColumnMajor`|`nosplit`|`NO_QUANT`|`True`|`f32`: `f32`,`f16`,`bf16`<br>`i32`: `i32`|
-|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
-|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`RowMajor`|`nosplit`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`RowMajor`|`nosplit`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`ColumnMajor`|`nosplit`|`PER_TENSOR`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`ColumnMajor`|`nosplit`|`PER_TENSOR`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`RowMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`gm`|`ColumnMajor`|`-`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`RowMajor`|`nosplit`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`RowMajor`|`nosplit`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`ColumnMajor`|`nosplit`|`PER_CHANNEL`|`False`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`ub`|`ColumnMajor`|`nosplit`|`PER_CHANNEL`|`True`|`f32`: `f32`,`f16`,`bf16`,`i8`,`u8`,`f8e4m3fn`,`hif8`<br>`i32`: `f16`,`bf16`,`i8`,`u8`|
+|`l1`|`zN`|`-`|`PER_TENSOR`|`False`|`f32`: `f16`,`bf16`,`i8`<br>`i32`: `f16`,`bf16`,`i8`|
+|`l1`|`zN`|`-`|`PER_TENSOR`|`True`|`f32`: `f16`,`bf16`,`i8`<br>`i32`: `f16`,`bf16`,`i8`|
+|`l1`|`zN`|`-`|`PER_CHANNEL`|`False`|`f32`: `f16`,`bf16`,`i8`<br>`i32`: `f16`,`bf16`,`i8`|
+|`l1`|`zN`|`-`|`PER_CHANNEL`|`True`|`f32`: `f16`,`bf16`,`i8`<br>`i32`: `f16`,`bf16`,`i8`|
 
 Vector 拷贝通路
 
 |`src_addr`|`src_layout`|`dst_addr`|`dst_layout`|`dtypes`|
 |----------|------------|----------|------------|--------|
 |`gm`|`RowMajor`|`ub`|`RowMajor`|`i64`,`u64`,`f64`,`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`i1`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`,`f8e8m0`,`f4e2m1`,`f4e1m2`,`hif8`,`f4e2m1x2`,`f4e1m2x2`|
-|`gm`|`VectorLayout`|`ub`|`VectorLayout`|`i64`,`u64`,`f64`|
+|`gm`|`VectorLayout`|`ub`|`VectorLayout`|`i64`,`u64`,`f64`,`i1`,`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`u32`,`u16`,`u8`|
 |`ub`|`RowMajor`|`gm`|`RowMajor`|`i64`,`u64`,`f64`,`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`i1`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`,`f8e8m0`,`f4e2m1`,`f4e1m2`,`hif8`,`f4e2m1x2`,`f4e1m2x2`|
 |`ub`|`RowMajor`|`ub`|`RowMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`i1`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`,`f8e8m0`,`f4e2m1`,`f4e1m2`|
 |`ub`|`RowMajor`|`ub`|`ColumnMajor`|`f32`,`f16`,`bf16`,`i32`,`i16`,`i8`,`i1`,`u32`,`u16`,`u8`,`f8e4m3fn`,`f8e5m2`|
-|`ub`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i1`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
-|`ub`|`zN`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i1`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`ub`|`RowMajor`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i1`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
+|`ub`|`zN`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`i1`,`i16`,`i32`,`u8`,`u16`,`u32`,`f8e4m3fn`,`f8e5m2`,`f4e2m1`,`f4e1m2`|
 |`ub`|`zZMxScale`|`l1`|`zZMxScale`|`f8e8m0`|
 |`ub`|`nNMxScale`|`l1`|`nNMxScale`|`f8e8m0`|
 |`ub`|`zNUnAlign`|`l1`|`zN`|`f32`,`f16`,`bf16`,`i8`,`f8e4m3fn`,`f8e5m2`|
@@ -282,7 +336,7 @@ tla.Tensor.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple
       | `DIST_BRC_B32` | 单个 b32 元素广播到全部 lane |
       | `DIST_DINTLV_B8` | 读取 512 字节，偶数和奇数下标的 b8 元素分别填充两个 256-lane 向量 |
       | `DIST_DINTLV_B16` | 读取 512 字节；返回两个 128-lane b16 寄存器，依次保存偶数、奇数位置的元素 |
-      | `DIST_DINTLV_B32` | f32 解交织；双返回值 |
+      | `DIST_DINTLV_B32` | b32 解交织（f32/i32/u32）；双返回值 |
       | `DIST_US_B8` / `DIST_US_B16` | 2 倍上采样 |
       | `DIST_DS_B8` / `DIST_DS_B16` | 读取 512 字节，每隔一个 b8/b16 元素保留一个，填充一个完整向量 |
       | `DIST_BRC_B16` | 单个 b16 元素广播 |
@@ -321,12 +375,10 @@ tla.Tensor.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.vec.func(mode="simd")` 内调用；源 tile 须位于 UB。
 - 实际读取范围须位于可用 UB 地址空间内。
-- Mask 载入 `DIST_NORM` 要求 UB 元素类型为 1/2/4 字节标量。
-- 分发模式限定元素宽度：`DIST_US_B8` 要求 i8/u8；`DIST_BRC_B16` /
-  `DIST_US_B16` / `DIST_UNPACK_B16` / `DIST_E2B_B16` 要求 2 字节
-  （f16/bf16/i16/u16）；`DIST_E2B_B32` 要求 4 字节（f32/i32/u32）；
-  `DIST_DINTLV_B16` 要求 2 字节（f16/bf16/i16/u16）；`DIST_DINTLV_B32`
-  要求 f32；`DIST_BLK` 适用于任意元素宽度。
+- Mask 载入 `DIST_NORM` 要求 UB 元素类型为 b8/b16/b32/b64 标量。
+- 带位宽后缀的分布模式要求对应的元素存储位宽。b8 包含 Bool 和以单字节存储的编码。
+  `DIST_BLK` 支持 b8/b16/b32。b64 支持 `DIST_NORM` 和 32 lane 的完整
+  `UnalignLoadParams` 载入。
 - `DIST_DINTLV_B8` 支持 i8/u8/f8E4M3FN/f8E5M2/HiFloat8/E8M0 和打包类型
   Float4E2M1x2/Float4E1M2x2。每个寄存器容纳
   256 个单字节元素，一次载入读取 `2 * 256 = 512` 字节，返回两个保持源元素类型的
@@ -335,12 +387,12 @@ tla.Tensor.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple
   对齐，全部 512 字节均须有效，读取范围不取决于 tile shape。对于 FP4x2，
   每个元素是包含两个 FP4 值的一个字节。载入按这些打包字节解交织，保持字节内两个
   半字节的顺序；每个结果包含 256 个打包元素，即 512 个 FP4 值。E8M0 按原始字节搬运，包括 0xFF NaN 编码；
-  结果可通过普通对齐 store 写回，不支持算术和寄存器类型转换。该模式不支持
-  逻辑 FP4 和 Bool。
+  结果可通过普通对齐 store 写回，不支持算术和寄存器类型转换。不支持逻辑（未打包）
+  FP4。Bool 按 b8 move-only 搬运（与 i8 相同）。
 - `DIST_DINTLV_B16` 的实际读取地址须按 32 字节对齐。
 - `DIST_UNPACK4_B8` 要求 1 字节元素，实际读取地址须按 32 字节对齐。
 - `DIST_BRC_B8` / `DIST_DS_B8` / `DIST_UNPACK_B8` 支持
-  i8/u8/f8E4M3FN/f8E5M2；`DIST_DS_B16` 支持 f16/bf16/i16/u16；
+  Bool/i8/u8/f8E4M3FN/f8E5M2/hif8/f8e8m0/fp4x2；`DIST_DS_B16` 支持 f16/bf16/i16/u16；
   `DIST_UNPACK_B32` 支持 f32/i32/u32。这些模式保持源元素类型，返回完整的
   256 字节向量寄存器。
   `DIST_BRC_B8` 要求源地址按 1 字节对齐，其余四种模式要求按 32 字节对齐。
@@ -356,15 +408,16 @@ tla.Tensor.load(params: LoadParams | None = None) -> MaskSSA | VectorSSA | tuple
 - 掩码载入字节偏移对齐（UB 字节地址 `base + offset×sizeof(T)`）：
   `DIST_NORM` → `VL/8`；`DIST_US` → `VL/16`；`DIST_DS` → `min(32, VL/4)`。
   VL=256 时为 32B / 16B / 32B。
-- `POST_MODE_UPDATE` 要求 rank-1 连续 tile、`DIST_NORM`，且元素类型为
-  `f16` / `bf16` / `f32`。返回 `(vector, next_tile)`。在 `tla.vec.func` 内须用
-  `tla.range` 赋回 `next_tile`（`while` 尚不支持嵌在 `vec.func` 内）。窗口须
-  已是原点窗（`coord=0`）；用 `tile_view`（或等价方式）切出所需 tile，UPDATE
-  不会自动折非零坐标。`NormalLoadParams`：`post_update_stride=0`（默认）按
-  `tile_extent`（`origin_shape`）推进；显式值保留填充与 stride 解耦。
-  `UnalignLoadParams`：默认 `0`→`tile_extent`；有效步长须在 `(0, VL]`。干净
-  `tla.range` 由 `tla-unalign-ureg` 将 Pre/Post 提到环外；`for` 内套动态
-  `if` 仍走每趟双指令。
+- `POST_MODE_UPDATE` 要求 rank-1 连续 tile、`DIST_NORM`，且元素位宽为
+  b8/b16/b32/b64（Bool、有符号和无符号整数、FP8、HiFloat8、E8M0、FP4x2、
+  f16、bf16、f32 和 f64）。返回 `(vector, next_tile)`。
+  在 `tla.vec.func` 内须用 `tla.range` 赋回 `next_tile`（`while` 尚不支持嵌在
+  `vec.func` 内）。窗口须已是原点窗（`coord=0`）；用 `tile_view`（或等价方式）
+  切出所需 tile，UPDATE 不会自动折非零坐标。`NormalLoadParams`：
+  `post_update_stride=0`（默认）按 `tile_extent`（`origin_shape`）推进；显式值
+  保留填充与 stride 解耦。`UnalignLoadParams`：默认 `0`→`tile_extent`；有效
+  步长须在 `(0, VL]`。干净 `tla.range` 由 `tla-unalign-ureg` 将 Pre/Post 提到
+  环外；`for` 内套动态 `if` 仍走每趟双指令。
 
 调用示例：
 
@@ -398,12 +451,14 @@ with tla.vec.func(mode="simd"):
 函数原型：
 
 ```python
-tla.Tensor.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, *, mask: MaskSSA | None = None) -> _Tensor | None
+tla.Tensor.store(value: VectorSSA | MaskSSA | tuple[VectorSSA, VectorSSA], params: StoreParams | None = None, *, mask: MaskSSA | None = None) -> _Tensor | None
 ```
 
 参数说明：
 
-- `value`（`VectorSSA | MaskSSA`）：要写入的 `VectorSSA` 或 `MaskSSA`。必填。
+- `value`（`VectorSSA | MaskSSA | tuple[VectorSSA, VectorSSA]`）：要写入的
+  `VectorSSA` 或 `MaskSSA`。`DIST_INTLV_B8` / `DIST_INTLV_B16` /
+  `DIST_INTLV_B32` 时传入双向量二元组 `(even, odd)`（同类型 / 满 VL）。必填。
 - `params`（`StoreParams | None`）：写回模式。可选，默认 `None`。
   - `None` / `NormalStoreParams` / `UnalignStoreParams` /
     `BlockStoreParams` → vector 写回。
@@ -414,7 +469,13 @@ tla.Tensor.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, 
       | 取值 | 含义 |
       | --- | --- |
       | `DIST_NORM` | 默认连续写回 |
+      | `DIST_PACK_B16` | AscendC 同类型 PK_B16（b16→b16，或先验 cast 后的 b8→b8） |
+      | `DIST_PACK_B32` | AscendC 同类型 PK_B32（b32→b32，或先验 cast 后的 b16→b16） |
+      | `DIST_PACK_B64` | 写入 i64、u64 或 f64 lane 的低 32 位 |
       | `DIST_PACK4_B32` | 按 mask，将寄存器字节位置 0、4、…、252 写到 UB 字节位置 0、1、…、63 |
+      | `DIST_INTLV_B8` | 将两个 b8 寄存器交织写入连续目标元素 |
+      | `DIST_INTLV_B16` | 将两个 b16 寄存器交织 |
+      | `DIST_INTLV_B32` | 将两个 b32 寄存器交织 |
       | `DIST_FIRST_ELEMENT_B8` | 仅写 lane 0（1 字节） |
       | `DIST_FIRST_ELEMENT_B16` | 仅写 lane 0（2 字节） |
       | `DIST_FIRST_ELEMENT_B32` | 仅写 lane 0（4 字节） |
@@ -423,9 +484,11 @@ tla.Tensor.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, 
     - `post_update_stride`（`Any`）：`post_mode=POST_MODE_UPDATE` 时的元素步长；
       `0` 表示按 `tile_extent`（`origin_shape`）推进。默认 `0`。
   - `UnalignStoreParams`：
-    - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）或 `POST_MODE_UPDATE`。
-    - `post_update_stride`（`Any`）：`0`（默认）按 `origin_shape` 推进；
-      有效步长须在 `(0, VL]`。默认 `0`。
+    - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）、`POST_MODE_UPDATE` 或
+      `POST_MODE_UPDATE_NBYTES`。
+    - `post_update_stride`（`Any`）：使用 `POST_MODE_UPDATE` 时，`0` 表示按
+      `origin_shape` 推进，有效步长须在 `(0, VL]`。使用 `POST_MODE_UPDATE_NBYTES`
+      时，须为 `0`。默认 `0`。
   - `BlockStoreParams`：
     - `block_stride`（`int`）：块头间隔，单位 32B DataBlock。默认 `0`。
     - `post_mode`（`str`）：`POST_MODE_NORMAL`（默认）或 `POST_MODE_UPDATE`。
@@ -434,8 +497,8 @@ tla.Tensor.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, 
   - `MaskStoreParams`：
     - `store_dist`（`str`）：`tla.params.MaskStoreDist` token。默认
       `DIST_NORM`。
-- `mask`（`MaskSSA | None`）：vector 写回的可选谓词；与 `MaskStoreParams` 及
-  first-element 模式均不可同时使用。默认 `None`。`DIST_PACK4_B32` 的 mask
+- `mask`（`MaskSSA | None`）：vector 写回的可选谓词；`UnalignStoreParams`、
+  `MaskStoreParams`、first-element 和交织模式均不接受此参数。默认 `None`。`DIST_PACK4_B32` 的 mask
   按源 lane 计数，1/2/4 字节源元素每个目标字节分别对应 4/2/1 个源 lane。
   省略 mask 时按目标有效长度推导；显式 mask 不再受该长度限制。
   被 mask 屏蔽的目标字节保持原值。
@@ -444,20 +507,23 @@ tla.Tensor.store(value: VectorSSA | MaskSSA, params: StoreParams | None = None, 
 
 - 须在 `@tla.kernel` 装饰的 kernel 函数体内调用。
 - 须在 `tla.vec.func(mode="simd")` 内调用；目标 tile 须位于 UB。
-- `DIST_PACK4_B32` 要求 1/2/4 字节源元素、1 字节目标元素，以及
-  按 32 字节对齐的实际目标地址。按 mask 最多写入 64 字节，不做数值转换或
-  FP4 半字节合并。写回 FP32→FP8 结果时，使用 `RegSlot.ZERO`，使值位于
-  寄存器字节位置 0、4、…、252。
+
+**`POST_MODE_NORMAL` 模式**
+
+- `DIST_PACK4_B32` 支持源和目标均为相同的 4 字节元素类型，也支持 1、2 或 4 字节
+  源元素搭配 1 字节目标元素。该模式向按 32 字节对齐的地址最多写入 64 字节。
+  处理 FP32→FP8 结果时，写回前使用 `RegSlot.ZERO` 将转换结果放入寄存器字节位置
+  0、4、…、252。
+- `DIST_PACK_B16`、`DIST_PACK_B32` 和 `DIST_PACK_B64` 要求源和目标元素类型匹配。
+  B16 支持 1 字节或 2 字节元素，B32 支持 2 字节或 4 字节元素，B64 支持 8 字节元素。
+  每个目标元素可容纳两个有效源 lane。
+- `DIST_INTLV_B8` / `DIST_INTLV_B16` / `DIST_INTLV_B32` 要求 `value` 为
+  同类型满 VL 双向量二元组，且与目标元素类型匹配（b8：Bool/i8/u8/f8*/hif8/e8m0/fp4x2；
+  b16：f16/bf16/i16/u16；b32：f32/i32/u32）。拒绝谓词 `mask`。
 - first-element 模式要求被写值与目标 tile 的元素宽度匹配后缀
   （b8 → 1 字节，b16 → 2 字节，b32 → 4 字节）；传入谓词 `mask` 会报错。
-- `POST_MODE_UPDATE` 要求 rank-1 连续 tile、`DIST_NORM`，且元素类型为
-  `f16` / `bf16` / `f32`；返回下一扇窗口。在 `tla.vec.func` 内须用
-  `tla.range` 赋回。与 UPDATE `load` 相同：调用前须为原点窗（`coord=0`）。
-  `NormalStoreParams`：默认 `post_update_stride=0` 按 `tile_extent`
-  （`origin_shape`）推进；显式 stride 与填充解耦。`UnalignStoreParams`：
-  默认 `0`→`tile_extent`；有效步长须在 `(0, VL]`；干净 for 上 Pre/Post 在环外。
-
-调用示例：
+- `UnalignStoreParams` 在 NORMAL 模式下按目标有效长度写回，最多写入一个向量的元素。
+  在 UPDATE 模式下，有效步长同时决定写回元素数和地址推进量。
 
 ```python
 with tla.vec.func(mode="simd"):
@@ -473,6 +539,70 @@ with tla.vec.func(mode="simd"):
         reg_slot=tla.params.RegSlot.ZERO))
     fp8_ub.store(fp8_reg, tla.params.NormalStoreParams(
         store_dist=tla.params.StoreDist.DIST_PACK4_B32))
+```
+
+- `POST_MODE_UPDATE` 要求 rank-1 连续 tile、`DIST_NORM`，且源和目标元素类型匹配，
+  位宽为 b8/b16/b32/b64。返回下一个窗口。在
+  `tla.vec.func` 内须用 `tla.range` 赋回。与 UPDATE `load` 相同：调用前须为
+  原点窗（`coord=0`）。`NormalStoreParams`：默认 `post_update_stride=0` 按
+  `tile_extent`（`origin_shape`）推进；显式 stride 与填充解耦。
+  `UnalignStoreParams`：默认 `0`→`tile_extent`；有效步长须在 `(0, VL]`；干净
+  for 上 Pre/Post 在环外。
+
+**`POST_MODE_UPDATE_NBYTES` 模式**
+
+该模式按 `squeeze` 记录的字节数追加数据。
+每次追加时，调用者先在同一 SIMD 区域调用 `squeeze(..., record_nbytes=True)`，
+由硬件计算并记录字节数。在计数被覆盖前，使用
+`UnalignStoreParams(post_mode=POST_MODE_UPDATE_NBYTES)` 调用 `store`。
+`store` 从源向量开头取记录的字节数，写入地址为传入窗口的基址加当前写入偏移。
+写入后推进偏移，并返回传入的窗口。
+
+**使用限制**
+
+- 目标须为 `coord=0` 的一维连续 UB 窗口，元素类型须与源向量一致。支持
+  `Float16`、`Float32`、`Int8`、`UInt8`、`Int16`、`UInt16`、`Int32` 和 `UInt32`。
+  `post_update_stride` 须为编译期常量 `0`，并省略 `store` 的 `mask`。
+- 同一 SIMD 区域内的追加共享写入偏移和待写尾部。尾部写回使用最后一次以
+  `POST_MODE_UPDATE_NBYTES` 模式执行 `store` 时的目标窗口基址。
+- 为追加和尾部写回预留足够空间。从首次追加到退出 SIMD 区域并完成同步，其他读写须避开压缩输出范围。
+- 从初始化到尾部写回，外部调用须保留写入偏移和待写尾部。`squeeze` 记录的字节数须保留到对应的
+  `store` 使用时。
+
+**`POST_MODE_UPDATE_NBYTES` 模式使用示例**
+
+下面的循环把 `src_ub[0:3]` 中的 `[7, 9, 12]` 和 `src_ub[128:130]` 中的 `[20, 24]`
+依次追加到 `dst_ub`。示例中 `dst_ub` 的起始地址按 32 字节对齐。
+
+1. **初始化**。进入 SIMD 区域时，编译器安排硬件把写入偏移置为 0，并清空暂存尾部数据的空间。
+2. **压缩并追加**。第一轮，`squeeze(..., record_nbytes=True)` 压紧 3 个 Int16 元素，
+   硬件记录 6 字节。调用 `store` 后，硬件暂存这 6 字节，并将写入偏移推进到 6 字节。
+   第二轮，硬件为保留的 2 个元素记录 4 字节，`store` 把这 4 字节接在前 6 字节后面。
+   两轮合计 10 字节，凑不满一个 32 字节块，因此都留在硬件中，成为待写回的尾部。
+   接口用法见 [`tla.squeeze` 说明](simd/compress.md#tlasqueeze)。
+3. **写回尾部**。循环结束后，编译器安排硬件把暂存的 10 字节写入 `dst_ub[0:5]`。
+   退出 SIMD 区域并完成同步后，`dst_ub` 的前 5 个元素为 `[7, 9, 12, 20, 24]`。
+
+调用示例：
+
+```python
+# src_ub 和 dst_ub 是两块独立的一维连续 Int16 UB 窗口，coord 均为 0。
+# src_ub 有 256 个元素，dst_ub 有 128 个元素。
+with tla.vec.func(mode="simd"):
+    # 每次追加都使用硬件记录的字节数。
+    update = tla.params.UnalignStoreParams(
+        post_mode=tla.params.PostMode.POST_MODE_UPDATE_NBYTES,
+    )
+    block = tla.make_shape(128)
+    for i in tla.range(2):
+        # 第一轮选取源下标 0～127，第二轮选取 128～255。
+        src_tile = tla.tile_view(src_ub, block, tla.make_coord(i))
+        # 第一轮保留当前窗口的前 3 个元素，第二轮保留前 2 个元素。
+        keep, _ = tla.update_mask(3 - i, dtype=tla.Int16)
+        # 压紧保留的元素。Int16 每个元素占 2 字节，硬件依次记录 6 字节和 4 字节。
+        packed = tla.squeeze(src_tile.load(), keep, record_nbytes=True)
+        # 每轮都传入 dst_ub，由硬件推进写入偏移。
+        dst_ub.store(packed, update)
 ```
 
 ---

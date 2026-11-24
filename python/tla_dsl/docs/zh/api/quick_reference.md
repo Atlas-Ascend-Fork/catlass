@@ -29,7 +29,7 @@ nav_order: 5
 | [`@tla.extern`](runtime/kernel_entry.md#tlaextern) | 声明由内联源码实现的 Ascend C ABI 入口。 | Host 声明；调用位于单个 Cube 或 Vector 区域，可在 SIMD VF 内调用。SIMT VF 不支持 extern 调用。 |
 | [`tla.compile`](runtime/compile_launch.md#tlacompile) | 从类型样本编译 kernel，返回 `JitCompiledFunction`。 | Host；类型样本不必绑定 NPU 缓冲。`block_num` / `stream` 等启动参数写在编译结果上。 |
 | [`tla.JitCompiledFunction.__call__`](runtime/compile_launch.md#tlajitcompiledfunction__call__) | 启动已编译 kernel，并复用 executor 与二进制。 | Host；tensor 实参须为已绑定的 NPU 缓冲，`make_fake_tensor` 结果不能启动。 |
-| [`tla.from_dlpack`](runtime/host_tensor.md#tlafrom_dlpack) | 零拷贝绑定 DLPack tensor 为 TLA Host tensor。 | Host；`layout_tag` 必填。NPU 缓冲可启动，CPU 缓冲只提供编译元数据。 |
+| [`tla.from_dlpack`](runtime/host_tensor.md#tlafrom_dlpack) | 零拷贝绑定 DLPack tensor 为 TLA Host tensor。 | 所有输入均须显式指定 `layout_tag`，包括四维预打包 NZ 视图。NPU 缓冲可用于启动，CPU 缓冲仅提供编译元数据。 |
 | [`tla.make_tensor`](runtime/host_tensor.md#tlamake_tensor) | Host 双模式：由 `tla.make_ptr` + `tla.make_layout` 绑定缓冲。 | Host 路径跳过 DLPack；Kernel 内仍发 IR。 |
 | [`tla.make_fake_tensor`](runtime/host_tensor.md#tlamake_fake_tensor) | 创建仅含元数据的编译样本。 | Host；无设备缓冲，不能启动。shape 输入是 Python 整数树，不是 Kernel layout 值。 |
 
@@ -101,6 +101,7 @@ nav_order: 5
 | [`tla.pipe_barrier`](language/sync.md#tlapipe_barrier) | 在硬件流水上插入 barrier。 | Kernel / Cube 或 Vector；SIMT 内不可用。 |
 | [`tla.mutex`](language/sync.md#tlamutex)、[`tla.mutex_guard`](language/sync.md#tlamutex_guard)、[`tla.mutex_lock`](language/sync.md#tlamutex_lock)、[`tla.mutex_unlock`](language/sync.md#tlamutex_unlock) | 以显式加锁或作用域 guard 保护命名资源。 | Kernel / Cube 或 Vector；guard 块须产生 `copy` 或 `mmad`，且不得显式加锁或解锁。 |
 | [`tla.local_mem_bar`](language/sync.md#tlalocal_mem_bar) | 在本地存储类型之间排序访问。 | Kernel / Vector / SIMD；须在 `tla.vec.func` 内并使用受支持的 `MemType` 组合；SIMT 不可用。 |
+| [`tla.data_sync_barrier`](language/sync.md#tladata_sync_barrier) | 等待指定存储域（GM / UB）此前发出的访存完成。 | Kernel / Cube 或 Vector；不得在 `tla.vec.func` 内；`tla.cube()` 内拒绝 `UB`；只覆盖 GM 与 UB，不含 L1/L0 Buffer。跨核可见性仅对绕过 D-cache 的 GM 访问成立（`WriteGmBypassDCache` 经 `tla.extern`）。 |
 | [`tla.arch.sync_threads`](language/system.md#tlaarchsync_threads) | 同步一个 SIMT block 内的线程。 | Kernel / Vector / SIMT；所有线程都须到达 barrier；它不是跨核或 pipe barrier。 |
 
 ### 资源与调试

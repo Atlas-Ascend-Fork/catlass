@@ -99,6 +99,36 @@ def Tla_PipeAttr : Tla_EnumAttr<"Pipe", "pipe"> {
   }];
 }
 
+// DsbTarget: storage domain of tla.data_sync_barrier (ISA ``dsb``). The
+// immediates are frozen ABI -- each is the storage-domain immediate the
+// instruction takes. ``gm_ub`` covers GM and UB accesses only: L1 and
+// L0A/L0B/L0C buffers are NOT waited on, those still need pipe_barrier or
+// flags. ``ub`` is issued on AIV only: AIC has no UB, so on AIC ``gm_ub`` and
+// ``gm`` cover the same positions.
+def Tla_DsbTarget_GmUb : I32EnumAttrCase<"gm_ub", 0>;
+def Tla_DsbTarget_Gm : I32EnumAttrCase<"gm", 1>;
+def Tla_DsbTarget_Ub : I32EnumAttrCase<"ub", 2>;
+def Tla_DsbTarget_Seq : I32EnumAttrCase<"seq", 3>;
+def Tla_DsbTargetEnum : Tla_I32Enum<"DsbTarget", "Storage domain for tla.data_sync_barrier.", [
+  Tla_DsbTarget_GmUb,
+  Tla_DsbTarget_Gm,
+  Tla_DsbTarget_Ub,
+  Tla_DsbTarget_Seq
+]>;
+def Tla_DsbTargetAttr : Tla_I32EnumAttr<"dsb_target", Tla_DsbTargetEnum> {
+  let description = [{
+    Storage domain for tla.data_sync_barrier:
+
+      - gm_ub (0): wait for previously issued GM and UB access instructions;
+        L1 and L0A/L0B/L0C buffers are not covered.
+      - gm (1): wait for previously issued GM access instructions.
+      - ub (2): wait for previously issued UB access instructions; not
+        issued on AIC, where it would be a no-op.
+      - seq (3): wait for previously issued sequencer accesses (including
+        the parameter buffer).
+  }];
+}
+
 // QuantMode Enum Attr
 def Tla_QuantMode_NoQuant : I32EnumAttrCase<"NO_QUANT", 0>;
 def Tla_QuantMode_PerTensor : I32EnumAttrCase<"PER_TENSOR", 1>;
@@ -243,6 +273,10 @@ def Tla_StoreDist_FirstElementB8 : I32EnumAttrCase<"first_element_b8", 3>;
 def Tla_StoreDist_FirstElementB16 : I32EnumAttrCase<"first_element_b16", 4>;
 def Tla_StoreDist_FirstElementB32 : I32EnumAttrCase<"first_element_b32", 5>;
 def Tla_StoreDist_Pack4B32 : I32EnumAttrCase<"pack4_b32", 6>;
+def Tla_StoreDist_PackB64 : I32EnumAttrCase<"pack_b64", 7>;
+def Tla_StoreDist_IntlvB8 : I32EnumAttrCase<"intlv_b8", 8>;
+def Tla_StoreDist_IntlvB16 : I32EnumAttrCase<"intlv_b16", 9>;
+def Tla_StoreDist_IntlvB32 : I32EnumAttrCase<"intlv_b32", 10>;
 def Tla_StoreDistEnum : Tla_I32Enum<"StoreDist", "Store distribution for tla.store.", [
   Tla_StoreDist_Norm,
   Tla_StoreDist_PackB32,
@@ -250,7 +284,11 @@ def Tla_StoreDistEnum : Tla_I32Enum<"StoreDist", "Store distribution for tla.sto
   Tla_StoreDist_FirstElementB8,
   Tla_StoreDist_FirstElementB16,
   Tla_StoreDist_FirstElementB32,
-  Tla_StoreDist_Pack4B32
+  Tla_StoreDist_Pack4B32,
+  Tla_StoreDist_PackB64,
+  Tla_StoreDist_IntlvB8,
+  Tla_StoreDist_IntlvB16,
+  Tla_StoreDist_IntlvB32
 ]>;
 def Tla_StoreDistAttr : Tla_EnumAttr<"StoreDist", "store_dist"> {
   let parameters = (ins EnumParameter<Tla_StoreDistEnum>:$store_dist);
@@ -260,6 +298,9 @@ def Tla_StoreDistAttr : Tla_EnumAttr<"StoreDist", "store_dist"> {
      - DIST_NORM: Normal mode, support b8/b16/b32, with a fixed datacopy VL, should be aligned with 32B.
      - DIST_PACK_B16: Compact mode, store the low half data (b16) to dst, should be aligned with 32B, or VL/2.
      - DIST_PACK_B32: Compact mode, store the low half data (b32) to dst.
+     - DIST_PACK_B64: Store the low 32 bits of each active source lane in
+       consecutive 32-bit slots. The register and UB destination must have
+       the same element type (i64, u64, or f64).
      - DIST_PACK4_B32: Store the low byte of each 32-bit register slot to
        consecutive b8 destination elements at a 32-byte-aligned address.
        Supports b8/b16/b32 sources; the predicate is in the source lane
@@ -271,6 +312,10 @@ def Tla_StoreDistAttr : Tla_EnumAttr<"StoreDist", "store_dist"> {
        (AscendC ``asc_storealign_1st``). The ``_b8``/``_b16``/``_b32`` suffix
        fixes the stored element width in bytes and must match both the source
        and the dst element type; the dst base must stay 32B-aligned.
+     - DIST_INTLV_B8/B16/B32 (AscendC ``DIST_INTLV_*`` / HIVMAVE ``INTLV_B*``):
+       dual-source interleave store (``asc_storealign_intlv``). Requires a
+       second ``!tla.vector`` source matching the first; writes even/odd lanes
+       from the two registers into consecutive destination elements.
   }];
 }
 
@@ -298,24 +343,25 @@ def Tla_RegSlotEnum : Tla_I32Enum<"RegSlot", "Packed-register position for a nar
 // front-end (catlass/params.py). The enum keywords are the MLIR-asm tokens.
 // ---------------------------------------------------------------------------
 
-// AtomicMode: None, Add
+// Atomic writeback modes
 
 def Tla_AtomicMode_None : I32EnumAttrCase<"none", 0>;
 def Tla_AtomicMode_Add : I32EnumAttrCase<"add", 1>;
+def Tla_AtomicMode_Max : I32EnumAttrCase<"max", 2>;
+def Tla_AtomicMode_Min : I32EnumAttrCase<"min", 3>;
 
 def Tla_AtomicMode_Enum : Tla_I32Enum<"AtomicMode", "Atomic type", [
   Tla_AtomicMode_None,
-  Tla_AtomicMode_Add
+  Tla_AtomicMode_Add,
+  Tla_AtomicMode_Max,
+  Tla_AtomicMode_Min
 ]>;
 
 def Tla_AtomicModeAttr : Tla_EnumAttr<"AtomicMode", "atomic_mode"> {
   let parameters = (ins EnumParameter<Tla_AtomicMode_Enum>:$atomic_mode);
   let assemblyFormat = "`<` params `>`";
   let description = [{
-    Atomic operation kind for tla.copy
-
-    The supported atomic mode listed below:
-      - ADD
+    Selects ordinary overwrite, atomic addition, maximum, or minimum for this copy.
   }];
 }
 
@@ -493,5 +539,29 @@ def Tla_ShuffleModeEnum : Tla_I32Enum<
 def Tla_ShuffleModeAttr : Tla_I32EnumAttr<"shuffle_mode", Tla_ShuffleModeEnum> {
   let description = [{
     Source-lane rule for tla.arch.shuffle.
+  }];
+}
+
+// Which dcache domain a whole-domain DCCI processes. The case values ARE the
+// native `dcci_dst_t` selector codes -- CACHELINE_ALL=0, CACHELINE_UB=1,
+// CACHELINE_OUT=2, CACHELINE_ATOMIC=3 -- so the lowering passes the enum value
+// through rather than translating it. `gm_l2` is the public spelling of native
+// OUT: the Ascend C API describes OUT in terms of the GM-addressed dcache
+// lines, which is what it invalidates; it is not an independently established
+// flush of the shared L2.
+def Tla_DcciTarget_All : I32EnumAttrCase<"all", 0>;
+def Tla_DcciTarget_Ub : I32EnumAttrCase<"ub", 1>;
+def Tla_DcciTarget_GmL2 : I32EnumAttrCase<"gm_l2", 2>;
+def Tla_DcciTarget_StAtomic : I32EnumAttrCase<"st_atomic", 3>;
+def Tla_DcciTargetEnum : Tla_I32Enum<
+    "DcciTarget", "Dcache domain processed by a whole-domain DCCI.", [
+      Tla_DcciTarget_All,
+      Tla_DcciTarget_Ub,
+      Tla_DcciTarget_GmL2,
+      Tla_DcciTarget_StAtomic
+    ]>;
+def Tla_DcciTargetAttr : Tla_I32EnumAttr<"dcci_target", Tla_DcciTargetEnum> {
+  let description = [{
+    Dcache domain selected by tla.arch.dcci_cachelines.
   }];
 }

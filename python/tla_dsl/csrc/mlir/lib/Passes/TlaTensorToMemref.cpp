@@ -658,35 +658,43 @@ static mlir::FailureOr<hivm::AddressSpace> resolveHivmAddressSpace(MLIRContext* 
     return memorySpaceAttr.getAddressSpace();
 }
 
-static StringRef copyRuntimeElemSuffix(Type elementType)
+// b8/b16/b32 ExtParams-safe scalars shared by copyRuntime and VectorLayout
+// GM→UB. Intentionally excludes bool/b64/fp8/hif8/fp4 so VectorLayout can
+// call this without legalizing unregistered VL symbols.
+static StringRef scalarB8B16B32CopyElemSuffix(Type elementType)
 {
-    // Packed fp4 x2 IR types that still stage under the int8_t symbol.
-    if (isa<::tla::Float4E2M1x2Type, ::tla::Float4E1M2x2Type>(elementType))
-        return "int8_t";
     if (elementType.isF32())
         return "float";
     if (elementType.isF16())
         return "half";
     if (elementType.isBF16())
         return "bf16";
-    // AscendC bool is b8 storage (1 byte/lane). IR keeps i1; BC stubs stage as
-    // ``bool`` (see bc/Vector|Cube/dma.cpp REGISTER_*(..., bool)).
-    if (elementType.isInteger(1))
-        return "bool";
     if (elementType.isSignlessInteger(8))
         return "int8_t";
     if (elementType.isSignlessInteger(16))
         return "int16_t";
     if (elementType.isSignlessInteger(32))
         return "int32_t";
-    // Shared unsigned cube/vector routes. The 64-bit registrations are
-    // selected only in the individual routes that provide those wrappers.
     if (elementType.isUnsignedInteger(8))
         return "uint8_t";
     if (elementType.isUnsignedInteger(16))
         return "uint16_t";
     if (elementType.isUnsignedInteger(32))
         return "uint32_t";
+    return {};
+}
+
+static StringRef copyRuntimeElemSuffix(Type elementType)
+{
+    // Packed fp4 x2 IR types that still stage under the int8_t symbol.
+    if (isa<::tla::Float4E2M1x2Type, ::tla::Float4E1M2x2Type>(elementType))
+        return "int8_t";
+    if (auto suffix = scalarB8B16B32CopyElemSuffix(elementType); !suffix.empty())
+        return suffix;
+    // AscendC bool is b8 storage (1 byte/lane). IR keeps i1; BC stubs stage as
+    // ``bool`` (see bc/Vector|Cube/dma.cpp REGISTER_*(..., bool)).
+    if (elementType.isInteger(1))
+        return "bool";
     if (elementType.isFloat8E4M3FN())
         return "fp8_e4m3fn_t";
     if (elementType.isFloat8E5M2())
@@ -695,8 +703,8 @@ static StringRef copyRuntimeElemSuffix(Type elementType)
     // 1-byte element on every route, UB -> UB included.
     if (::llvm::isa<::tla::Float8E8M0Type>(elementType))
         return "float8_e8m0_t";
-    // HiFloat8 is a custom 1-byte float (memref boundary is i8). GM↔UB resolves
-    // to the typed hifloat8_t BC wrappers (tile uint8 DataCopyPad path).
+    // HiFloat8 is a custom 1-byte float (memref boundary is i8). All copy routes
+    // use typed hifloat8_t BC (GM↔UB Vector + GM→L1 Cube); tile may uint8-pad.
     if (::llvm::isa<::tla::HiFloat8Type>(elementType))
         return "hifloat8_t";
     // fp4 is the packed two-per-byte encoding: the C++ element type is the x2
@@ -727,6 +735,18 @@ static StringRef rowMajorGmUbCopyElemSuffix(Type elementType)
     return copyRuntimeElemSuffix(elementType);
 }
 
+// GM/UB VectorLayout→VectorLayout: b64 + bool + ExtParams-safe scalars.
+// Do NOT call rowMajorGmUbCopyElemSuffix / full copyRuntimeElemSuffix — those
+// would legalize fp8/hif8/fp4 without matching REGISTER_GM_TO_UB(VectorLayout).
+static StringRef vectorLayoutGmUbCopyElemSuffix(Type elementType)
+{
+    if (elementType.isInteger(1))
+        return "bool";
+    if (auto suffix = b64CopyElemSuffix(elementType); !suffix.empty())
+        return suffix;
+    return scalarB8B16B32CopyElemSuffix(elementType);
+}
+
 // Whether fixpipe can carry this L0C element type out to the given destination
 // type.
 //
@@ -739,13 +759,13 @@ static StringRef rowMajorGmUbCopyElemSuffix(Type elementType)
 // accumulator would be safe only for as long as copyRuntimeElemSuffix had no
 // mapping for the other types: the route would resolve to an empty suffix and be
 // rejected further down. fp8 already has a suffix -- the vector staging routes
-// need it -- so that accidental guard is gone: an fp8 destination accepted here
-// would resolve to a callee name with no REGISTER_L0C_TO_* behind it and fail at
-// link time instead of as a diagnostic here.
+// need it -- so that accidental guard is gone: an unsupported fp8 destination
+// accepted here would resolve to a callee name with no REGISTER_L0C_TO_* behind
+// it and fail at link time instead of as a diagnostic here.
 //
-// fp8 destinations are not supported for now. Of the two fp8 encodings, the
-// on-the-fly quant supports e4m3fn; e5m2 has no quant route at all. Neither is
-// in the legal set, and no REGISTER_L0C_TO_* is instantiated for either.
+// On-the-fly quant destinations for f32 include e4m3fn and typed HiFloat8
+// (REGISTER_L0C_TO_* + CopyL0CToDstQuantMode). e5m2 still has no Fixpipe quant
+// route and stays illegal here.
 static bool isLegalFixpipeElementType(Type srcElementType, Type dstElementType, bool isQuantMode)
 {
     if (!isQuantMode) {
@@ -754,10 +774,11 @@ static bool isLegalFixpipeElementType(Type srcElementType, Type dstElementType, 
             return dstElementType.isF32() || dstElementType.isF16() || dstElementType.isBF16();
         return srcElementType.isSignlessInteger(32) && dstElementType.isSignlessInteger(32);
     } else {
-        // PER_TENSOR/PER_CHANNEL: f32->f32/f16/bf16/i8/u8 or i32->f16/bf16/i8/u8
+        // PER_TENSOR/PER_CHANNEL: f32->f32/f16/bf16/i8/u8/fp8/hif8 or i32->f16/bf16/i8/u8
         if (srcElementType.isF32())
             return dstElementType.isF32() || dstElementType.isF16() || dstElementType.isBF16() ||
-                   dstElementType.isSignlessInteger(8) || dstElementType.isUnsignedInteger(8);
+                   dstElementType.isSignlessInteger(8) || dstElementType.isUnsignedInteger(8) ||
+                   dstElementType.isFloat8E4M3FN() || ::llvm::isa<::tla::HiFloat8Type>(dstElementType);
         if (srcElementType.isSignlessInteger(32))
             return dstElementType.isF16() || dstElementType.isBF16() || dstElementType.isSignlessInteger(8) ||
                    dstElementType.isUnsignedInteger(8);
@@ -810,7 +831,7 @@ std::string getCopyRouteCallee(
         srcLayout == LayoutTag::VectorLayout && dstLayout == LayoutTag::VectorLayout) {
         if (srcElementType != dstElem)
             return {};
-        StringRef suffix = b64CopyElemSuffix(srcElementType);
+        StringRef suffix = vectorLayoutGmUbCopyElemSuffix(srcElementType);
         if (suffix.empty())
             return {};
         return Twine("copy_gm_VectorLayout_to_ub_VectorLayout_").concat(suffix).str();
@@ -1003,6 +1024,18 @@ std::string getCopyRouteCallee(
             return {};
         return Twine("copy_l1_nZ_to_l0a_zN_").concat(suffix).str();
     }
+    // gemv A: the L1 row and the L0A row are the same flat run, so no layout
+    // change happens on the way down. VectorLayout on both sides is what the
+    // DataCopy wrapper in copy_l1_to_l0a.hpp matches.
+    if (*srcSpace == hivm::AddressSpace::L1 && *dstSpace == hivm::AddressSpace::L0A &&
+        srcLayout == LayoutTag::VectorLayout && dstLayout == LayoutTag::VectorLayout) {
+        if (srcElementType != dstElem)
+            return {};
+        StringRef suffix = copyRuntimeElemSuffix(srcElementType);
+        if (suffix.empty())
+            return {};
+        return Twine("copy_l1_VectorLayout_to_l0a_VectorLayout_").concat(suffix).str();
+    }
     if (*srcSpace == hivm::AddressSpace::L1 && *dstSpace == hivm::AddressSpace::L0B && srcLayout == LayoutTag::zN &&
         dstLayout == LayoutTag::nZ) {
         if (srcElementType != dstElem)
@@ -1164,6 +1197,42 @@ void appendGmCachePolicyOperand(
     operands.push_back(builder.create<arith::ConstantIntOp>(loc, policyVal, 64));
 }
 
+void appendGmToUbPadOperands(
+    OpBuilder& builder, Location loc, ::tla::CopyOp copyOp, StringRef srcAddrspace, StringRef dstAddrspace,
+    SmallVectorImpl<Type>& operandTypes, SmallVectorImpl<Value>& operands)
+{
+    if (srcAddrspace != "gm" || dstAddrspace != "ub")
+        return;
+    Type i64Ty = builder.getI64Type();
+    auto constI64 = [&](int64_t val) -> Value { return builder.create<arith::ConstantIntOp>(loc, val, 64); };
+    auto widenToI64 = [&](Value v) -> Value {
+        if (v.getType() == i64Ty)
+            return v;
+        return castValueToI64(builder, loc, v);
+    };
+
+    int64_t padEnable = 0;
+    Value left;
+    Value right;
+    Value valueBits;
+    if (Value params = copyOp.getParams()) {
+        if (auto padOp = params.getDefiningOp<::tla::CopyPadParamsOp>()) {
+            padEnable = 1;
+            left = padOp.getLeft();
+            right = padOp.getRight();
+            valueBits = padOp.getValueBits();
+        }
+    }
+    operandTypes.push_back(i64Ty);
+    operands.push_back(constI64(padEnable));
+    operandTypes.push_back(i64Ty);
+    operands.push_back(left ? widenToI64(left) : constI64(0));
+    operandTypes.push_back(i64Ty);
+    operands.push_back(right ? widenToI64(right) : constI64(0));
+    operandTypes.push_back(i64Ty);
+    operands.push_back(valueBits ? widenToI64(valueBits) : constI64(0));
+}
+
 static bool isAicTemplateRuntimeCall(StringRef name)
 {
     if (name.starts_with("copy_gm_") && name.ends_with("_batch"))
@@ -1226,7 +1295,8 @@ static bool isAicTemplateRuntimeCall(StringRef name)
            name.starts_with("copy_l0c_to_ub_RowMajor_") || name.starts_with("copy_l0c_to_gm_RowMajor_") ||
            name.starts_with("copy_l0c_to_gm_ColumnMajor_") || name.starts_with("copy_l0c_to_ub_ColumnMajor_") ||
            name.starts_with("copy_l0c_to_l1_zN_") || name.starts_with("copy_gm_VectorLayout_to_l1_VectorLayout_") ||
-           name.starts_with("copy_l1_VectorLayout_to_biasbuf_VectorLayout_");
+           name.starts_with("copy_l1_VectorLayout_to_biasbuf_VectorLayout_") ||
+           name.starts_with("copy_l1_VectorLayout_to_l0a_VectorLayout_");
 }
 
 static bool isAivTemplateRuntimeCall(StringRef name)
@@ -1276,6 +1346,38 @@ func::FuncOp getOrCreateRuntimeCall(
     if (isAivTemplateRuntimeCall(name))
         annotateAivTemplateRuntimeCall(func);
     return func;
+}
+
+static hivm::AtomicKind getCopyAtomicKind(CopyOp op)
+{
+    auto attr = op.getAtomicModeAttr();
+    switch (attr ? attr.getAtomicMode() : AtomicMode::none) {
+        case AtomicMode::none:
+            return hivm::AtomicKind::NONE;
+        case AtomicMode::add:
+            return hivm::AtomicKind::ADD;
+        case AtomicMode::max:
+            return hivm::AtomicKind::MAX;
+        case AtomicMode::min:
+            return hivm::AtomicKind::MIN;
+    }
+    llvm_unreachable("unknown copy atomic mode");
+}
+
+void emitCopyRuntimeCall(
+    PatternRewriter& rewriter, CopyOp op, func::FuncOp callee, ValueRange operands, Value dstMemref)
+{
+    auto kind = getCopyAtomicKind(op);
+    auto setAtomic = [&](hivm::AtomicKind mode) {
+        auto elemType = cast<MemRefType>(dstMemref.getType()).getElementType();
+        rewriter.create<hivm::SetAtomicOp>(
+            op.getLoc(), hivm::AtomicKindAttr::get(rewriter.getContext(), mode), TypeAttr::get(elemType));
+    };
+    if (kind != hivm::AtomicKind::NONE)
+        setAtomic(kind);
+    rewriter.create<func::CallOp>(op.getLoc(), callee, operands);
+    if (kind != hivm::AtomicKind::NONE)
+        setAtomic(hivm::AtomicKind::NONE);
 }
 
 } // namespace tla

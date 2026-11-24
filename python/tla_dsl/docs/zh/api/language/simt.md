@@ -50,7 +50,7 @@ with tla.vector():
 - `tla.arch.warp_reduce_sync`：对 Warp 内的活跃线程执行 add/max/min 归约——见
   [系统变量访问](system.md#系统变量访问)。
 - Warp 查询 `tla.arch.warpsize` / `lane_idx` / `lanemask_eq` / `lanemask_lt` /
-  `lanemask_le` / `lanemask_gt` / `lanemask_ge`——见 [系统变量访问](system.md#系统变量访问)。
+  `lanemask_le` / `lanemask_gt` / `lanemask_ge` / `activemask`——见 [系统变量访问](system.md#系统变量访问)。
 - `tla.arch.thread_idx` / `thread_block_dim` / `sync_threads`，以及 launch 级
   `tla.arch.block_idx` / `block_num`——见 [系统变量访问](system.md#系统变量访问)。
 
@@ -61,7 +61,7 @@ with tla.vector():
   `tla.create_mask`。这些接口用于 SIMD 寄存器向量编程。
 - `tla.copy`：DMA 需要捕获 tensor 本身，而 SIMT 区域只能捕获标量运行期值。
   可在进入区域前完成搬数，或让各线程直接按索引访问全局内存。
-- `tla.local_mem_bar`、`tla.pipe_barrier`。
+- `tla.local_mem_bar`、`tla.data_sync_barrier`、`tla.pipe_barrier`。
 - 任意 `tla.vec.func` 内的 `while`；迭代请用 `tla.range`。
 - 嵌套的 `tla.vec.func`。
 

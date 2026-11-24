@@ -90,16 +90,24 @@ struct CopyGm2UbTla<
             "The input parameters do not match. TensorSrc must be GM and RowMajor, "
             "while TensorDst must be UB and RowMajor");
 
+        // AscendC Normal-mode dstStride is the gap after blockLen+left+right pads
+        // (each measured in 32B blocks). Subtract pad widths so multi-row writes
+        // land on dstTensor.stride<0>(), not stride + AlignUp(pad).
+        const int64_t dstGapElems = tla::get<0>(dstTensor.stride()) - tla::get<1>(srcTensor.originShape()) -
+                                    static_cast<int64_t>(padParams.leftPadding) -
+                                    static_cast<int64_t>(padParams.rightPadding);
         AscendC::DataCopyExtParams dataCopyParams(
             tla::get<0>(srcTensor.originShape()), tla::get<1>(srcTensor.originShape()) * sizeof(ElementSrc),
             (tla::get<0>(srcTensor.stride()) - tla::get<1>(srcTensor.originShape())) * sizeof(ElementSrc),
-            (tla::get<0>(dstTensor.stride()) - tla::get<1>(srcTensor.originShape())) / ELE_NUM_PER_BLK, 0);
+            dstGapElems / ELE_NUM_PER_BLK, 0);
         auto dstOffset = dstTensor.layout()(dstTensor.coord());
         auto srcOffset = srcTensor.layout()(srcTensor.coord());
         AscendC::DataCopyPad(dstTensor.data()[dstOffset], srcTensor.data()[srcOffset], dataCopyParams, padParams);
     }
 };
 
+#if (defined(CATLASS_ARCH) && (CATLASS_ARCH == 3510 || CATLASS_ARCH == 9201 || CATLASS_ARCH == 9202)) || \
+    (defined(__NPU_ARCH__) && (__NPU_ARCH__ == 3510 || __NPU_ARCH__ == 9201 || __NPU_ARCH__ == 9202))
 /// Partial specialization for Ascend950, Vector in and Vector out.
 template <class ElementSrc, class ElementDst, class LayoutSrc, class LayoutDst, class CoordSrc, class CoordDst>
 struct CopyGm2UbTla<
@@ -156,26 +164,6 @@ struct CopyGm2UbTla<
         AscendC::DataCopyPad(dstTensor.data()[dstOffset], srcTensor.data()[srcOffset], dataCopyParams, padParams);
     }
 };
-#if defined(CATLASS_ARCH) && (CATLASS_ARCH == 9201 || CATLASS_ARCH == 9202)
-template <class ElementSrc, class ElementDst, class LayoutSrc, class LayoutDst, class CoordSrc, class CoordDst>
-struct CopyGm2UbTla<
-    Arch::Ascend960DT, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,
-    tla::Tensor<AscendC::LocalTensor<ElementDst>, LayoutDst, CoordDst, AscendC::TPosition::VECCALC>,
-    std::enable_if_t<tla::detail::isVector<LayoutSrc>::value && tla::detail::isVector<LayoutDst>::value>>
-    : CopyGm2UbTla<
-          Arch::Ascend950, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,
-          tla::Tensor<AscendC::LocalTensor<ElementDst>, LayoutDst, CoordDst, AscendC::TPosition::VECCALC>,
-          std::enable_if_t<tla::detail::isVector<LayoutSrc>::value && tla::detail::isVector<LayoutDst>::value>> {};
-template <class ElementSrc, class ElementDst, class LayoutSrc, class LayoutDst, class CoordSrc, class CoordDst>
-struct CopyGm2UbTla<
-    Arch::Ascend960PR, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,
-    tla::Tensor<AscendC::LocalTensor<ElementDst>, LayoutDst, CoordDst, AscendC::TPosition::VECCALC>,
-    std::enable_if_t<tla::detail::isVector<LayoutSrc>::value && tla::detail::isVector<LayoutDst>::value>>
-    : CopyGm2UbTla<
-          Arch::Ascend950, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,
-          tla::Tensor<AscendC::LocalTensor<ElementDst>, LayoutDst, CoordDst, AscendC::TPosition::VECCALC>,
-          std::enable_if_t<tla::detail::isVector<LayoutSrc>::value && tla::detail::isVector<LayoutDst>::value>> {};
-#endif
 
 /// Partial specialization for Ascend950, RowMajor in and RowMajor out.
 template <class ElementSrc, class ElementDst, class LayoutSrc, class LayoutDst, class CoordSrc, class CoordDst>
@@ -246,10 +234,15 @@ struct CopyGm2UbTla<
         const uint32_t blockLen = ElementsToBytes<ElementSrc>(tla::get<1>(srcTensor.originShape()));
         const int64_t srcStride =
             ElementsToBytes<ElementSrc, int64_t>(tla::get<0>(srcTensor.stride())) - static_cast<int64_t>(blockLen);
+        // AscendC Normal-mode dstStride is the gap after blockLen+left+right pads
+        // (each measured in 32B blocks). Subtract pad widths so multi-row writes
+        // land on dstTensor.stride<0>(), not stride + AlignUp(pad).
+        const int64_t dstGapElems = tla::get<0>(dstTensor.stride()) - tla::get<1>(srcTensor.originShape()) -
+                                    static_cast<int64_t>(padParams.leftPadding) -
+                                    static_cast<int64_t>(padParams.rightPadding);
 
         AscendC::DataCopyExtParams dataCopyParams(
-            tla::get<0>(srcTensor.originShape()), blockLen, srcStride,
-            (tla::get<0>(dstTensor.stride()) - tla::get<1>(srcTensor.originShape())) / ELE_NUM_PER_BLK, 0);
+            tla::get<0>(srcTensor.originShape()), blockLen, srcStride, dstGapElems / ELE_NUM_PER_BLK, 0);
 
         auto dstOffset = dstTensor.layout()(dstTensor.coord());
         auto srcOffset = srcTensor.layout()(srcTensor.coord());
@@ -266,7 +259,27 @@ struct CopyGm2UbTla<
         }
     }
 };
+#endif
+
 #if defined(CATLASS_ARCH) && (CATLASS_ARCH == 9201 || CATLASS_ARCH == 9202)
+template <class ElementSrc, class ElementDst, class LayoutSrc, class LayoutDst, class CoordSrc, class CoordDst>
+struct CopyGm2UbTla<
+    Arch::Ascend960DT, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,
+    tla::Tensor<AscendC::LocalTensor<ElementDst>, LayoutDst, CoordDst, AscendC::TPosition::VECCALC>,
+    std::enable_if_t<tla::detail::isVector<LayoutSrc>::value && tla::detail::isVector<LayoutDst>::value>>
+    : CopyGm2UbTla<
+          Arch::Ascend950, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,
+          tla::Tensor<AscendC::LocalTensor<ElementDst>, LayoutDst, CoordDst, AscendC::TPosition::VECCALC>,
+          std::enable_if_t<tla::detail::isVector<LayoutSrc>::value && tla::detail::isVector<LayoutDst>::value>> {};
+template <class ElementSrc, class ElementDst, class LayoutSrc, class LayoutDst, class CoordSrc, class CoordDst>
+struct CopyGm2UbTla<
+    Arch::Ascend960PR, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,
+    tla::Tensor<AscendC::LocalTensor<ElementDst>, LayoutDst, CoordDst, AscendC::TPosition::VECCALC>,
+    std::enable_if_t<tla::detail::isVector<LayoutSrc>::value && tla::detail::isVector<LayoutDst>::value>>
+    : CopyGm2UbTla<
+          Arch::Ascend950, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,
+          tla::Tensor<AscendC::LocalTensor<ElementDst>, LayoutDst, CoordDst, AscendC::TPosition::VECCALC>,
+          std::enable_if_t<tla::detail::isVector<LayoutSrc>::value && tla::detail::isVector<LayoutDst>::value>> {};
 template <class ElementSrc, class ElementDst, class LayoutSrc, class LayoutDst, class CoordSrc, class CoordDst>
 struct CopyGm2UbTla<
     Arch::Ascend960DT, tla::Tensor<AscendC::GlobalTensor<ElementSrc>, LayoutSrc, CoordSrc, AscendC::TPosition::GM>,

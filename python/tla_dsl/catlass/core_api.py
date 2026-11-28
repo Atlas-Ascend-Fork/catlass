@@ -5,7 +5,6 @@ from __future__ import annotations
 import builtins as _builtins
 import inspect
 import math
-import os
 import struct
 import sys
 
